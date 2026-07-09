@@ -3,8 +3,9 @@
 
 import claude from './claude.js';
 import codex from './codex.js';
+import grok from './grok.js';
 
-const REGISTRY = { claude, codex };
+const REGISTRY = { claude, codex, grok };
 
 export function getAgent(id) {
   return REGISTRY[id] || claude;

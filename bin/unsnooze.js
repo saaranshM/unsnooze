@@ -22,6 +22,10 @@ async function main() {
       const { cmdLogs } = await import('../src/cli.js');
       return cmdLogs(rest.includes('-f'));
     }
+    case 'report': {
+      const { cmdReport } = await import('../src/report.js');
+      return cmdReport(rest);
+    }
     case 'config': {
       const { cmdConfig } = await import('../src/cli.js');
       return cmdConfig(rest);
