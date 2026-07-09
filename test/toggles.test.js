@@ -7,6 +7,7 @@ import { join } from 'node:path';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-toggles-test-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
+process.env.UNSNOOZE_NOTIFICATIONS = 'off';   // no desktop popups from tests
 process.env.UNSNOOZE_CLAUDE_DIR = join(DIR, 'claude');
 
 const { createMonitor } = await import('../src/monitor.js');

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-resumer-test-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
+process.env.UNSNOOZE_NOTIFICATIONS = 'off';   // no desktop popups from tests
 process.env.UNSNOOZE_READY_TIMEOUT_MS = '6000';   // keep the reopen poll short in tests
 
 const { dispatchOne, verifyOne } = await import('../src/resumer.js');

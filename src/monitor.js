@@ -19,6 +19,7 @@ import {
 import { detectLimit, isBusy, overloadMatch } from './patterns.js';
 import { getAgent } from './agents/index.js';
 import { getConfig } from './settings.js';
+import { notify } from './notify.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { upsertSession, setStatus, readState } from './state.js';
 import { spawnResumerIfNeeded } from './spawn.js';
@@ -64,6 +65,7 @@ export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = re
       || Object.values(state.sessions).find(s => s.pane === pane && s.status === 'stopped')?.key
       || null;
     log(`pane ${pane}: limit recorded (${limitType}, via ${via}), resets ${new Date(at).toISOString()}`);
+    notify(`${agent.name} hit a usage limit`, `${cwd} — auto-resume at ${new Date(at).toLocaleTimeString()}`);
     spawnResumerIfNeeded();
   }
 

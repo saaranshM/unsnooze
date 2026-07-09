@@ -17,6 +17,7 @@ import { getAgent } from './agents/index.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { readState, updateState, setStatus, dueSessions, activeStopped } from './state.js';
 import { getConfig } from './settings.js';
+import { notify } from './notify.js';
 import { makeLogger } from './logger.js';
 
 const log = makeLogger('resumer');
@@ -140,6 +141,7 @@ export async function verifyOne(key, { tmux = realTmux } = {}) {
   }
   setStatus(key, 'resumed');
   log(`${key}: verified resumed`);
+  notify('unsnoozed ✅', `${rec.cwd} is running again`);
 }
 
 export async function runResumer({ tmux = realTmux, pollInterval = POLL_INTERVAL_MS } = {}) {
@@ -163,6 +165,7 @@ export async function runResumer({ tmux = realTmux, pollInterval = POLL_INTERVAL
         if ((s.attempts || 0) >= MAX_RESUME_ATTEMPTS) {
           setStatus(s.key, 'failed', { lastError: 'max resume attempts exceeded' });
           log(`${s.key}: giving up after ${s.attempts} attempts`);
+          notify('unsnooze gave up ⚠️', `${s.cwd}: ${s.attempts} resume attempts failed — check \`unsnooze status\``);
         }
       }
 
