@@ -1,85 +1,111 @@
-# claude-session-guard (`csg`)
+# unsnooze
 
-Detects when Claude Code CLI sessions hit a usage limit (5-hour or weekly),
-tracks **every** stopped session across all your projects, and **re-opens each
-one interactively in tmux** the moment the limit refreshes — so long-running
-work continues without you babysitting the terminal.
+**Unsnooze your agents.** When Claude Code, Codex, or Grok hits a usage limit,
+your session just… stops. unsnooze tracks **every** limit-stopped session
+across all your projects and **wakes each one up in tmux the moment the limit
+resets** — so overnight and long-running work finishes without you babysitting
+a terminal.
 
-Replaces [claude-auto-retry] with a multi-session design: auto-retry only
-watched the one pane it launched; csg keeps a shared ledger of all limit-stopped
-sessions and a single resumer daemon that revives them all.
+```
+npm install -g unsnooze
+unsnooze setup        # interactive wizard: pick CLIs, toggles, done
+```
+
+## Why unsnooze
+
+| | unsnooze | claude-auto-retry | autoclaude | hydra |
+|---|---|---|---|---|
+| Multi-CLI (Claude Code + Codex + Grok) | ✅ | ❌ Claude only | ❌ Claude only | ✅ |
+| Waits for reset & resumes the SAME session | ✅ | ✅ | ✅ | ❌ switches provider |
+| All sessions at once (shared ledger + one daemon) | ✅ | ❌ one pane | ✅ | ✅ |
+| Revives sessions whose pane/process is gone | ✅ `--resume <id>` | ❌ | ❌ | ❌ |
+| Survives laptop sleep & weekly-scale waits | ✅ epoch polling | partial | partial | n/a |
+| Settings + first-run wizard | ✅ | ❌ | ❌ | ❌ |
+
+## Supported CLIs
+
+- **Claude Code** — dual-channel detection: the `StopFailure` hook (authoritative,
+  carries `session_id`) plus tmux pane scraping for banners and the interactive
+  limit menu (always answered with "Stop and wait for limit to reset", never a
+  blind Enter). Dead sessions revive via `claude --resume <id>`.
+- **OpenAI Codex CLI** — scrape-based (Codex fires no event on limits). Detects
+  the exact `■ You've hit your usage limit …` banner strings from the Codex
+  source, parses `try again at 3:51 PM` / `Feb 23rd, 2026 9:01 PM` /
+  `in 4 days 20 hours 9 minutes`. Dead sessions revive via
+  `codex resume <id> "<message>"` — the prompt travels in argv.
+- **Grok Build (xAI)** — ⚠️ *experimental*. Hook channel works (Grok reads
+  Claude-compatible hooks, including `StopFailure`); the limit banner text is
+  not publicly documented, so detection uses generic patterns with a safe
+  fallback. Hit a banner unsnooze missed? Run `unsnooze report` and paste the
+  capture into an issue — that's how this adapter gets good.
 
 ## How it works
 
 ```
-claude (via zsh wrapper) ──► csg launcher ──► claude in tmux pane
-                                   │
-                                   ├─ per-pane monitor (scrapes for limit banners,
-                                   │  drives the /rate-limit-options menu,
-                                   │  seconds-scale retry on 5xx/overload)
-                                   │
-StopFailure hook (rate_limit) ─────┤
-                                   ▼
-                     ~/.claude-session-guard/state.json
-                     { sessionId, cwd, pane, resetAt, status }
-                                   │
-                                   ▼
-                     resumer daemon (singleton, epoch-polling —
-                     survives laptop sleep and weekly-scale waits)
-                                   │
-                 ┌─────────────────┴──────────────────┐
-        pane still alive?                     pane gone?
-        send "continue" into it               tmux new-window in session 'csg',
-        (only if claude is foreground         `csg --resume <sessionId>`, wait
-        and not mid-stream)                   for ready, send resume message
+claude / codex / grok (shell wrapper) ──► unsnooze _run <agent> ──► CLI in tmux pane
+                                              │
+                                              ├─ per-pane monitor (scrapes for limit
+                                              │  banners, drives Claude's limit menu,
+                                              │  seconds-scale retry on 5xx/overload)
+                                              │
+StopFailure hook (claude, grok) ──────────────┤
+                                              ▼
+                                ~/.unsnooze/state.json
+                                { agent, sessionId, cwd, pane, resetAt, status }
+                                              │
+                                              ▼
+                                resumer daemon (singleton, epoch-polling —
+                                survives laptop sleep and weekly-scale waits)
+                                              │
+                          ┌───────────────────┴────────────────────┐
+                 pane still alive?                          pane gone?
+                 send resume message into it                tmux new-window,
+                 (only if the CLI is foreground             `unsnooze _run <agent>
+                 and not mid-stream)                        --resume <id>`, verify
 ```
 
-Detection is dual-channel: the Claude Code `StopFailure` hook (authoritative,
-carries `session_id`/`cwd`) plus tmux pane scraping (catches banners the hook
-misses, and the interactive "What do you want to do?" limit menu — always
-answered with "Stop and wait for limit to reset", never a blind Enter).
-
-Limit events are never persisted by Claude Code itself; the reset time is
-parsed from the banner text ("resets 3pm (UTC)", "try again in 2 hours",
-"resets Tuesday 9am"), DST-safe, with a 5-hour fallback when unparseable.
-
-## Install
-
-```sh
-cd claude-session-guard
-npm install -g .        # provides `csg`
-csg install --yes       # wires the zsh claude() wrapper + StopFailure hook,
-                        # removing claude-auto-retry's versions (backups kept)
-npm uninstall -g claude-auto-retry
-exec zsh
-```
-
-`csg install` edits `~/.claude/settings.json` (JSON-merged, backed up to
-`settings.json.csg-bak`) and appends a fence-marked block to `~/.zshrc`
-(backed up to `.zshrc.csg-bak`). `--settings <path>` / `--zshrc <path>`
-override the targets (used by tests).
+Limit events are never persisted by the CLIs themselves; the reset time is
+parsed from the banner text, DST-safe, with a 5-hour fallback when unparseable
+— and every resume is verified afterwards (banner came back → reschedule from
+the fresh banner, capped at 5 attempts).
 
 ## Usage
 
 ```sh
-claude                       # normal usage — wrapped automatically
-csg status                   # tracked sessions + reset countdowns
-csg resume-now [id|--all]    # don't wait for the reset time
-csg cancel [id|--all]        # stop tracking a session
-csg logs [-f]                # what csg has been doing
-csg uninstall [--purge]      # remove wrapper + hook (+ state with --purge)
+claude / codex / grok        # normal usage — wrapped automatically
+unsnooze status              # tracked sessions + reset countdowns
+unsnooze resume-now [id|--all]  # don't wait for the reset time
+unsnooze cancel [id|--all]   # stop tracking a session
+unsnooze config list         # settings (see below)
+unsnooze config set <k> <v>  # e.g. autoResume off
+unsnooze logs [-f]           # what unsnooze has been doing
+unsnooze report [agent]      # capture a pane to report an undetected banner
+unsnooze uninstall [--purge] # remove wrappers + hooks (+ state with --purge)
 ```
 
-Everything lives in `~/.claude-session-guard/` (state, logs, locks). All
-timings/paths are overridable via `CSG_*` env vars — see `src/config.js`.
+## Settings
+
+`unsnooze setup` writes `~/.unsnooze/config.json`; change anything later with
+`unsnooze config set`:
+
+| key | default | meaning |
+|---|---|---|
+| `autoResume` | `true` | Master switch. Off = stops are still tracked, but nothing is resumed until you run `unsnooze resume-now` or turn it back on. |
+| `menuAutoAnswer` | `true` | May unsnooze answer Claude's limit menu (send keys in your pane)? Off = watch-only. |
+| `notifications` | `true` | Desktop notification on limit detected / session resumed / gave up. |
+| `resumeMessage` | *"Continue where you left off…"* | The message sent to wake a session. |
+| `agents.claude` / `agents.codex` / `agents.grok` | `true` / `true` / `false` | Which CLIs are guarded. |
+
+Every setting also has a `UNSNOOZE_*` env override (see `src/settings.js`), and
+all timings/paths are tunable via `UNSNOOZE_*` env vars (see `src/config.js`).
 
 ## Safety properties
 
 - **Never injects blind**: keys are only sent when the pane's foreground
-  process is claude and no "esc to interrupt" / internal-retry footer is
+  process is the agent CLI and no "esc to interrupt"-style busy footer is
   visible. Recycled pane ids can't receive stray messages.
-- **Never picks a menu option blind**: if the limit menu layout can't be read,
-  csg does not press Enter (that could confirm "Upgrade your plan").
+- **Never picks a menu option blind**: if Claude's limit menu layout can't be
+  read, unsnooze does not press Enter (that could confirm "Upgrade your plan").
 - **Sleep-safe waits**: the resumer polls wall-clock against the target epoch
   every 30s instead of one long timer — a laptop asleep past the reset fires
   on the next tick. Weekly limits are just a bigger epoch.
@@ -88,16 +114,23 @@ timings/paths are overridable via `CSG_*` env vars — see `src/config.js`.
   from the fresh banner, capped at 5 attempts.
 - **Concurrent-writer safe**: state updates go through a mkdir lock + atomic
   rename; corrupt state is quarantined, never fatal (the hook path must never
-  block claude).
+  block the CLI).
 - **Overload ≠ limit**: 5xx/529/429 transient errors take a seconds-scale
   backoff path ([30,60,120,240,300]s ± jitter) and never enter the ledger.
+
+## Requirements
+
+- Node ≥ 18, tmux, macOS or Linux
+- zsh or bash (the wrappers are installed into `~/.zshrc` / `~/.bashrc`)
 
 ## Development
 
 ```sh
-npm test                     # 47 unit tests (node:test)
+npm test                     # unit tests (node:test)
 ./scripts/e2e-simulate.sh    # full detect → wait → re-open cycle in a
                              # scratch tmux session (no real limits needed)
 ```
 
-[claude-auto-retry]: https://www.npmjs.com/package/claude-auto-retry
+## License
+
+MIT
