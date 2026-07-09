@@ -1,16 +1,19 @@
-// Install / uninstall: wires unsnooze into the shell and Claude Code, and migrates
-// off claude-auto-retry.
+// Install / uninstall: wires unsnooze into the shell and the agent CLIs, and
+// migrates off claude-auto-retry / the pre-release csg.
 //   - ~/.claude/settings.json: StopFailure hook → unsnooze _hook-stopfailure
-//     (removes any claude-auto-retry hook entry; preserves everything else;
-//     backs up first; atomic write)
-//   - ~/.zshrc: fence-marked claude() wrapper block (removes the old
-//     claude-auto-retry fenced block)
+//     (removes legacy hook entries; preserves everything else; backs up first;
+//     atomic write)
+//   - ~/.zshrc + ~/.bashrc: one fence-marked block with a wrapper function per
+//     enabled agent (claude/codex/grok), routed through `unsnooze _run`
+//   - ~/.grok/hooks/unsnooze.json when the grok agent is enabled
 // --settings <path> / --zshrc <path> override targets (used by tests).
 
 import { readFileSync, writeFileSync, renameSync, existsSync, copyFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { CLAUDE_SETTINGS, STATE_DIR } from './config.js';
+import { getConfig, configFileExists } from './settings.js';
+import { installGrokHooks, uninstallGrokHooks } from './agents/grok.js';
 import { UNSNOOZE_BIN } from './spawn.js';
 
 const FENCE_OPEN = '# >>> unsnooze >>>';
@@ -73,18 +76,19 @@ export function removeHookFromSettings(settingsJson) {
 
 // --- zshrc block management ---
 
-export function wrapperBlock() {
-  return `${FENCE_OPEN}
-# claude() wrapper: routes every interactive claude launch through
-# unsnooze so limit stops are recorded and auto-resumed.
-unalias claude 2>/dev/null || true
-claude() {
+export function wrapperBlock(agents = ['claude']) {
+  const fns = agents.map(id => `unalias ${id} 2>/dev/null || true
+${id}() {
   if [ "\${UNSNOOZE_ACTIVE}" = "1" ]; then
-    command claude "$@"
+    command ${id} "$@"
     return $?
   fi
-  node "${UNSNOOZE_BIN}" "$@"
-}
+  node "${UNSNOOZE_BIN}" _run ${id} "$@"
+}`).join('\n');
+  return `${FENCE_OPEN}
+# unsnooze wrappers: route every interactive launch of the CLIs below through
+# unsnooze so limit stops are recorded and auto-resumed.
+${fns}
 ${FENCE_CLOSE}`;
 }
 
@@ -101,7 +105,7 @@ export function stripFencedBlock(content, open, close) {
   return { content: out.join('\n'), found };
 }
 
-export function installZshrcBlock(content) {
+export function installZshrcBlock(content, agents = ['claude']) {
   let cleaned = content;
   let oldRemoved = false;
   for (const { open, close } of LEGACY_FENCES) {
@@ -110,48 +114,79 @@ export function installZshrcBlock(content) {
     oldRemoved = oldRemoved || r.found;
   }
   ({ content: cleaned } = stripFencedBlock(cleaned, FENCE_OPEN, FENCE_CLOSE));
-  const result = cleaned.replace(/\n+$/, '\n') + '\n' + wrapperBlock() + '\n';
+  const result = cleaned.replace(/\n+$/, '\n') + '\n' + wrapperBlock(agents) + '\n';
   return { content: result, oldRemoved };
 }
 
 // --- commands ---
 
-export function cmdInstall(rest) {
+export function enabledAgents() {
+  return ['claude', 'codex', 'grok'].filter(id => getConfig(`agents.${id}`));
+}
+
+// rc files to touch: the explicit --zshrc target, or every rc file that exists
+// (zsh + bash) so the wrappers work regardless of the user's shell.
+function rcTargets(opts, explicit) {
+  if (explicit) return [opts.zshrc];
+  const candidates = [join(homedir(), '.zshrc'), join(homedir(), '.bashrc')];
+  const existing = candidates.filter(p => existsSync(p));
+  return existing.length > 0 ? existing : [opts.zshrc];
+}
+
+export function cmdInstall(rest, { agents = enabledAgents() } = {}) {
   const opts = parseArgs(rest);
+  const explicitRc = rest.includes('--zshrc');
 
-  // 1. settings.json
-  if (existsSync(opts.settings)) {
-    copyFileSync(opts.settings, `${opts.settings}.unsnooze-bak`);
-    const before = readFileSync(opts.settings, 'utf-8');
-    const after = mergeHookIntoSettings(before);
-    atomicWrite(opts.settings, after);
-    console.log(`unsnooze: StopFailure hook installed in ${opts.settings} (backup: ${opts.settings}.unsnooze-bak)`);
-  } else {
-    atomicWrite(opts.settings, mergeHookIntoSettings('{}'));
-    console.log(`unsnooze: created ${opts.settings} with StopFailure hook`);
+  // First run in a real terminal with no saved settings → hand over to the
+  // interactive setup wizard (it calls back here with --yes afterwards).
+  if (!opts.yes && !configFileExists() && process.stdout.isTTY && process.stdin.isTTY) {
+    return import('./wizard.js').then(({ runWizard }) => runWizard());
   }
 
-  // 2. zshrc
-  const zshrcContent = existsSync(opts.zshrc) ? readFileSync(opts.zshrc, 'utf-8') : '';
-  const hasOld = zshrcContent.includes(OLD_FENCE_OPEN) || zshrcContent.includes('CLAUDE_AUTO_RETRY_ACTIVE');
-  if (hasOld && !opts.yes) {
-    console.log('unsnooze: found the old claude-auto-retry wrapper in your zshrc.');
-    console.log('unsnooze: re-run with --yes to replace it, or remove the fenced');
-    console.log(`unsnooze: "${OLD_FENCE_OPEN}" block manually first.`);
-    return 1;
+  // 1. Claude Code hook (also consumed by Grok Build's Claude-compatible hooks
+  //    when installed below).
+  if (agents.includes('claude')) {
+    if (existsSync(opts.settings)) {
+      copyFileSync(opts.settings, `${opts.settings}.unsnooze-bak`);
+      const before = readFileSync(opts.settings, 'utf-8');
+      atomicWrite(opts.settings, mergeHookIntoSettings(before));
+      console.log(`unsnooze: StopFailure hook installed in ${opts.settings} (backup: ${opts.settings}.unsnooze-bak)`);
+    } else {
+      atomicWrite(opts.settings, mergeHookIntoSettings('{}'));
+      console.log(`unsnooze: created ${opts.settings} with StopFailure hook`);
+    }
   }
-  copyFileSync(opts.zshrc, `${opts.zshrc}.unsnooze-bak`);
-  const { content, oldRemoved } = installZshrcBlock(zshrcContent);
-  atomicWrite(opts.zshrc, content);
-  console.log(`unsnooze: claude() wrapper installed in ${opts.zshrc}${oldRemoved ? ' (legacy wrapper block removed)' : ''} (backup: ${opts.zshrc}.unsnooze-bak)`);
+
+  // 2. Grok Build hook file.
+  if (agents.includes('grok')) {
+    const file = installGrokHooks({ unsnoozeBin: UNSNOOZE_BIN });
+    console.log(`unsnooze: Grok StopFailure hook installed at ${file}`);
+  }
+
+  // 3. Shell wrappers (zsh + bash).
+  for (const rc of rcTargets(opts, explicitRc)) {
+    const rcContent = existsSync(rc) ? readFileSync(rc, 'utf-8') : '';
+    const hasOld = rcContent.includes(OLD_FENCE_OPEN) || rcContent.includes('CLAUDE_AUTO_RETRY_ACTIVE');
+    if (hasOld && !opts.yes) {
+      console.log(`unsnooze: found the old claude-auto-retry wrapper in ${rc}.`);
+      console.log('unsnooze: re-run with --yes to replace it, or remove the fenced');
+      console.log(`unsnooze: "${OLD_FENCE_OPEN}" block manually first.`);
+      return 1;
+    }
+    if (existsSync(rc)) copyFileSync(rc, `${rc}.unsnooze-bak`);
+    const { content, oldRemoved } = installZshrcBlock(rcContent, agents);
+    atomicWrite(rc, content);
+    console.log(`unsnooze: wrappers (${agents.join(', ')}) installed in ${rc}${oldRemoved ? ' (legacy wrapper block removed)' : ''}`);
+  }
 
   console.log('\nunsnooze: done. Reload your shell:');
-  console.log('  exec zsh');
+  console.log('  exec $SHELL');
   return 0;
 }
 
 export function cmdUninstall(rest) {
   const opts = parseArgs(rest);
+  const explicitRc = rest.includes('--zshrc');
 
   if (existsSync(opts.settings)) {
     const before = readFileSync(opts.settings, 'utf-8');
@@ -159,11 +194,14 @@ export function cmdUninstall(rest) {
     console.log(`unsnooze: StopFailure hook removed from ${opts.settings}`);
   }
 
-  if (existsSync(opts.zshrc)) {
-    const { content, found } = stripFencedBlock(readFileSync(opts.zshrc, 'utf-8'), FENCE_OPEN, FENCE_CLOSE);
+  uninstallGrokHooks();
+
+  for (const rc of rcTargets(opts, explicitRc)) {
+    if (!existsSync(rc)) continue;
+    const { content, found } = stripFencedBlock(readFileSync(rc, 'utf-8'), FENCE_OPEN, FENCE_CLOSE);
     if (found) {
-      atomicWrite(opts.zshrc, content);
-      console.log(`unsnooze: claude() wrapper removed from ${opts.zshrc}`);
+      atomicWrite(rc, content);
+      console.log(`unsnooze: wrappers removed from ${rc}`);
     }
   }
 

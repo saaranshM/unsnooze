@@ -22,6 +22,10 @@ async function main() {
       const { cmdLogs } = await import('../src/cli.js');
       return cmdLogs(rest.includes('-f'));
     }
+    case 'setup': {
+      const { runWizard } = await import('../src/wizard.js');
+      return runWizard();
+    }
     case 'report': {
       const { cmdReport } = await import('../src/report.js');
       return cmdReport(rest);
@@ -68,8 +72,10 @@ Usage:
   unsnooze cancel [id|--all]       stop tracking session(s)
   unsnooze logs [-f]               show (or follow) the unsnooze log
   unsnooze config [list|get|set]   view or change settings (toggles, message)
-  unsnooze install [--yes]         wire up shell wrappers + hooks
-  unsnooze uninstall [--purge]     remove wrappers + hooks (and state with --purge)`);
+  unsnooze setup                   interactive setup wizard (agents + toggles)
+  unsnooze install [--yes]         wire up shell wrappers + hooks (non-interactive)
+  unsnooze uninstall [--purge]     remove wrappers + hooks (and state with --purge)
+  unsnooze report [agent] [pane]   capture a pane to report an undetected banner`);
       return 0;
     }
     default: {

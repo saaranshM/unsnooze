@@ -121,3 +121,22 @@ test('stripFencedBlock leaves untouched content when no block', () => {
   assert.equal(found, false);
   assert.equal(content, 'a\nb\n');
 });
+
+test('wrapper block contains one function per enabled agent, routed via _run', () => {
+  const { content } = installZshrcBlock('', ['claude', 'codex']);
+  assert.match(content, /claude\(\) \{/);
+  assert.match(content, /codex\(\) \{/);
+  assert.ok(!content.includes('grok()'), 'disabled agents get no wrapper');
+  assert.match(content, /_run claude "\$@"/);
+  assert.match(content, /_run codex "\$@"/);
+  assert.match(content, /UNSNOOZE_ACTIVE/);
+});
+
+test('re-installing with a different agent set replaces the block', () => {
+  const first = installZshrcBlock('', ['claude', 'codex', 'grok']).content;
+  const second = installZshrcBlock(first, ['claude']).content;
+  assert.ok(!second.includes('codex()'));
+  assert.ok(!second.includes('grok()'));
+  assert.match(second, /claude\(\) \{/);
+  assert.equal(second.split('# >>> unsnooze >>>').length, 2);
+});
