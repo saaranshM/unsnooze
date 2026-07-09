@@ -89,6 +89,24 @@ test('pane alive but running a shell → reopen path (never hijack a shell)', as
   assert.equal(opened, true);
 });
 
+test('dead codex pane → reopened via `_run codex resume <id> "msg"`, nothing typed', async () => {
+  const rec = seed({ pane: '%20', agent: 'codex', sessionId: '33333333-4444-4555-8666-777777777777' });
+  const sent = [];
+  let windowCmd = null;
+  const tmux = {
+    paneAlive: async () => false,
+    paneCurrentCommand: async () => null,
+    capturePane: async () => '› Ask Codex to do anything\n',
+    sendText: async (pane, text) => sent.push({ pane, text }),
+    newWindow: async (session, cwd, command) => { windowCmd = { session, cwd, command }; return '%97'; },
+  };
+  const result = await dispatchOne(rec, { tmux, resumeMessage: "it's time to continue" });
+  assert.equal(result, 'reopened');
+  assert.match(windowCmd.command, /_run codex resume 33333333-4444-4555-8666-777777777777/);
+  assert.match(windowCmd.command, /'it'\\''s time to continue'/);   // shell-quoted argv message
+  assert.equal(sent.length, 0);                                     // message travels in argv
+});
+
 test('verifyOne: banner back → rescheduled as stopped with attempts+1', async () => {
   const rec = seed({ pane: '%14' });
   const tmuxSend = {
