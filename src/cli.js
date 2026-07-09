@@ -18,11 +18,11 @@ export function cmdStatus() {
   const state = readState();
   const sessions = Object.values(state.sessions);
   if (sessions.length === 0) {
-    console.log('csg: no tracked sessions.');
+    console.log('unsnooze: no tracked sessions.');
     return 0;
   }
   const now = Date.now();
-  console.log(`csg: ${sessions.length} tracked session(s)  (resumer pid: ${state.resumerPid ?? 'not running'})\n`);
+  console.log(`unsnooze: ${sessions.length} tracked session(s)  (resumer pid: ${state.resumerPid ?? 'not running'})\n`);
   for (const s of sessions.sort((a, b) => (a.resetAt || 0) - (b.resetAt || 0))) {
     const id = s.sessionId ? s.sessionId.slice(0, 8) : '(no id)';
     const reset = s.resetAt ? `${new Date(s.resetAt).toLocaleString()} (${fmtCountdown(s.resetAt - now)})` : '?';
@@ -42,21 +42,21 @@ function selectKeys(state, idOrAll) {
 export function cmdResumeNow(idOrAll) {
   const state = readState();
   const keys = selectKeys(state, idOrAll);
-  if (keys.length === 0) { console.log('csg: no matching stopped sessions.'); return 1; }
+  if (keys.length === 0) { console.log('unsnooze: no matching stopped sessions.'); return 1; }
   updateState(s => {
     for (const key of keys) if (s.sessions[key]) s.sessions[key].resetAt = Date.now();
   });
   spawnResumerIfNeeded();
-  console.log(`csg: marked ${keys.length} session(s) due now; resumer dispatched.`);
+  console.log(`unsnooze: marked ${keys.length} session(s) due now; resumer dispatched.`);
   return 0;
 }
 
 export function cmdCancel(idOrAll) {
   const state = readState();
   const keys = selectKeys(state, idOrAll);
-  if (keys.length === 0) { console.log('csg: no matching stopped sessions.'); return 1; }
+  if (keys.length === 0) { console.log('unsnooze: no matching stopped sessions.'); return 1; }
   for (const key of keys) setStatus(key, 'cancelled');
-  console.log(`csg: cancelled ${keys.length} session(s).`);
+  console.log(`unsnooze: cancelled ${keys.length} session(s).`);
   return 0;
 }
 
@@ -68,7 +68,7 @@ export function cmdLogs(follow) {
   try {
     process.stdout.write(readFileSync(LOG_FILE, 'utf-8'));
   } catch {
-    console.log('csg: no log file yet.');
+    console.log('unsnooze: no log file yet.');
   }
   return 0;
 }

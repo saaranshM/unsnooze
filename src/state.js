@@ -1,4 +1,4 @@
-// Shared multi-writer state store: ~/.claude-session-guard/state.json.
+// Shared multi-writer state store: ~/.unsnooze/state.json.
 // Writers: N monitors, the StopFailure hook, the resumer, CLI subcommands.
 // Safety: mkdir-based lock (atomic on POSIX) around read-modify-write, tmp
 // file + rename for atomic replacement, stale-lock stealing, corrupt-file
@@ -40,7 +40,7 @@ function acquireLock() {
           continue;
         }
       } catch { /* lock vanished between check and stat — retry */ }
-      if (Date.now() > deadline) throw new Error('csg: state lock timeout after 5s');
+      if (Date.now() > deadline) throw new Error('unsnooze: state lock timeout after 5s');
       sleepSync(50);
     }
   }

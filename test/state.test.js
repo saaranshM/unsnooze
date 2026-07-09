@@ -8,9 +8,9 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-// state.js reads CSG_STATE_DIR at import time, so set it BEFORE importing.
-const DIR = mkdtempSync(join(tmpdir(), 'csg-state-test-'));
-process.env.CSG_STATE_DIR = DIR;
+// state.js reads UNSNOOZE_STATE_DIR at import time, so set it BEFORE importing.
+const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-state-test-'));
+process.env.UNSNOOZE_STATE_DIR = DIR;
 
 const { updateState, readState, upsertSession, setStatus, activeStopped, dueSessions } =
   await import('../src/state.js');
@@ -19,7 +19,7 @@ after(() => rmSync(DIR, { recursive: true, force: true }));
 
 function record(overrides = {}) {
   return {
-    sessionId: null, cwd: '/tmp/proj', pane: '%1', tmuxSession: 'csg',
+    sessionId: null, cwd: '/tmp/proj', pane: '%1', tmuxSession: 'unsnooze',
     status: 'stopped', limitType: '5h', detectedVia: 'scrape',
     detectedAt: Date.now(), resetAt: Date.now() + 3_600_000,
     resetSource: 'absolute', attempts: 0, lastAttemptAt: null, lastError: null,
@@ -65,7 +65,7 @@ test('corrupt state file is quarantined, not fatal', () => {
 test('10 parallel writers do not lose updates', async () => {
   const N = 10;
   const script = `
-    process.env.CSG_STATE_DIR = ${JSON.stringify(DIR)};
+    process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(DIR)};
     const { updateState } = await import(${JSON.stringify(new URL('../src/state.js', import.meta.url).href)});
     const id = process.argv[2];
     for (let i = 0; i < 5; i++) {

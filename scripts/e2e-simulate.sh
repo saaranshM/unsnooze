@@ -9,26 +9,26 @@
 #            "claude" that prints what it receives, and sends the resume
 #            message.
 #
-# Everything is namespaced (session csg-e2e, state dir in a tmpdir) — safe to
+# Everything is namespaced (session unsnooze-e2e, state dir in a tmpdir) — safe to
 # run alongside real work.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
-export CSG_STATE_DIR="$WORK/state"
-export CSG_TMUX_SESSION=csg-e2e
-export CSG_SCRAPE_INTERVAL_MS=500
-export CSG_POLL_INTERVAL_MS=1000
-export CSG_VERIFY_DELAY_MS=2000
-export CSG_STAGGER_MS=500
-export CSG_CLAUDE_DIR="$WORK/claude"   # no transcripts — sessionId stays null
-SES=csg-e2e-src
+export UNSNOOZE_STATE_DIR="$WORK/state"
+export UNSNOOZE_TMUX_SESSION=unsnooze-e2e
+export UNSNOOZE_SCRAPE_INTERVAL_MS=500
+export UNSNOOZE_POLL_INTERVAL_MS=1000
+export UNSNOOZE_VERIFY_DELAY_MS=2000
+export UNSNOOZE_STAGGER_MS=500
+export UNSNOOZE_CLAUDE_DIR="$WORK/claude"   # no transcripts — sessionId stays null
+SES=unsnooze-e2e-src
 
 cleanup() {
   tmux kill-session -t "$SES" 2>/dev/null || true
-  tmux kill-session -t "csg-e2e" 2>/dev/null || true
-  pkill -f "csg.js _monitor %" 2>/dev/null || true
-  pkill -f "csg.js _resumer" 2>/dev/null || true
+  tmux kill-session -t "unsnooze-e2e" 2>/dev/null || true
+  pkill -f "unsnooze.js _monitor %" 2>/dev/null || true
+  pkill -f "unsnooze.js _resumer" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -52,12 +52,12 @@ for i in $(seq 1 20); do
 done
 tmux capture-pane -t "$PANE" -p | grep -q '5-hour limit' || fail "banner never appeared in scratch pane"
 
-CSG_CWD="$WORK/fakeproj" node "$ROOT/bin/csg.js" _monitor "$PANE" &
+UNSNOOZE_CWD="$WORK/fakeproj" node "$ROOT/bin/unsnooze.js" _monitor "$PANE" &
 MONITOR_PID=$!
 sleep 3
 kill "$MONITOR_PID" 2>/dev/null || true
 
-STATE="$CSG_STATE_DIR/state.json"
+STATE="$UNSNOOZE_STATE_DIR/state.json"
 [ -f "$STATE" ] || fail "no state file written"
 grep -q '"status": "stopped"' "$STATE" || fail "no stopped record"
 grep -q '"limitType": "5h"' "$STATE" || fail "limit type not classified"
@@ -70,10 +70,10 @@ echo "== Phase 2: resume after refresh =="
 tmux kill-session -t "$SES"
 
 # The monitor auto-spawned a resumer; kill it so OUR resumer (with the fake
-# csg on PATH) takes the singleton lock instead.
-pkill -f "csg.js _resumer" 2>/dev/null || true
+# unsnooze on PATH) takes the singleton lock instead.
+pkill -f "unsnooze.js _resumer" 2>/dev/null || true
 sleep 1
-rm -f "$CSG_STATE_DIR/resumer.lock"
+rm -f "$UNSNOOZE_STATE_DIR/resumer.lock"
 
 STUB="$WORK/claude-stub.sh"
 cat > "$STUB" <<'EOF'
@@ -86,10 +86,10 @@ chmod +x "$STUB"
 export WORK_OUT="$WORK/received.txt"
 
 # Make the record due now, and swap the resume command for the stub via
-# CSG launcher indirection: easiest is editing the record's cwd + using a
-# custom csg bin name. dispatchOne runs `csg --resume <id>` / `csg -c`; here we
+# unsnooze launcher indirection: easiest is editing the record's cwd + using a
+# custom unsnooze bin name. dispatchOne runs `unsnooze --resume <id>` / `unsnooze -c`; here we
 # override by rewriting state so pane is dead and letting newWindow run the
-# stub through an env-provided fake csg.
+# stub through an env-provided fake unsnooze.
 node - "$STATE" <<'EOF'
 const fs = require('fs');
 const [,, stateFile] = process.argv;
@@ -98,19 +98,19 @@ for (const rec of Object.values(s.sessions)) rec.resetAt = Date.now() - 1000;
 fs.writeFileSync(stateFile, JSON.stringify(s, null, 2));
 EOF
 
-# Fake csg on PATH that ignores args and execs the stub (records what a real
+# Fake unsnooze on PATH that ignores args and execs the stub (records what a real
 # re-open would have run).
 FAKEBIN="$WORK/bin"; mkdir -p "$FAKEBIN"
-cat > "$FAKEBIN/csg" <<EOF
+cat > "$FAKEBIN/unsnooze" <<EOF
 #!/usr/bin/env bash
 echo "\$@" > "$WORK/resume-args.txt"
 WORK_OUT="$WORK_OUT" exec "$STUB"
 EOF
-chmod +x "$FAKEBIN/csg"
+chmod +x "$FAKEBIN/unsnooze"
 export PATH="$FAKEBIN:$PATH"
 
 # (no `timeout` on stock macOS — background + kill)
-node "$ROOT/bin/csg.js" _resumer &
+node "$ROOT/bin/unsnooze.js" _resumer &
 RESUMER_PID=$!
 for i in $(seq 1 30); do
   kill -0 "$RESUMER_PID" 2>/dev/null || break   # resumer exited on its own

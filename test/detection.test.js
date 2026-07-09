@@ -5,9 +5,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const DIR = mkdtempSync(join(tmpdir(), 'csg-detect-test-'));
-process.env.CSG_STATE_DIR = DIR;
-process.env.CSG_CLAUDE_DIR = join(DIR, 'claude');   // no transcripts → no backfill
+const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-detect-test-'));
+process.env.UNSNOOZE_STATE_DIR = DIR;
+process.env.UNSNOOZE_CLAUDE_DIR = join(DIR, 'claude');   // no transcripts → no backfill
 
 const { createMonitor } = await import('../src/monitor.js');
 const { readState } = await import('../src/state.js');

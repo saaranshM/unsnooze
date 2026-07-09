@@ -1,4 +1,4 @@
-// Per-pane watcher (`csg _monitor <pane>`), spawned detached by the launcher.
+// Per-pane watcher (`unsnooze _monitor <pane>`), spawned detached by the launcher.
 // Responsibilities:
 //   - scrape the pane every SCRAPE_INTERVAL_MS for a live limit banner or the
 //     /rate-limit-options menu; on limit → record in state + spawn resumer
@@ -172,7 +172,7 @@ export function createMonitor({ pane, cwd, tmux = realTmux, scrapeInterval = SCR
 }
 
 export async function runMonitor(pane) {
-  const cwd = process.env.CSG_CWD || process.cwd();
+  const cwd = process.env.UNSNOOZE_CWD || process.cwd();
   const monitor = createMonitor({ pane, cwd });
   await monitor.run();
   return 0;

@@ -1,4 +1,4 @@
-// StopFailure hook handler (`csg _hook-stopfailure`).
+// StopFailure hook handler (`unsnooze _hook-stopfailure`).
 // Claude Code invokes this with JSON on stdin when a turn ends in failure
 // matching the configured matcher (overloaded|server_error|rate_limit).
 // Must exit 0 quickly and never block or crash claude.

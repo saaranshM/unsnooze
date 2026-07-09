@@ -79,5 +79,5 @@ export async function newWindow(sessionName, cwd, command) {
 
 export function isClaudeCommand(cmd) {
   // The foreground process for a claude session is `node` (nvm) or `claude`.
-  return cmd === 'claude' || cmd === 'node' || cmd === 'csg';
+  return cmd === 'claude' || cmd === 'node' || cmd === 'unsnooze';
 }

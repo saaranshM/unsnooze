@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// csg — claude-session-guard. Subcommand router; anything unrecognized is
+// unsnooze — unsnooze. Subcommand router; anything unrecognized is
 // treated as claude args and passed through the launcher.
 
 const [, , cmd, ...rest] = process.argv;
@@ -35,7 +35,7 @@ async function main() {
       return runHook();
     }
     case '_monitor': {
-      if (!rest[0]) { console.error('csg _monitor: pane id required'); return 2; }
+      if (!rest[0]) { console.error('unsnooze _monitor: pane id required'); return 2; }
       const { runMonitor } = await import('../src/monitor.js');
       return runMonitor(rest[0]);
     }
@@ -44,17 +44,17 @@ async function main() {
       return runResumer();
     }
     case 'help':
-    case '--help-csg': {
-      console.log(`csg — claude-session-guard
+    case '--help-unsnooze': {
+      console.log(`unsnooze — unsnooze
 
 Usage:
-  csg [claude args...]        run claude under limit-watch (default)
-  csg status                  list tracked sessions + reset countdowns
-  csg resume-now [id|--all]   resume stopped session(s) immediately
-  csg cancel [id|--all]       stop tracking session(s)
-  csg logs [-f]               show (or follow) the csg log
-  csg install [--yes]         wire up zsh wrapper + Claude Code hook
-  csg uninstall [--purge]     remove wrapper + hook (and state with --purge)`);
+  unsnooze [claude args...]        run claude under limit-watch (default)
+  unsnooze status                  list tracked sessions + reset countdowns
+  unsnooze resume-now [id|--all]   resume stopped session(s) immediately
+  unsnooze cancel [id|--all]       stop tracking session(s)
+  unsnooze logs [-f]               show (or follow) the unsnooze log
+  unsnooze install [--yes]         wire up zsh wrapper + Claude Code hook
+  unsnooze uninstall [--purge]     remove wrapper + hook (and state with --purge)`);
       return 0;
     }
     default: {
@@ -68,4 +68,4 @@ Usage:
 }
 
 main().then(code => { process.exitCode = typeof code === 'number' ? code : 0; })
-  .catch(err => { console.error(`csg: ${err.stack || err}`); process.exitCode = 1; });
+  .catch(err => { console.error(`unsnooze: ${err.stack || err}`); process.exitCode = 1; });

@@ -1,6 +1,6 @@
-// Install / uninstall: wires csg into the shell and Claude Code, and migrates
+// Install / uninstall: wires unsnooze into the shell and Claude Code, and migrates
 // off claude-auto-retry.
-//   - ~/.claude/settings.json: StopFailure hook → csg _hook-stopfailure
+//   - ~/.claude/settings.json: StopFailure hook → unsnooze _hook-stopfailure
 //     (removes any claude-auto-retry hook entry; preserves everything else;
 //     backs up first; atomic write)
 //   - ~/.zshrc: fence-marked claude() wrapper block (removes the old
@@ -11,12 +11,17 @@ import { readFileSync, writeFileSync, renameSync, existsSync, copyFileSync, rmSy
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { CLAUDE_SETTINGS, STATE_DIR } from './config.js';
-import { CSG_BIN } from './spawn.js';
+import { UNSNOOZE_BIN } from './spawn.js';
 
-const FENCE_OPEN = '# >>> claude-session-guard >>>';
-const FENCE_CLOSE = '# <<< claude-session-guard <<<';
-const OLD_FENCE_OPEN = '# >>> claude-auto-retry >>>';
-const OLD_FENCE_CLOSE = '# <<< claude-auto-retry <<<';
+const FENCE_OPEN = '# >>> unsnooze >>>';
+const FENCE_CLOSE = '# <<< unsnooze <<<';
+// Fenced blocks left by tools this one replaces: claude-auto-retry, and the
+// pre-release "claude-session-guard" (csg) incarnation of unsnooze itself.
+const LEGACY_FENCES = [
+  { open: '# >>> claude-auto-retry >>>', close: '# <<< claude-auto-retry <<<' },
+  { open: '# >>> claude-session-guard >>>', close: '# <<< claude-session-guard <<<' },
+];
+const OLD_FENCE_OPEN = LEGACY_FENCES[0].open;
 
 function parseArgs(rest) {
   const opts = { yes: false, settings: CLAUDE_SETTINGS, zshrc: join(homedir(), '.zshrc'), purge: false };
@@ -38,19 +43,19 @@ function atomicWrite(path, content) {
 // --- settings.json hook management ---
 
 function isOurs(entry) {
-  return (entry.hooks || []).some(h => (h.command || '').includes('csg.js _hook-stopfailure'));
+  return (entry.hooks || []).some(h => (h.command || '').includes('unsnooze.js _hook-stopfailure'));
 }
-function isAutoRetry(entry) {
-  return (entry.hooks || []).some(h => (h.command || '').includes('claude-auto-retry'));
+function isLegacy(entry) {
+  return (entry.hooks || []).some(h => /claude-auto-retry|csg\.js _hook-stopfailure/.test(h.command || ''));
 }
 
 export function mergeHookIntoSettings(settingsJson) {
   const settings = JSON.parse(settingsJson);
   settings.hooks = settings.hooks || {};
-  const list = (settings.hooks.StopFailure || []).filter(e => !isAutoRetry(e) && !isOurs(e));
+  const list = (settings.hooks.StopFailure || []).filter(e => !isLegacy(e) && !isOurs(e));
   list.push({
     matcher: 'overloaded|server_error|rate_limit',
-    hooks: [{ type: 'command', command: `node ${CSG_BIN} _hook-stopfailure`, timeout: 5 }],
+    hooks: [{ type: 'command', command: `node ${UNSNOOZE_BIN} _hook-stopfailure`, timeout: 5 }],
   });
   settings.hooks.StopFailure = list;
   return JSON.stringify(settings, null, 2) + '\n';
@@ -71,14 +76,14 @@ export function removeHookFromSettings(settingsJson) {
 export function wrapperBlock() {
   return `${FENCE_OPEN}
 # claude() wrapper: routes every interactive claude launch through
-# claude-session-guard so limit stops are recorded and auto-resumed.
+# unsnooze so limit stops are recorded and auto-resumed.
 unalias claude 2>/dev/null || true
 claude() {
-  if [ "\${CSG_ACTIVE}" = "1" ]; then
+  if [ "\${UNSNOOZE_ACTIVE}" = "1" ]; then
     command claude "$@"
     return $?
   fi
-  node "${CSG_BIN}" "$@"
+  node "${UNSNOOZE_BIN}" "$@"
 }
 ${FENCE_CLOSE}`;
 }
@@ -97,7 +102,13 @@ export function stripFencedBlock(content, open, close) {
 }
 
 export function installZshrcBlock(content) {
-  let { content: cleaned, found: oldRemoved } = stripFencedBlock(content, OLD_FENCE_OPEN, OLD_FENCE_CLOSE);
+  let cleaned = content;
+  let oldRemoved = false;
+  for (const { open, close } of LEGACY_FENCES) {
+    const r = stripFencedBlock(cleaned, open, close);
+    cleaned = r.content;
+    oldRemoved = oldRemoved || r.found;
+  }
   ({ content: cleaned } = stripFencedBlock(cleaned, FENCE_OPEN, FENCE_CLOSE));
   const result = cleaned.replace(/\n+$/, '\n') + '\n' + wrapperBlock() + '\n';
   return { content: result, oldRemoved };
@@ -110,33 +121,32 @@ export function cmdInstall(rest) {
 
   // 1. settings.json
   if (existsSync(opts.settings)) {
-    copyFileSync(opts.settings, `${opts.settings}.csg-bak`);
+    copyFileSync(opts.settings, `${opts.settings}.unsnooze-bak`);
     const before = readFileSync(opts.settings, 'utf-8');
     const after = mergeHookIntoSettings(before);
     atomicWrite(opts.settings, after);
-    console.log(`csg: StopFailure hook installed in ${opts.settings} (backup: ${opts.settings}.csg-bak)`);
+    console.log(`unsnooze: StopFailure hook installed in ${opts.settings} (backup: ${opts.settings}.unsnooze-bak)`);
   } else {
     atomicWrite(opts.settings, mergeHookIntoSettings('{}'));
-    console.log(`csg: created ${opts.settings} with StopFailure hook`);
+    console.log(`unsnooze: created ${opts.settings} with StopFailure hook`);
   }
 
   // 2. zshrc
   const zshrcContent = existsSync(opts.zshrc) ? readFileSync(opts.zshrc, 'utf-8') : '';
   const hasOld = zshrcContent.includes(OLD_FENCE_OPEN) || zshrcContent.includes('CLAUDE_AUTO_RETRY_ACTIVE');
   if (hasOld && !opts.yes) {
-    console.log('csg: found the old claude-auto-retry wrapper in your zshrc.');
-    console.log('csg: re-run with --yes to replace it, or remove the fenced');
-    console.log(`csg: "${OLD_FENCE_OPEN}" block manually first.`);
+    console.log('unsnooze: found the old claude-auto-retry wrapper in your zshrc.');
+    console.log('unsnooze: re-run with --yes to replace it, or remove the fenced');
+    console.log(`unsnooze: "${OLD_FENCE_OPEN}" block manually first.`);
     return 1;
   }
-  copyFileSync(opts.zshrc, `${opts.zshrc}.csg-bak`);
+  copyFileSync(opts.zshrc, `${opts.zshrc}.unsnooze-bak`);
   const { content, oldRemoved } = installZshrcBlock(zshrcContent);
   atomicWrite(opts.zshrc, content);
-  console.log(`csg: claude() wrapper installed in ${opts.zshrc}${oldRemoved ? ' (old claude-auto-retry block removed)' : ''} (backup: ${opts.zshrc}.csg-bak)`);
+  console.log(`unsnooze: claude() wrapper installed in ${opts.zshrc}${oldRemoved ? ' (legacy wrapper block removed)' : ''} (backup: ${opts.zshrc}.unsnooze-bak)`);
 
-  console.log('\ncsg: done. Finish the migration with:');
-  console.log('  npm uninstall -g claude-auto-retry');
-  console.log('  exec zsh   # reload your shell');
+  console.log('\nunsnooze: done. Reload your shell:');
+  console.log('  exec zsh');
   return 0;
 }
 
@@ -146,20 +156,20 @@ export function cmdUninstall(rest) {
   if (existsSync(opts.settings)) {
     const before = readFileSync(opts.settings, 'utf-8');
     atomicWrite(opts.settings, removeHookFromSettings(before));
-    console.log(`csg: StopFailure hook removed from ${opts.settings}`);
+    console.log(`unsnooze: StopFailure hook removed from ${opts.settings}`);
   }
 
   if (existsSync(opts.zshrc)) {
     const { content, found } = stripFencedBlock(readFileSync(opts.zshrc, 'utf-8'), FENCE_OPEN, FENCE_CLOSE);
     if (found) {
       atomicWrite(opts.zshrc, content);
-      console.log(`csg: claude() wrapper removed from ${opts.zshrc}`);
+      console.log(`unsnooze: claude() wrapper removed from ${opts.zshrc}`);
     }
   }
 
   if (opts.purge) {
     rmSync(STATE_DIR, { recursive: true, force: true });
-    console.log(`csg: state dir ${STATE_DIR} removed`);
+    console.log(`unsnooze: state dir ${STATE_DIR} removed`);
   }
   return 0;
 }

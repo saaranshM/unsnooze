@@ -1,10 +1,10 @@
 {
-  "name": "claude-session-guard",
-  "version": "0.1.0",
+  "name": "unsnooze",
+  "version": "1.0.0",
   "description": "Detects Claude Code usage-limit stops across all sessions and re-opens each one in tmux when the limit refreshes.",
   "type": "module",
   "bin": {
-    "csg": "bin/csg.js"
+    "unsnooze": "bin/unsnooze.js"
   },
   "scripts": {
     "test": "node --test 'test/*.test.js'"

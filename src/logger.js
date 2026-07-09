@@ -15,7 +15,7 @@ export function log(component, message) {
   } catch {
     // Logging must never crash the hook or monitor paths.
   }
-  if (process.env.CSG_DEBUG) process.stderr.write(line);
+  if (process.env.UNSNOOZE_DEBUG) process.stderr.write(line);
 }
 
 export function makeLogger(component) {

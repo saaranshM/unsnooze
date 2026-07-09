@@ -5,9 +5,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const DIR = mkdtempSync(join(tmpdir(), 'csg-resumer-test-'));
-process.env.CSG_STATE_DIR = DIR;
-process.env.CSG_READY_TIMEOUT_MS = '6000';   // keep the reopen poll short in tests
+const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-resumer-test-'));
+process.env.UNSNOOZE_STATE_DIR = DIR;
+process.env.UNSNOOZE_READY_TIMEOUT_MS = '6000';   // keep the reopen poll short in tests
 
 const { dispatchOne, verifyOne } = await import('../src/resumer.js');
 const { upsertSession, readState } = await import('../src/state.js');
@@ -17,7 +17,7 @@ after(() => rmSync(DIR, { recursive: true, force: true }));
 function seed(overrides = {}) {
   const rec = {
     sessionId: overrides.sessionId ?? `00000000-0000-4000-8000-${String(Math.floor(Math.random() * 1e12)).padStart(12, '0')}`,
-    cwd: '/tmp/proj', pane: '%1', tmuxSession: 'csg-test',
+    cwd: '/tmp/proj', pane: '%1', tmuxSession: 'unsnooze-test',
     status: 'stopped', limitType: '5h', detectedVia: 'hook',
     detectedAt: Date.now() - 3_600_000, resetAt: Date.now() - 1000,
     resetSource: 'absolute', attempts: 0, lastAttemptAt: null, lastError: null,

@@ -1,4 +1,4 @@
-// Resumer daemon (`csg _resumer`) — SINGLETON. Watches state.json for stopped
+// Resumer daemon (`unsnooze _resumer`) — SINGLETON. Watches state.json for stopped
 // sessions, polls wall-clock against the earliest resetAt (interval polling,
 // never one long setTimeout — survives laptop sleep; a wake past the target
 // fires on the next tick), then re-opens/continues every due session.
@@ -43,7 +43,7 @@ export function releaseSingleton() {
 
 // Decide how to act on one due record. Pure-ish; tmux injectable.
 // Returns: 'sent' | 'reopened' | 'deferred' | 'skip' | 'failed'
-export async function dispatchOne(rec, { tmux = realTmux, resumeMessage = RESUME_MESSAGE, csgBin = 'csg' } = {}) {
+export async function dispatchOne(rec, { tmux = realTmux, resumeMessage = RESUME_MESSAGE, unsnoozeBin = 'unsnooze' } = {}) {
   const key = rec.key;
 
   // Live-pane path: only if the pane still exists AND claude is its foreground
@@ -64,7 +64,7 @@ export async function dispatchOne(rec, { tmux = realTmux, resumeMessage = RESUME
 
   // Re-open path: new tmux window in the well-known session, resume by id.
   const resumeArgs = rec.sessionId ? `--resume ${rec.sessionId}` : '-c';
-  const command = `${csgBin} ${resumeArgs}`;
+  const command = `${unsnoozeBin} ${resumeArgs}`;
   setStatus(key, 'resuming', { lastAttemptAt: Date.now() });
   let newPane;
   try {

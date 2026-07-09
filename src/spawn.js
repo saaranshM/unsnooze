@@ -9,10 +9,10 @@ import { makeLogger } from './logger.js';
 
 const log = makeLogger('spawn');
 
-export const CSG_BIN = join(dirname(dirname(fileURLToPath(import.meta.url))), 'bin', 'csg.js');
+export const UNSNOOZE_BIN = join(dirname(dirname(fileURLToPath(import.meta.url))), 'bin', 'unsnooze.js');
 
 export function spawnDetached(args, env = {}) {
-  const child = spawn(process.execPath, [CSG_BIN, ...args], {
+  const child = spawn(process.execPath, [UNSNOOZE_BIN, ...args], {
     detached: true,
     stdio: 'ignore',
     env: { ...process.env, ...env },
