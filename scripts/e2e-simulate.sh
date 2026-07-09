@@ -22,6 +22,8 @@ export UNSNOOZE_POLL_INTERVAL_MS=1000
 export UNSNOOZE_VERIFY_DELAY_MS=2000
 export UNSNOOZE_STAGGER_MS=500
 export UNSNOOZE_CLAUDE_DIR="$WORK/claude"   # no transcripts — sessionId stays null
+export UNSNOOZE_CODEX_DIR="$WORK/codex"     # no rollouts — sessionId stays null
+export UNSNOOZE_NOTIFICATIONS=off           # no desktop popups from the simulation
 SES=unsnooze-e2e-src
 
 cleanup() {
@@ -126,6 +128,37 @@ grep -q '\-c' "$WORK/resume-args.txt" || fail "expected -c resume args (no sessi
 grep -q "Continue where you left off" "$WORK_OUT" || fail "resume message wrong: $(cat "$WORK_OUT")"
 grep -q '"status": "resumed"' "$STATE" || fail "record not marked resumed"
 echo "PASS: dead session re-opened in tmux window and resume message delivered"
+
+echo "== Phase 3: codex banner detection =="
+SES3=unsnooze-e2e-codex
+tmux kill-session -t "$SES3" 2>/dev/null || true
+tmux new-session -d -s "$SES3" -x 80 -y 24 /bin/sh
+PANE3=$(tmux display-message -t "$SES3" -p '#{pane_id}')
+sleep 1
+CODEX_RESET=$(date -v+2M '+%-I:%M %p')
+tmux send-keys -t "$PANE3" "clear; echo; echo \"■ You've hit your usage limit. Upgrade to Pro or try again at $CODEX_RESET.\"" Enter
+for i in $(seq 1 20); do
+  tmux capture-pane -t "$PANE3" -p | grep -q 'usage limit' && break
+  sleep 0.5
+done
+tmux capture-pane -t "$PANE3" -p | grep -q 'usage limit' || fail "codex banner never appeared"
+
+UNSNOOZE_CWD="$WORK/fakeproj-codex" node "$ROOT/bin/unsnooze.js" _monitor "$PANE3" codex &
+MONITOR3_PID=$!
+sleep 3
+kill "$MONITOR3_PID" 2>/dev/null || true
+tmux kill-session -t "$SES3" 2>/dev/null || true
+
+grep -q '"agent": "codex"' "$STATE" || fail "codex stop not recorded with agent id"
+node - "$STATE" <<'EOF' || fail "codex record invalid"
+const fs = require('fs');
+const s = JSON.parse(fs.readFileSync(process.argv[2], 'utf-8'));
+const rec = Object.values(s.sessions).find(r => r.agent === 'codex');
+if (!rec) { console.error('no codex record'); process.exit(1); }
+if (rec.resetSource !== 'absolute') { console.error(`codex reset not parsed (source=${rec.resetSource})`); process.exit(1); }
+if (rec.resetAt <= Date.now()) { console.error('codex resetAt not in the future'); process.exit(1); }
+EOF
+echo "PASS: codex banner detected, reset time parsed from 'try again at'"
 
 echo
 echo "E2E OK"
