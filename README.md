@@ -120,7 +120,7 @@ all timings/paths are tunable via `UNSNOOZE_*` env vars (see `src/config.js`).
 
 ## Requirements
 
-- Node ≥ 18, tmux, macOS or Linux
+- Node ≥ 20, tmux, macOS or Linux
 - zsh or bash (the wrappers are installed into `~/.zshrc` / `~/.bashrc`)
 
 ## Development
