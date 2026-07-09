@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// unsnooze — unsnooze. Subcommand router; anything unrecognized is
-// treated as claude args and passed through the launcher.
+// unsnooze — subcommand router; anything unrecognized is treated as claude
+// args and passed through the launcher (back-compat with the zsh wrapper).
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -32,12 +32,17 @@ async function main() {
     }
     case '_hook-stopfailure': {
       const { runHook } = await import('../src/hook.js');
-      return runHook();
+      return runHook(rest);
     }
     case '_monitor': {
       if (!rest[0]) { console.error('unsnooze _monitor: pane id required'); return 2; }
       const { runMonitor } = await import('../src/monitor.js');
-      return runMonitor(rest[0]);
+      return runMonitor(rest[0], rest[1]);
+    }
+    case '_run': {
+      if (!rest[0]) { console.error('unsnooze _run: agent id required'); return 2; }
+      const { runLauncher } = await import('../src/launcher.js');
+      return runLauncher(rest.slice(1), rest[0]);
     }
     case '_resumer': {
       const { runResumer } = await import('../src/resumer.js');
@@ -45,24 +50,25 @@ async function main() {
     }
     case 'help':
     case '--help-unsnooze': {
-      console.log(`unsnooze — unsnooze
+      console.log(`unsnooze — wakes every limit-stopped AI coding session when the limit resets
 
 Usage:
   unsnooze [claude args...]        run claude under limit-watch (default)
+  unsnooze _run <agent> [args...]  run a specific agent CLI under limit-watch
   unsnooze status                  list tracked sessions + reset countdowns
   unsnooze resume-now [id|--all]   resume stopped session(s) immediately
   unsnooze cancel [id|--all]       stop tracking session(s)
   unsnooze logs [-f]               show (or follow) the unsnooze log
-  unsnooze install [--yes]         wire up zsh wrapper + Claude Code hook
-  unsnooze uninstall [--purge]     remove wrapper + hook (and state with --purge)`);
+  unsnooze install [--yes]         wire up shell wrappers + hooks
+  unsnooze uninstall [--purge]     remove wrappers + hooks (and state with --purge)`);
       return 0;
     }
     default: {
       // Everything else (including no args, --resume, -c, plain prompts) is a
-      // claude invocation.
+      // claude invocation — back-compat for the plain wrapper.
       const { runLauncher } = await import('../src/launcher.js');
       const args = cmd === undefined ? [] : [cmd, ...rest];
-      return runLauncher(args);
+      return runLauncher(args, 'claude');
     }
   }
 }

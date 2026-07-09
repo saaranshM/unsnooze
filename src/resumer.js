@@ -12,7 +12,8 @@ import {
   CAPTURE_LINES, PANE_SCAN_LINES, RESUME_MESSAGE, TMUX_SESSION_NAME,
   RESET_MARGIN_MS, FALLBACK_RESET_MS,
 } from './config.js';
-import { detectLimit, isRateLimitOptionsPrompt, isBusy } from './patterns.js';
+import { detectLimit, isBusy } from './patterns.js';
+import { getAgent } from './agents/index.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { readState, updateState, setStatus, dueSessions, activeStopped } from './state.js';
 import { makeLogger } from './logger.js';
@@ -41,30 +42,36 @@ export function releaseSingleton() {
   } catch { /* already gone */ }
 }
 
+function shellQuote(arg) {
+  return /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
+}
+
 // Decide how to act on one due record. Pure-ish; tmux injectable.
 // Returns: 'sent' | 'reopened' | 'deferred' | 'skip' | 'failed'
 export async function dispatchOne(rec, { tmux = realTmux, resumeMessage = RESUME_MESSAGE, unsnoozeBin = 'unsnooze' } = {}) {
   const key = rec.key;
+  const agent = getAgent(rec.agent);
 
-  // Live-pane path: only if the pane still exists AND claude is its foreground
-  // command (pane ids get recycled — never inject into a random program).
+  // Live-pane path: only if the pane still exists AND the agent CLI is its
+  // foreground command (pane ids get recycled — never inject into a random
+  // program).
   if (rec.pane && await tmux.paneAlive(rec.pane)) {
     const cmd = await tmux.paneCurrentCommand(rec.pane);
-    if (realTmux.isClaudeCommand(cmd)) {
+    if (agent.isForegroundCommand(cmd)) {
       const text = await tmux.capturePane(rec.pane, CAPTURE_LINES).catch(() => '');
-      if (isBusy(text)) return 'deferred';
+      if (isBusy(text, agent.patterns.busyPatterns)) return 'deferred';
       setStatus(key, 'resuming', { lastAttemptAt: Date.now() });
       await tmux.sendText(rec.pane, resumeMessage);
       log(`${key}: sent continue to live pane ${rec.pane}`);
       return 'sent';
     }
-    // Pane alive but claude gone (user's shell now) — fall through to re-open;
-    // never hijack a shell prompt with a chat message.
+    // Pane alive but the agent gone (user's shell now) — fall through to
+    // re-open; never hijack a shell prompt with a chat message.
   }
 
   // Re-open path: new tmux window in the well-known session, resume by id.
-  const resumeArgs = rec.sessionId ? `--resume ${rec.sessionId}` : '-c';
-  const command = `${unsnoozeBin} ${resumeArgs}`;
+  const resume = agent.resumeArgs(rec.sessionId, resumeMessage);
+  const command = [unsnoozeBin, '_run', agent.id, ...resume.args].map(shellQuote).join(' ');
   setStatus(key, 'resuming', { lastAttemptAt: Date.now() });
   let newPane;
   try {
@@ -79,17 +86,21 @@ export async function dispatchOne(rec, { tmux = realTmux, resumeMessage = RESUME
   });
   log(`${key}: re-opened in pane ${newPane} (${command})`);
 
-  // Wait for claude to be ready (input prompt visible), then send the message.
+  // The resume prompt traveled in argv (e.g. `codex resume <id> "msg"`) —
+  // nothing to type into the TUI; verifyOne checks the outcome later.
+  if (!resume.messageViaPane) return 'reopened';
+
+  // Wait for the TUI to be ready (input prompt visible), then send the message.
   const deadline = Date.now() + READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await sleep(2000);
     const text = await tmux.capturePane(newPane, CAPTURE_LINES).catch(() => '');
-    if (isRateLimitOptionsPrompt(text, PANE_SCAN_LINES) || detectLimit(text, PANE_SCAN_LINES).hit) {
+    if ((agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES)) || detectLimit(text, PANE_SCAN_LINES, agent.patterns).hit) {
       // Limit hadn't actually reset — the fresh session hit it immediately.
       return 'failed';
     }
-    // Claude's idle input box: a "❯" or "＞"/">" prompt with no busy footer.
-    if (!isBusy(text) && /[❯>]/.test(text)) {
+    // The idle input box: a prompt glyph with no busy footer.
+    if (!isBusy(text, agent.patterns.busyPatterns) && agent.patterns.idleRegex.test(text)) {
       await tmux.sendText(newPane, resumeMessage);
       log(`${key}: resume message sent to new pane ${newPane}`);
       return 'reopened';
@@ -103,9 +114,10 @@ export async function dispatchOne(rec, { tmux = realTmux, resumeMessage = RESUME
 export async function verifyOne(key, { tmux = realTmux } = {}) {
   const rec = readState().sessions[key];
   if (!rec || rec.status !== 'resuming') return;
+  const agent = getAgent(rec.agent);
   const text = rec.pane ? await tmux.capturePane(rec.pane, CAPTURE_LINES).catch(() => '') : '';
-  const d = detectLimit(text, PANE_SCAN_LINES);
-  if (d.hit || isRateLimitOptionsPrompt(text, PANE_SCAN_LINES)) {
+  const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
+  if (d.hit || (agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES))) {
     // Limit not actually reset — reschedule from the fresh banner.
     const { at, source } = resetAtMs(parseResetTime(d.resetLine), {
       marginMs: RESET_MARGIN_MS, fallbackMs: FALLBACK_RESET_MS,

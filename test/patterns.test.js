@@ -1,9 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  detectLimit, isRateLimitOptionsPrompt, menuStepsToWaitOption,
-  isBusy, overloadMatch, stripAnsi,
-} from '../src/patterns.js';
+import { detectLimit, isBusy, overloadMatch, stripAnsi } from '../src/patterns.js';
+import { isRateLimitOptionsPrompt, menuStepsToWaitOption } from '../src/agents/claude.js';
 
 const BANNER_5H = [
   '⏺ Working on the refactor...',

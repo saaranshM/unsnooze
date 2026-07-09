@@ -13,13 +13,13 @@ import { join } from 'node:path';
 import * as realTmux from './tmux.js';
 import {
   SCRAPE_INTERVAL_MS, PANE_SCAN_LINES, CAPTURE_LINES, EVENTS_DIR,
-  EVENT_MARKER_TTL_MS, OVERLOAD_BACKOFF_S, OVERLOAD_JITTER, OVERLOAD_PATTERNS,
+  EVENT_MARKER_TTL_MS, OVERLOAD_BACKOFF_S, OVERLOAD_JITTER,
   FALLBACK_RESET_MS, RESET_MARGIN_MS, TMUX_SESSION_NAME,
 } from './config.js';
-import { detectLimit, isRateLimitOptionsPrompt, menuStepsToWaitOption, isBusy, overloadMatch } from './patterns.js';
+import { detectLimit, isBusy, overloadMatch } from './patterns.js';
+import { getAgent } from './agents/index.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { upsertSession, setStatus, readState } from './state.js';
-import { latestSessionId } from './sessions.js';
 import { spawnResumerIfNeeded } from './spawn.js';
 import { makeLogger } from './logger.js';
 
@@ -27,7 +27,7 @@ const log = makeLogger('monitor');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-export function createMonitor({ pane, cwd, tmux = realTmux, scrapeInterval = SCRAPE_INTERVAL_MS }) {
+export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = realTmux, scrapeInterval = SCRAPE_INTERVAL_MS }) {
   let trackedKey = null;      // state key of the record we created
   let overloadAttempt = 0;
   let running = true;
@@ -52,9 +52,9 @@ export function createMonitor({ pane, cwd, tmux = realTmux, scrapeInterval = SCR
     const { at, source } = resetAtMs(parseResetTime(resetLine), {
       marginMs: RESET_MARGIN_MS, fallbackMs: FALLBACK_RESET_MS,
     });
-    const sessionId = latestSessionId(cwd, detectedAt);
+    const sessionId = agent.latestSessionId(cwd, detectedAt);
     const state = upsertSession({
-      sessionId, cwd, pane, tmuxSession: TMUX_SESSION_NAME,
+      sessionId, cwd, pane, agent: agent.id, tmuxSession: TMUX_SESSION_NAME,
       status: 'stopped', limitType, detectedVia: via, detectedAt,
       resetAt: at, resetSource: source,
       attempts: 0, lastAttemptAt: null, lastError: null,
@@ -67,7 +67,7 @@ export function createMonitor({ pane, cwd, tmux = realTmux, scrapeInterval = SCR
   }
 
   async function driveMenu(text) {
-    const steps = menuStepsToWaitOption(text, PANE_SCAN_LINES);
+    const steps = agent.menu.stepsToWait(text, PANE_SCAN_LINES);
     if (steps === null) {
       log(`pane ${pane}: rate-limit menu unreadable — NOT pressing Enter`);
       return false;
@@ -99,8 +99,8 @@ export function createMonitor({ pane, cwd, tmux = realTmux, scrapeInterval = SCR
     if (!running) return;
     const text = await tmux.capturePane(pane, CAPTURE_LINES).catch(() => null);
     if (text === null) return;
-    if (isBusy(text)) { log(`pane ${pane}: busy after overload wait — skip inject`); return; }
-    if (!overloadMatch(text, OVERLOAD_PATTERNS)) { overloadAttempt = 0; return; }   // recovered on its own
+    if (isBusy(text, agent.patterns.busyPatterns)) { log(`pane ${pane}: busy after overload wait — skip inject`); return; }
+    if (!overloadMatch(text, agent.patterns.overloadPatterns)) { overloadAttempt = 0; return; }   // recovered on its own
     await tmux.sendText(pane, 'Continue where you left off. The previous attempt failed with a transient API error.');
     log(`pane ${pane}: overload retry message sent`);
   }
@@ -121,12 +121,12 @@ export function createMonitor({ pane, cwd, tmux = realTmux, scrapeInterval = SCR
     }
 
     // Interactive menu takes priority — it blocks the session until answered.
-    if (isRateLimitOptionsPrompt(text, PANE_SCAN_LINES)) {
+    if (agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES)) {
       await driveMenu(text);
       return;
     }
 
-    const d = detectLimit(text, PANE_SCAN_LINES);
+    const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
     if (d.hit) {
       const state = readState();
       const existing = trackedKey && state.sessions[trackedKey];
@@ -151,7 +151,7 @@ export function createMonitor({ pane, cwd, tmux = realTmux, scrapeInterval = SCR
     // Overload marker (banner-less path).
     if (marker && marker.kind === 'overload') {
       await handleOverload();
-    } else if (!marker && overloadMatch(text, OVERLOAD_PATTERNS) && !isBusy(text)) {
+    } else if (!marker && overloadMatch(text, agent.patterns.overloadPatterns) && !isBusy(text, agent.patterns.busyPatterns)) {
       await handleOverload();
     }
   }
@@ -171,9 +171,9 @@ export function createMonitor({ pane, cwd, tmux = realTmux, scrapeInterval = SCR
   };
 }
 
-export async function runMonitor(pane) {
+export async function runMonitor(pane, agentId) {
   const cwd = process.env.UNSNOOZE_CWD || process.cwd();
-  const monitor = createMonitor({ pane, cwd });
+  const monitor = createMonitor({ pane, cwd, agent: getAgent(agentId) });
   await monitor.run();
   return 0;
 }

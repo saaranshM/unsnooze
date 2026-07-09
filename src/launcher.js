@@ -1,56 +1,57 @@
-// Default `unsnooze [claude args...]` path: run claude under watch.
+// Default `unsnooze _run <agent> [args...]` path: run the agent CLI under watch.
 //   - outside tmux: re-exec inside a new tmux session (the monitor needs a pane
 //     to scrape) — guarded by UNSNOOZE_ACTIVE to prevent recursion
-//   - inside tmux: spawn a detached per-pane monitor, then run claude,
+//   - inside tmux: spawn a detached per-pane monitor, then run the CLI,
 //     propagating its exit code
 //   - -p/--print: pure pass-through, no monitor (nothing interactive to scrape)
 
 import { spawn, spawnSync } from 'node:child_process';
 import { insideTmux, currentPaneId } from './tmux.js';
+import { getAgent } from './agents/index.js';
 import { spawnDetached } from './spawn.js';
 import { makeLogger } from './logger.js';
 
 const log = makeLogger('launcher');
 
-const REAL_CLAUDE = process.env.UNSNOOZE_CLAUDE_BIN || 'claude';
-
 function isPrintMode(args) {
   return args.includes('-p') || args.includes('--print');
 }
 
-export function runLauncher(args) {
-  // Recursion / nested-launch guard: inside a unsnooze-managed claude, a plain
-  // `claude`/`unsnooze` call goes straight through.
+export function runLauncher(args, agentId = 'claude') {
+  const agent = getAgent(agentId);
+
+  // Recursion / nested-launch guard: inside an unsnooze-managed session, a
+  // plain `claude`/`codex`/`unsnooze` call goes straight through.
   if (process.env.UNSNOOZE_ACTIVE === '1' || isPrintMode(args)) {
-    const r = spawnSync(REAL_CLAUDE, args, { stdio: 'inherit', env: { ...process.env, UNSNOOZE_ACTIVE: '1' } });
+    const r = spawnSync(agent.bin, args, { stdio: 'inherit', env: { ...process.env, UNSNOOZE_ACTIVE: '1' } });
     return r.status ?? 1;
   }
 
   if (!insideTmux()) {
-    // Re-enter under tmux: `tmux new-session unsnooze <args...>` — the inner unsnooze
-    // lands in the insideTmux() branch below.
+    // Re-enter under tmux: `tmux new-session unsnooze _run <agent> <args...>` —
+    // the inner unsnooze lands in the insideTmux() branch below.
     log(`not in tmux — wrapping into a tmux session`);
-    const inner = ['new-session', process.execPath, process.argv[1], ...args];
+    const inner = ['new-session', process.execPath, process.argv[1], '_run', agent.id, ...args];
     const r = spawnSync('tmux', inner, { stdio: 'inherit' });
     return r.status ?? 1;
   }
 
   const pane = currentPaneId();
   if (pane) {
-    spawnDetached(['_monitor', pane], { UNSNOOZE_CWD: process.cwd() });
-    log(`launching claude in pane ${pane}, monitor spawned`);
+    spawnDetached(['_monitor', pane, agent.id], { UNSNOOZE_CWD: process.cwd() });
+    log(`launching ${agent.id} in pane ${pane}, monitor spawned`);
   } else {
-    log('inside tmux but TMUX_PANE unset — launching without monitor');
+    log(`inside tmux but TMUX_PANE unset — launching ${agent.id} without monitor`);
   }
 
-  const child = spawn(REAL_CLAUDE, args, {
+  const child = spawn(agent.bin, args, {
     stdio: 'inherit',
     env: { ...process.env, UNSNOOZE_ACTIVE: '1', UNSNOOZE_PANE: pane || '' },
   });
   return new Promise(resolve => {
     child.on('exit', code => resolve(code ?? 1));
     child.on('error', err => {
-      process.stderr.write(`unsnooze: failed to launch ${REAL_CLAUDE}: ${err.message}\n`);
+      process.stderr.write(`unsnooze: failed to launch ${agent.bin}: ${err.message}\n`);
       resolve(127);
     });
   });

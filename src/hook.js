@@ -1,15 +1,16 @@
-// StopFailure hook handler (`unsnooze _hook-stopfailure`).
-// Claude Code invokes this with JSON on stdin when a turn ends in failure
-// matching the configured matcher (overloaded|server_error|rate_limit).
-// Must exit 0 quickly and never block or crash claude.
+// StopFailure hook handler (`unsnooze _hook-stopfailure [--agent <id>]`).
+// The agent CLI (Claude Code, or Grok Build via its Claude-compatible hooks)
+// invokes this with JSON on stdin when a turn ends in failure matching the
+// configured matcher (overloaded|server_error|rate_limit).
+// Must exit 0 quickly and never block or crash the calling CLI.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EVENTS_DIR, FALLBACK_RESET_MS, RESET_MARGIN_MS, CAPTURE_LINES, PANE_SCAN_LINES, TMUX_SESSION_NAME } from './config.js';
 import { detectLimit } from './patterns.js';
+import { getAgent } from './agents/index.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { upsertSession } from './state.js';
-import { latestSessionId } from './sessions.js';
 import { capturePane } from './tmux.js';
 import { spawnResumerIfNeeded } from './spawn.js';
 import { makeLogger } from './logger.js';
@@ -33,8 +34,10 @@ function classify(payload, raw) {
   return 'unknown';
 }
 
-export async function runHook() {
+export async function runHook(rest = []) {
   try {
+    const agentIdx = rest.indexOf('--agent');
+    const agent = getAgent(agentIdx !== -1 ? rest[agentIdx + 1] : 'claude');
     const raw = await readStdin();
     let payload = {};
     try { payload = JSON.parse(raw); } catch { /* tolerate non-JSON */ }
@@ -62,7 +65,7 @@ export async function runHook() {
     if (pane) {
       try {
         const text = await capturePane(pane, CAPTURE_LINES);
-        const d = detectLimit(text, PANE_SCAN_LINES);
+        const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
         if (d.hit) { resetLine = d.resetLine; limitType = d.limitType; }
       } catch { /* pane not capturable (no tmux) — fall back below */ }
     }
@@ -72,12 +75,13 @@ export async function runHook() {
     const { at, source } = resetAtMs(parseResetTime(resetLine), {
       marginMs: RESET_MARGIN_MS, fallbackMs: FALLBACK_RESET_MS,
     });
-    const sessionId = payload.session_id || latestSessionId(cwd, detectedAt);
+    const sessionId = payload.session_id || agent.latestSessionId(cwd, detectedAt);
 
     upsertSession({
       sessionId: sessionId || null,
       cwd,
       pane,
+      agent: agent.id,
       tmuxSession: TMUX_SESSION_NAME,
       status: 'stopped',
       limitType,

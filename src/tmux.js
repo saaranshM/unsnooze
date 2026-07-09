@@ -76,8 +76,3 @@ export async function newWindow(sessionName, cwd, command) {
   const out = await tmux('new-window', '-t', `${sessionName}:`, '-c', cwd, '-P', '-F', '#{pane_id}', command);
   return out.trim();
 }
-
-export function isClaudeCommand(cmd) {
-  // The foreground process for a claude session is `node` (nvm) or `claude`.
-  return cmd === 'claude' || cmd === 'node' || cmd === 'unsnooze';
-}
