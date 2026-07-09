@@ -18,6 +18,7 @@ import {
 } from './config.js';
 import { detectLimit, isBusy, overloadMatch } from './patterns.js';
 import { getAgent } from './agents/index.js';
+import { getConfig } from './settings.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { upsertSession, setStatus, readState } from './state.js';
 import { spawnResumerIfNeeded } from './spawn.js';
@@ -122,6 +123,18 @@ export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = re
 
     // Interactive menu takes priority — it blocks the session until answered.
     if (agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES)) {
+      if (!getConfig('menuAutoAnswer')) {
+        // Watch-only mode: record the stop (reset time may not be visible
+        // until the menu is answered — fallback covers that), touch nothing.
+        const state = readState();
+        const existing = trackedKey && state.sessions[trackedKey];
+        if (!existing || existing.status !== 'stopped') {
+          const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
+          log(`pane ${pane}: limit menu detected but menuAutoAnswer is off — recording only`);
+          await recordLimit(d.hit ? d.resetLine : null, d.hit ? d.limitType : 'unknown', 'scrape');
+        }
+        return;
+      }
       await driveMenu(text);
       return;
     }

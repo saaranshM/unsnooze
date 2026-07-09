@@ -1,9 +1,10 @@
-// User-facing subcommands: status, resume-now, cancel, logs.
+// User-facing subcommands: status, resume-now, cancel, logs, config.
 
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { LOG_FILE, MAX_RESUME_ATTEMPTS } from './config.js';
 import { readState, setStatus, updateState } from './state.js';
+import { getConfig, setConfigValue, listConfig, CONFIG_FILE } from './settings.js';
 import { spawnResumerIfNeeded } from './spawn.js';
 
 function fmtCountdown(ms) {
@@ -17,16 +18,18 @@ function fmtCountdown(ms) {
 export function cmdStatus() {
   const state = readState();
   const sessions = Object.values(state.sessions);
+  const paused = !getConfig('autoResume');
   if (sessions.length === 0) {
-    console.log('unsnooze: no tracked sessions.');
+    console.log(`unsnooze: no tracked sessions.${paused ? '  (PAUSED — auto-resume off)' : ''}`);
     return 0;
   }
   const now = Date.now();
-  console.log(`unsnooze: ${sessions.length} tracked session(s)  (resumer pid: ${state.resumerPid ?? 'not running'})\n`);
+  const pausedNote = paused ? '  PAUSED — auto-resume off (`unsnooze config set autoResume on`)' : '';
+  console.log(`unsnooze: ${sessions.length} tracked session(s)  (resumer pid: ${state.resumerPid ?? 'not running'})${pausedNote}\n`);
   for (const s of sessions.sort((a, b) => (a.resetAt || 0) - (b.resetAt || 0))) {
     const id = s.sessionId ? s.sessionId.slice(0, 8) : '(no id)';
     const reset = s.resetAt ? `${new Date(s.resetAt).toLocaleString()} (${fmtCountdown(s.resetAt - now)})` : '?';
-    console.log(`  [${s.status.toUpperCase().padEnd(9)}] ${id}  ${s.limitType?.padEnd(7) ?? 'unknown'} ${s.cwd}`);
+    console.log(`  [${s.status.toUpperCase().padEnd(9)}] ${id}  ${(s.agent || 'claude').padEnd(6)} ${s.limitType?.padEnd(7) ?? 'unknown'} ${s.cwd}`);
     console.log(`              pane ${s.pane ?? '-'} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}`);
   }
   return 0;
@@ -44,7 +47,12 @@ export function cmdResumeNow(idOrAll) {
   const keys = selectKeys(state, idOrAll);
   if (keys.length === 0) { console.log('unsnooze: no matching stopped sessions.'); return 1; }
   updateState(s => {
-    for (const key of keys) if (s.sessions[key]) s.sessions[key].resetAt = Date.now();
+    for (const key of keys) {
+      if (s.sessions[key]) {
+        s.sessions[key].resetAt = Date.now();
+        s.sessions[key].manual = true;   // explicit user action beats autoResume=off
+      }
+    }
   });
   spawnResumerIfNeeded();
   console.log(`unsnooze: marked ${keys.length} session(s) due now; resumer dispatched.`);
@@ -71,4 +79,36 @@ export function cmdLogs(follow) {
     console.log('unsnooze: no log file yet.');
   }
   return 0;
+}
+
+// `unsnooze config list | get <key> | set <key> <value>`
+export function cmdConfig(rest) {
+  const [action, key, ...valueParts] = rest;
+  try {
+    if (!action || action === 'list') {
+      const listed = listConfig();
+      console.log(`unsnooze settings (${CONFIG_FILE()}):\n`);
+      for (const [k, v] of Object.entries(listed)) {
+        console.log(`  ${k.padEnd(16)} ${JSON.stringify(v)}`);
+      }
+      return 0;
+    }
+    if (action === 'get') {
+      if (!key) { console.error('unsnooze config get <key>'); return 2; }
+      console.log(JSON.stringify(getConfig(key)));
+      return 0;
+    }
+    if (action === 'set') {
+      const value = valueParts.join(' ');
+      if (!key || value === '') { console.error('unsnooze config set <key> <value>'); return 2; }
+      const applied = setConfigValue(key, value);
+      console.log(`unsnooze: ${key} = ${JSON.stringify(applied)}`);
+      return 0;
+    }
+    console.error(`unsnooze config: unknown action "${action}" (list | get | set)`);
+    return 2;
+  } catch (err) {
+    console.error(err.message);
+    return 1;
+  }
 }

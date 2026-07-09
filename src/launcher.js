@@ -8,6 +8,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { insideTmux, currentPaneId } from './tmux.js';
 import { getAgent } from './agents/index.js';
+import { getConfig } from './settings.js';
 import { spawnDetached } from './spawn.js';
 import { makeLogger } from './logger.js';
 
@@ -21,8 +22,9 @@ export function runLauncher(args, agentId = 'claude') {
   const agent = getAgent(agentId);
 
   // Recursion / nested-launch guard: inside an unsnooze-managed session, a
-  // plain `claude`/`codex`/`unsnooze` call goes straight through.
-  if (process.env.UNSNOOZE_ACTIVE === '1' || isPrintMode(args)) {
+  // plain `claude`/`codex`/`unsnooze` call goes straight through. Same for an
+  // agent the user disabled in settings — run it, don't watch it.
+  if (process.env.UNSNOOZE_ACTIVE === '1' || isPrintMode(args) || !getConfig(`agents.${agent.id}`)) {
     const r = spawnSync(agent.bin, args, { stdio: 'inherit', env: { ...process.env, UNSNOOZE_ACTIVE: '1' } });
     return r.status ?? 1;
   }

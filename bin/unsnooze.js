@@ -22,6 +22,10 @@ async function main() {
       const { cmdLogs } = await import('../src/cli.js');
       return cmdLogs(rest.includes('-f'));
     }
+    case 'config': {
+      const { cmdConfig } = await import('../src/cli.js');
+      return cmdConfig(rest);
+    }
     case 'install': {
       const { cmdInstall } = await import('../src/install.js');
       return cmdInstall(rest);
@@ -59,6 +63,7 @@ Usage:
   unsnooze resume-now [id|--all]   resume stopped session(s) immediately
   unsnooze cancel [id|--all]       stop tracking session(s)
   unsnooze logs [-f]               show (or follow) the unsnooze log
+  unsnooze config [list|get|set]   view or change settings (toggles, message)
   unsnooze install [--yes]         wire up shell wrappers + hooks
   unsnooze uninstall [--purge]     remove wrappers + hooks (and state with --purge)`);
       return 0;

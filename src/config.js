@@ -42,6 +42,4 @@ export const DEDUPE_WINDOW_MS = envInt('UNSNOOZE_DEDUPE_WINDOW_MS', 120_000);
 export const PRUNE_AFTER_MS = envInt('UNSNOOZE_PRUNE_AFTER_MS', 7 * 86_400_000);
 export const STALE_LOCK_MS = envInt('UNSNOOZE_STALE_LOCK_MS', 10_000);
 
-export const RESUME_MESSAGE = process.env.UNSNOOZE_RESUME_MESSAGE
-  || 'Continue where you left off. The session was interrupted by a usage limit which has now reset — pick up the task you were working on and finish it.';
 

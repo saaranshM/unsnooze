@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { EVENTS_DIR, FALLBACK_RESET_MS, RESET_MARGIN_MS, CAPTURE_LINES, PANE_SCAN_LINES, TMUX_SESSION_NAME } from './config.js';
 import { detectLimit } from './patterns.js';
 import { getAgent } from './agents/index.js';
+import { getConfig } from './settings.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { upsertSession } from './state.js';
 import { capturePane } from './tmux.js';
@@ -38,6 +39,7 @@ export async function runHook(rest = []) {
   try {
     const agentIdx = rest.indexOf('--agent');
     const agent = getAgent(agentIdx !== -1 ? rest[agentIdx + 1] : 'claude');
+    if (!getConfig(`agents.${agent.id}`)) return 0;   // agent disabled in settings
     const raw = await readStdin();
     let payload = {};
     try { payload = JSON.parse(raw); } catch { /* tolerate non-JSON */ }

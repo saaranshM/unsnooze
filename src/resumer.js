@@ -9,13 +9,14 @@ import * as realTmux from './tmux.js';
 import {
   RESUMER_LOCK, STATE_DIR, POLL_INTERVAL_MS, STAGGER_MS, VERIFY_DELAY_MS,
   BUSY_DEFER_MS, MAX_BUSY_DEFERS, MAX_RESUME_ATTEMPTS, READY_TIMEOUT_MS,
-  CAPTURE_LINES, PANE_SCAN_LINES, RESUME_MESSAGE, TMUX_SESSION_NAME,
+  CAPTURE_LINES, PANE_SCAN_LINES, TMUX_SESSION_NAME,
   RESET_MARGIN_MS, FALLBACK_RESET_MS,
 } from './config.js';
 import { detectLimit, isBusy } from './patterns.js';
 import { getAgent } from './agents/index.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { readState, updateState, setStatus, dueSessions, activeStopped } from './state.js';
+import { getConfig } from './settings.js';
 import { makeLogger } from './logger.js';
 
 const log = makeLogger('resumer');
@@ -42,13 +43,21 @@ export function releaseSingleton() {
   } catch { /* already gone */ }
 }
 
+// Due sessions that are actually allowed to dispatch: everything when
+// autoResume is on; only explicitly `resume-now`-marked (manual) records when
+// it's off. Stops stay tracked either way.
+export function dueForDispatch(now = Date.now()) {
+  const auto = getConfig('autoResume');
+  return dueSessions(now).filter(s => auto || s.manual);
+}
+
 function shellQuote(arg) {
   return /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
 // Decide how to act on one due record. Pure-ish; tmux injectable.
 // Returns: 'sent' | 'reopened' | 'deferred' | 'skip' | 'failed'
-export async function dispatchOne(rec, { tmux = realTmux, resumeMessage = RESUME_MESSAGE, unsnoozeBin = 'unsnooze' } = {}) {
+export async function dispatchOne(rec, { tmux = realTmux, resumeMessage = getConfig('resumeMessage'), unsnoozeBin = 'unsnooze' } = {}) {
   const key = rec.key;
   const agent = getAgent(rec.agent);
 
@@ -148,9 +157,9 @@ export async function runResumer({ tmux = realTmux, pollInterval = POLL_INTERVAL
         return 0;
       }
 
-      const due = dueSessions().filter(s => (s.attempts || 0) < MAX_RESUME_ATTEMPTS);
+      const due = dueForDispatch().filter(s => (s.attempts || 0) < MAX_RESUME_ATTEMPTS);
       // Anything over the attempts cap is dead — mark failed so we can exit.
-      for (const s of dueSessions()) {
+      for (const s of dueForDispatch()) {
         if ((s.attempts || 0) >= MAX_RESUME_ATTEMPTS) {
           setStatus(s.key, 'failed', { lastError: 'max resume attempts exceeded' });
           log(`${s.key}: giving up after ${s.attempts} attempts`);
