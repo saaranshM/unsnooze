@@ -3,3 +3,4 @@ node_modules/
 .DS_Store
 *.tgz
 docs/superpowers/
+.mcp.json

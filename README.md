@@ -54,6 +54,13 @@ existing tool solves only a slice of it:
 
 ## How it works
 
+<div align="center">
+<img src="assets/how-it-works.png" alt="architecture: claude/codex/grok panes are watched by unsnooze via hooks and banner scraping; stops land in state.json; the resumer daemon sleeps until the limit resets, then types into live panes or reopens dead ones until every session is running again" width="880"/>
+</div>
+
+<details>
+<summary>text version</summary>
+
 ```
 claude / codex / grok (shell wrapper) ──► unsnooze _run <agent> ──► CLI in tmux pane
                                               │
@@ -76,6 +83,8 @@ StopFailure hook (claude, grok) ──────────────┤
                  (only if the CLI is foreground             `unsnooze _run <agent>
                  and not mid-stream)                        --resume <id>`, verify
 ```
+
+</details>
 
 Limit events are never persisted by the CLIs themselves; the reset time is
 parsed from the banner text, DST-safe, with a 5-hour fallback when unparseable
