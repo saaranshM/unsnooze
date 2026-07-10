@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
-  mergeHookIntoSettings, removeHookFromSettings, installZshrcBlock, stripFencedBlock,
+  cmdInstall, mergeHookIntoSettings, removeHookFromSettings, installZshrcBlock, stripFencedBlock,
 } from '../src/install.js';
 
 const REAL_ISH_SETTINGS = JSON.stringify({
@@ -145,6 +148,22 @@ test('wrapper block contains one function per enabled agent, routed via _run', (
   assert.match(content, /_run claude "\$@"/);
   assert.match(content, /_run codex "\$@"/);
   assert.match(content, /UNSNOOZE_ACTIVE/);
+});
+
+test('cmdInstall creates the settings parent directory when missing', () => {
+  // Regression: a machine without ~/.claude/ crashed `unsnooze setup` with
+  // ENOENT — atomicWrite assumed the parent directory existed.
+  const dir = mkdtempSync(join(tmpdir(), 'unsnooze-install-test-'));
+  try {
+    const settings = join(dir, '.claude', 'settings.json');   // .claude does not exist yet
+    const rc = join(dir, '.zshrc');
+    const code = cmdInstall(['--yes', '--settings', settings, '--zshrc', rc], { agents: ['claude'] });
+    assert.equal(code, 0);
+    assert.ok(existsSync(settings), 'settings.json must be created');
+    assert.ok(JSON.parse(readFileSync(settings, 'utf-8')).hooks.StopFailure);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('re-installing with a different agent set replaces the block', () => {

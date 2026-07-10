@@ -8,7 +8,7 @@
 //   - ~/.grok/hooks/unsnooze.json when the grok agent is enabled
 // --settings <path> / --zshrc <path> override targets (used by tests).
 
-import { readFileSync, writeFileSync, renameSync, existsSync, copyFileSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, existsSync, copyFileSync, rmSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { CLAUDE_SETTINGS, STATE_DIR } from './config.js';
@@ -38,6 +38,7 @@ function parseArgs(rest) {
 }
 
 function atomicWrite(path, content) {
+  mkdirSync(dirname(path), { recursive: true });   // e.g. ~/.claude may not exist yet
   const tmp = join(dirname(path), `.${Date.now()}.tmp`);
   writeFileSync(tmp, content);
   renameSync(tmp, path);
