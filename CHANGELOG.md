@@ -2,6 +2,12 @@
 
 ## 1.0.0 — 2026-07-10
 
+- **Windows via WSL**: first-class support — native Windows toast
+  notifications from inside WSL via `powershell.exe` (no notify-send/X server
+  needed), `where`-based CLI detection, and a friendly "install tmux / use
+  WSL" message instead of a hard failure when tmux is missing (the agent CLI
+  still runs, just unwatched). Native win32 core is exercised in CI.
+
 First public release (previously the private `claude-session-guard`/`csg`).
 
 - **Multi-CLI**: Claude Code and OpenAI Codex CLI fully supported; xAI Grok

@@ -41,10 +41,6 @@
   "engines": {
     "node": ">=20"
   },
-  "os": [
-    "darwin",
-    "linux"
-  ],
   "dependencies": {
     "@clack/prompts": "^1.7.0"
   }

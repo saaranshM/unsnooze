@@ -1,7 +1,17 @@
-import { execFile as execFileCb } from 'node:child_process';
+import { execFile as execFileCb, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFileCb);
+
+// Is tmux runnable at all? Used for a friendly error instead of a cryptic
+// spawn failure (native Windows users get pointed at WSL).
+export function tmuxAvailable() {
+  try {
+    return spawnSync('tmux', ['-V'], { stdio: 'ignore' }).status === 0;
+  } catch {
+    return false;
+  }
+}
 
 // Submit delay: text and the submitting Enter must be TWO separate send-keys
 // calls with a pause between them, or Ink (Claude Code's TUI) treats the Enter

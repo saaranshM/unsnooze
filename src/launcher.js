@@ -6,7 +6,7 @@
 //   - -p/--print: pure pass-through, no monitor (nothing interactive to scrape)
 
 import { spawn, spawnSync } from 'node:child_process';
-import { insideTmux, currentPaneId } from './tmux.js';
+import { insideTmux, currentPaneId, tmuxAvailable } from './tmux.js';
 import { getAgent } from './agents/index.js';
 import { getConfig } from './settings.js';
 import { spawnDetached } from './spawn.js';
@@ -30,6 +30,17 @@ export function runLauncher(args, agentId = 'claude') {
   }
 
   if (!insideTmux()) {
+    if (!tmuxAvailable()) {
+      // Degrade gracefully: run the CLI unwatched rather than dying.
+      process.stderr.write('unsnooze: tmux not found — running without limit-watch.\n');
+      if (process.platform === 'win32') {
+        process.stderr.write('unsnooze: native Windows is not supported; run inside WSL (https://learn.microsoft.com/windows/wsl/install) where tmux works.\n');
+      } else {
+        process.stderr.write('unsnooze: install tmux to enable auto-resume (brew install tmux / apt install tmux).\n');
+      }
+      const r = spawnSync(agent.bin, args, { stdio: 'inherit', env: { ...process.env, UNSNOOZE_ACTIVE: '1' } });
+      return r.status ?? 1;
+    }
     // Re-enter under tmux: `tmux new-session unsnooze _run <agent> <args...>` —
     // the inner unsnooze lands in the insideTmux() branch below.
     log(`not in tmux — wrapping into a tmux session`);

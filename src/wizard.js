@@ -14,7 +14,7 @@ export function detectInstalledAgents({ which = defaultWhich } = {}) {
 
 function defaultWhich(bin) {
   try {
-    execFileSync('which', [bin], { stdio: 'pipe' });
+    execFileSync(process.platform === 'win32' ? 'where' : 'which', [bin], { stdio: 'pipe' });
     return true;
   } catch {
     return false;
@@ -23,6 +23,13 @@ function defaultWhich(bin) {
 
 export async function runWizard() {
   p.intro('unsnooze — wake every limit-stopped AI coding session automatically');
+
+  const { tmuxAvailable } = await import('./tmux.js');
+  if (!tmuxAvailable()) {
+    p.log.warn(process.platform === 'win32'
+      ? 'tmux not found — unsnooze does not support native Windows.\nRun it inside WSL (https://learn.microsoft.com/windows/wsl/install), where tmux and the wrappers work normally.'
+      : 'tmux not found — unsnooze needs tmux to watch and revive sessions.\nInstall it first (brew install tmux / apt install tmux), then re-run `unsnooze setup`.');
+  }
 
   const detected = detectInstalledAgents();
   const options = detected.map(({ agent, installed }) => ({

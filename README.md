@@ -133,8 +133,27 @@ all timings/paths are tunable via `UNSNOOZE_*` env vars (see `src/config.js`).
 
 ## Requirements
 
-- Node ≥ 20, tmux, macOS or Linux
+- Node ≥ 20 and tmux
+- macOS, Linux, or **Windows via WSL** (see below)
 - zsh or bash (the wrappers are installed into `~/.zshrc` / `~/.bashrc`)
+
+### Windows / WSL
+
+unsnooze is built on tmux, so on Windows it runs inside
+[WSL](https://learn.microsoft.com/windows/wsl/install) — which is where the
+agent CLIs live on Windows anyway:
+
+```sh
+# inside your WSL distro (Ubuntu etc.)
+sudo apt install tmux
+npm install -g unsnooze && unsnooze setup
+```
+
+Everything works as on Linux, including desktop notifications: inside WSL,
+unsnooze raises **native Windows toasts** through `powershell.exe` (no
+`notify-send` or X server needed). Native Windows (PowerShell/cmd, no WSL) is
+not supported — without tmux there is nothing to watch; unsnooze will tell you
+so and run your CLI unwatched instead of breaking it.
 
 ## Development
 

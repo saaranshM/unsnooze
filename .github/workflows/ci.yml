@@ -12,6 +12,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         node: [20, 22]
+        include:
+          # tmux-independent core (unit tests use a fake tmux) must stay
+          # portable — WSL users run the linux path, but keep win32 honest.
+          - os: windows-latest
+            node: 22
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
