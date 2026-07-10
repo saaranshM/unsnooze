@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/banner.svg" alt="unsnooze — your agents hit a usage limit. unsnooze wakes them the second it resets." width="880"/>
+<img src="assets/banner.png" alt="unsnooze — wakes every limit-stopped AI session the moment the limit resets" width="880"/>
 
 <br/>
 
@@ -17,7 +17,7 @@ unsnooze tracks **every** limit-stopped session across all your projects and
 npm install -g unsnooze && unsnooze setup
 ```
 
-<img src="assets/demo.svg" alt="animated demo: limit banners detected in two sessions, unsnooze waits for the reset, then resumes everything" width="880"/>
+<img src="assets/demo.png" alt="terminal demo: limit banners detected in two sessions, unsnooze waits for the reset, then wakes both — good morning, the work is done" width="880"/>
 
 </div>
 
