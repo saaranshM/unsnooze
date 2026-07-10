@@ -1,46 +1,80 @@
-<svg width="880" height="230" viewBox="0 0 880 230" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="unsnooze — wake every limit-stopped AI coding session">
+<svg width="880" height="250" viewBox="0 0 880 250" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="unsnooze — wakes every limit-stopped AI session the moment the limit resets">
   <defs>
-    <linearGradient id="glow" x1="0" y1="0" x2="880" y2="230" gradientUnits="userSpaceOnUse">
+    <linearGradient id="glow" x1="0" y1="0" x2="880" y2="250" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#f59e0b"/>
       <stop offset="1" stop-color="#fb7185"/>
     </linearGradient>
-    <linearGradient id="card" x1="0" y1="0" x2="0" y2="230" gradientUnits="userSpaceOnUse">
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="250" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#0d1117"/>
-      <stop offset="1" stop-color="#010409"/>
+      <stop offset="1" stop-color="#090c10"/>
     </linearGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#f59e0b" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#f59e0b" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="vign" cx="0.5" cy="0.45" r="0.8">
+      <stop offset="0.55" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.4"/>
+    </radialGradient>
+    <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="1.2" cy="1.2" r="1.1" fill="#1b2230"/>
+    </pattern>
+    <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
+    <clipPath id="cardClip"><rect x="1" y="1" width="878" height="248" rx="20"/></clipPath>
   </defs>
 
   <!-- card -->
-  <rect x="1" y="1" width="878" height="228" rx="18" fill="url(#card)" stroke="#30363d" stroke-width="2"/>
+  <rect x="1" y="1" width="878" height="248" rx="20" fill="url(#card)" stroke="#30363d" stroke-width="2"/>
+  <g clip-path="url(#cardClip)">
+    <rect x="1" y="1" width="878" height="248" fill="url(#dots)" opacity="0.5"/>
 
-  <!-- prompt glyph -->
-  <text x="72" y="128" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="64" font-weight="700" fill="url(#glow)">❯</text>
+    <!-- breathing warm halo behind prompt + wordmark head -->
+    <ellipse cx="160" cy="130" rx="200" ry="150" fill="url(#halo)">
+      <animate attributeName="opacity" values="0.8;1;0.8" dur="4s" repeatCount="indefinite"/>
+    </ellipse>
+    <ellipse cx="320" cy="130" rx="170" ry="120" fill="url(#halo)" opacity="0.8">
+      <animate attributeName="opacity" values="0.6;0.9;0.6" dur="4s" begin="0.5s" repeatCount="indefinite"/>
+    </ellipse>
 
-  <!-- sleeping z's drifting away -->
-  <g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#8b949e" font-weight="700">
-    <text x="126" y="86" font-size="26">
-      z
-      <animate attributeName="opacity" values="0.9;0;0.9" dur="4s" repeatCount="indefinite"/>
+    <!-- prompt glyph with glow -->
+    <text x="78" y="146" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="62" font-weight="700" fill="url(#glow)" filter="url(#soft)" opacity="0.6">❯</text>
+    <text x="78" y="146" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="62" font-weight="700" fill="url(#glow)">❯</text>
+
+    <!-- sleeping z's drifting away -->
+    <g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#8b949e" font-weight="700">
+      <g>
+        <text x="132" y="96" font-size="25">z</text>
+        <animateTransform attributeName="transform" type="translate" values="0 0; 10 -18" dur="4s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.85;0;0.85" keyTimes="0;0.75;1" dur="4s" repeatCount="indefinite"/>
+      </g>
+      <g>
+        <text x="156" y="74" font-size="20">z</text>
+        <animateTransform attributeName="transform" type="translate" values="0 0; 12 -20" dur="4s" begin="0.9s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.65;0;0.65" keyTimes="0;0.75;1" dur="4s" begin="0.9s" repeatCount="indefinite"/>
+      </g>
+      <g>
+        <text x="178" y="56" font-size="15">z</text>
+        <animateTransform attributeName="transform" type="translate" values="0 0; 14 -22" dur="4s" begin="1.8s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0.45;0;0.45" keyTimes="0;0.75;1" dur="4s" begin="1.8s" repeatCount="indefinite"/>
+      </g>
+    </g>
+
+    <!-- wordmark: glow layer + crisp layer -->
+    <text x="212" y="150" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="74" font-weight="800" letter-spacing="-2" fill="url(#glow)" filter="url(#soft)" opacity="0.45">un</text>
+    <text x="212" y="150" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="74" font-weight="800" letter-spacing="-2">
+      <tspan fill="url(#glow)">un</tspan><tspan fill="#e8edf3">snooze</tspan>
     </text>
-    <text x="150" y="66" font-size="20" opacity="0.7">
-      z
-      <animate attributeName="opacity" values="0.7;0;0.7" dur="4s" begin="0.6s" repeatCount="indefinite"/>
-    </text>
-    <text x="170" y="50" font-size="15" opacity="0.5">
-      z
-      <animate attributeName="opacity" values="0.5;0;0.5" dur="4s" begin="1.2s" repeatCount="indefinite"/>
-    </text>
+
+    <!-- blinking cursor -->
+    <rect x="592" y="94" width="30" height="58" fill="#e8edf3">
+      <animate attributeName="opacity" values="1;1;0;0" keyTimes="0;0.5;0.5;1" dur="1.2s" repeatCount="indefinite"/>
+    </rect>
+
+    <!-- tagline -->
+    <text x="214" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="16.5" fill="#8b949e">wakes every limit-stopped AI session the moment the limit resets</text>
+
+    <rect x="1" y="1" width="878" height="248" fill="url(#vign)"/>
   </g>
-
-  <!-- wordmark -->
-  <text x="210" y="128" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="72" font-weight="800" letter-spacing="-2">
-    <tspan fill="url(#glow)">un</tspan><tspan fill="#e6edf3">snooze</tspan>
-  </text>
-  <!-- blinking cursor -->
-  <rect x="672" y="76" width="30" height="58" fill="#e6edf3">
-    <animate attributeName="opacity" values="1;1;0;0" keyTimes="0;0.5;0.5;1" dur="1.2s" repeatCount="indefinite"/>
-  </rect>
-
-  <!-- tagline -->
-  <text x="212" y="176" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="16" fill="#8b949e">wakes every limit-stopped AI session the moment the limit resets</text>
 </svg>
