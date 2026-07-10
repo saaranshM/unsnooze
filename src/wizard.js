@@ -69,6 +69,20 @@ export async function runWizard() {
   });
   if (p.isCancel(notifications)) return cancelled();
 
+  // GUI watching: only meaningful where an autostart daemon can run.
+  let guiWatch = false;
+  if (process.platform === 'darwin' || process.platform === 'linux') {
+    const answer = await p.confirm({
+      message: 'Also guard GUI sessions (Claude Code in VS Code/desktop, Codex app/IDE)?\n'
+        + '  Installs a small background daemon (launchd/systemd) that watches session\n'
+        + '  files for limit stops; revived sessions open in tmux and stay visible in\n'
+        + '  the GUI\'s own history.',
+      initialValue: DEFAULTS.guiWatch,
+    });
+    if (p.isCancel(answer)) return cancelled();
+    guiWatch = answer;
+  }
+
   // Seed message prompts from the existing config so a setup re-run shows —
   // and keeps — values previously set here or via `unsnooze config`.
   const existing = readFileConfig();
@@ -116,7 +130,7 @@ export async function runWizard() {
   // doesn't ask about (e.g. per-agent messages set via `unsnooze config`).
   writeConfig({
     ...existing,
-    autoResume, menuAutoAnswer, notifications, resumeMessage,
+    autoResume, menuAutoAnswer, notifications, guiWatch, resumeMessage,
     resumeMessages: { ...existingMsgs, ...resumeMessages },
     agents: Object.fromEntries(listAgents().map(a => [a.id, agents.includes(a.id)])),
   });
@@ -124,7 +138,7 @@ export async function runWizard() {
   const s = p.spinner();
   s.start('Installing shell wrappers and hooks');
   const { cmdInstall } = await import('./install.js');
-  const code = cmdInstall(['--yes']);
+  const code = cmdInstall(guiWatch ? ['--yes', '--daemon'] : ['--yes']);
   s.stop(code === 0 ? 'Wrappers and hooks installed' : 'Install hit a problem — see output above');
 
   p.outro(code === 0

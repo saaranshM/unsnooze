@@ -8,7 +8,8 @@
 //   - ~/.grok/hooks/unsnooze.json when the grok agent is enabled
 // --settings <path> / --zshrc <path> override targets (used by tests).
 
-import { readFileSync, writeFileSync, renameSync, existsSync, copyFileSync, rmSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, existsSync, copyFileSync, rmSync, mkdirSync, unlinkSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { CLAUDE_SETTINGS, STATE_DIR } from './config.js';
@@ -27,10 +28,11 @@ const LEGACY_FENCES = [
 const OLD_FENCE_OPEN = LEGACY_FENCES[0].open;
 
 function parseArgs(rest) {
-  const opts = { yes: false, settings: CLAUDE_SETTINGS, zshrc: join(homedir(), '.zshrc'), purge: false };
+  const opts = { yes: false, settings: CLAUDE_SETTINGS, zshrc: join(homedir(), '.zshrc'), purge: false, daemon: false };
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === '--yes' || rest[i] === '-y') opts.yes = true;
     else if (rest[i] === '--purge') opts.purge = true;
+    else if (rest[i] === '--daemon') opts.daemon = true;
     else if (rest[i] === '--settings') opts.settings = rest[++i];
     else if (rest[i] === '--zshrc') opts.zshrc = rest[++i];
   }
@@ -124,6 +126,101 @@ export function installZshrcBlock(content, agents = ['claude']) {
   return { content: result, oldRemoved };
 }
 
+// --- daemon autostart ---
+// GUI sessions (VS Code extension, desktop apps) never pass through the shell
+// wrappers, so their limit stops are only caught while `unsnooze daemon` is
+// alive. Autostart keeps it alive: a launchd user agent on macOS, a systemd
+// user unit on Linux/WSL.
+
+export const DAEMON_LABEL = 'com.unsnooze.daemon';
+
+function xmlEscape(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+export function launchdPlist({
+  nodeBin = process.execPath, unsnoozeBin = UNSNOOZE_BIN,
+  logFile = join(STATE_DIR, 'daemon.log'),
+} = {}) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${DAEMON_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${xmlEscape(nodeBin)}</string>
+    <string>${xmlEscape(unsnoozeBin)}</string>
+    <string>daemon</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${xmlEscape(logFile)}</string>
+  <key>StandardErrorPath</key><string>${xmlEscape(logFile)}</string>
+</dict>
+</plist>
+`;
+}
+
+export function systemdUnit({ nodeBin = process.execPath, unsnoozeBin = UNSNOOZE_BIN } = {}) {
+  return `[Unit]
+Description=unsnooze daemon — watches GUI AI-coding sessions for limit stops
+
+[Service]
+ExecStart="${nodeBin}" "${unsnoozeBin}" daemon
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+`;
+}
+
+function defaultActivate(cmd, args) {
+  try {
+    execFileSync(cmd, args, { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;   // best-effort: the file is in place; a reboot/login loads it
+  }
+}
+
+export function installDaemonAutostart({ platform = process.platform, dir = null, activate = defaultActivate } = {}) {
+  if (platform === 'darwin') {
+    const target = join(dir || join(homedir(), 'Library', 'LaunchAgents'), `${DAEMON_LABEL}.plist`);
+    atomicWrite(target, launchdPlist());
+    activate('launchctl', ['unload', target]);   // reload cleanly if already loaded
+    activate('launchctl', ['load', '-w', target]);
+    return target;
+  }
+  if (platform === 'linux') {
+    const target = join(dir || join(homedir(), '.config', 'systemd', 'user'), 'unsnooze.service');
+    atomicWrite(target, systemdUnit());
+    activate('systemctl', ['--user', 'daemon-reload']);
+    activate('systemctl', ['--user', 'enable', '--now', 'unsnooze.service']);
+    return target;
+  }
+  return null;   // native Windows: no tmux to revive into — daemon unsupported
+}
+
+export function uninstallDaemonAutostart({ platform = process.platform, dir = null, activate = defaultActivate } = {}) {
+  if (platform === 'darwin') {
+    const target = join(dir || join(homedir(), 'Library', 'LaunchAgents'), `${DAEMON_LABEL}.plist`);
+    if (!existsSync(target)) return null;
+    activate('launchctl', ['unload', target]);
+    try { unlinkSync(target); } catch { /* already gone */ }
+    return target;
+  }
+  if (platform === 'linux') {
+    const target = join(dir || join(homedir(), '.config', 'systemd', 'user'), 'unsnooze.service');
+    if (!existsSync(target)) return null;
+    activate('systemctl', ['--user', 'disable', '--now', 'unsnooze.service']);
+    try { unlinkSync(target); } catch { /* already gone */ }
+    return target;
+  }
+  return null;
+}
+
 // --- commands ---
 
 export function enabledAgents() {
@@ -185,6 +282,13 @@ export function cmdInstall(rest, { agents = enabledAgents() } = {}) {
     console.log(`unsnooze: wrappers (${agents.join(', ')}) installed in ${rc}${oldRemoved ? ' (legacy wrapper block removed)' : ''}`);
   }
 
+  // 4. Daemon autostart (GUI-session watching), opt-in via --daemon / wizard.
+  if (opts.daemon) {
+    const target = installDaemonAutostart();
+    if (target) console.log(`unsnooze: daemon autostart installed (${target}) — GUI sessions are watched`);
+    else console.log('unsnooze: daemon autostart is not supported on this platform');
+  }
+
   console.log('\nunsnooze: done. Reload your shell:');
   console.log('  exec $SHELL');
   return 0;
@@ -210,6 +314,9 @@ export function cmdUninstall(rest) {
       console.log(`unsnooze: wrappers removed from ${rc}`);
     }
   }
+
+  const autostart = uninstallDaemonAutostart();
+  if (autostart) console.log(`unsnooze: daemon autostart removed (${autostart})`);
 
   if (opts.purge) {
     rmSync(STATE_DIR, { recursive: true, force: true });
