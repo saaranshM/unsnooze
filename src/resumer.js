@@ -92,8 +92,13 @@ export async function dispatchOne(rec, { tmux = realTmux, resumeMessage, selfCmd
   }
 
   // Re-open path: new tmux window in the well-known session, resume by id.
+  // Records from sandboxed GUI sessions carry env (e.g. CLAUDE_CONFIG_DIR) the
+  // revived CLI needs to find its session store.
   const resume = agent.resumeArgs(rec.sessionId, resumeMessage);
-  const command = [...selfCmd, '_run', agent.id, ...resume.args].map(shellQuote).join(' ');
+  const envPrefix = rec.env
+    ? Object.entries(rec.env).map(([k, v]) => `${k}=${shellQuote(String(v))}`).join(' ') + ' '
+    : '';
+  const command = envPrefix + [...selfCmd, '_run', agent.id, ...resume.args].map(shellQuote).join(' ');
   setStatus(key, 'resuming', { lastAttemptAt: Date.now() });
   let newPane;
   try {
@@ -153,7 +158,8 @@ export async function verifyOne(key, { tmux = realTmux } = {}) {
   }
   setStatus(key, 'resumed');
   log(`${key}: verified resumed`);
-  notify('unsnoozed ✅', `${rec.cwd} is running again`);
+  const fromGui = rec.origin && rec.origin !== 'cli';
+  notify('unsnoozed ✅', `${rec.cwd} is running again${fromGui ? ` (was in ${rec.origin} — revived in tmux)` : ''}`);
 }
 
 // persistent: never exit on an empty ledger (daemon mode — `unsnooze daemon`,

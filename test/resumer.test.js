@@ -28,6 +28,19 @@ function seed(overrides = {}) {
   return Object.values(state.sessions).find(s => s.sessionId === rec.sessionId || s.pane === rec.pane);
 }
 
+test('pane-less record with env → reopened with the env prefixed to the command', async () => {
+  const rec = seed({ pane: null, agent: 'codex', env: { CLAUDE_CONFIG_DIR: '/tmp/sandbox/.claude' } });
+  const windows = [];
+  const tmux = {
+    paneAlive: async () => false,
+    newWindow: async (session, cwd, command) => { windows.push({ session, cwd, command }); return '%77'; },
+  };
+  const result = await dispatchOne(rec, { tmux });
+  assert.equal(result, 'reopened');
+  assert.equal(windows.length, 1);
+  assert.match(windows[0].command, /^CLAUDE_CONFIG_DIR=\/tmp\/sandbox\/\.claude /);
+});
+
 test('live idle claude pane → message sent', async () => {
   const rec = seed({ pane: '%10' });
   const sent = [];

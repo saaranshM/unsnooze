@@ -29,8 +29,9 @@ export function cmdStatus() {
   for (const s of sessions.sort((a, b) => (a.resetAt || 0) - (b.resetAt || 0))) {
     const id = s.sessionId ? s.sessionId.slice(0, 8) : '(no id)';
     const reset = s.resetAt ? `${new Date(s.resetAt).toLocaleString()} (${fmtCountdown(s.resetAt - now)})` : '?';
+    const origin = s.origin ?? (s.pane ? 'cli' : '?');
     console.log(`  [${s.status.toUpperCase().padEnd(9)}] ${id}  ${(s.agent || 'claude').padEnd(6)} ${s.limitType?.padEnd(7) ?? 'unknown'} ${s.cwd}`);
-    console.log(`              pane ${s.pane ?? '-'} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}`);
+    console.log(`              pane ${s.pane ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}`);
   }
   return 0;
 }

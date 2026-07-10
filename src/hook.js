@@ -84,6 +84,7 @@ export async function runHook(rest = []) {
       cwd,
       pane,
       agent: agent.id,
+      origin: 'cli',   // the hook only fires for CLI launches we can see
       tmuxSession: TMUX_SESSION_NAME,
       status: 'stopped',
       limitType,

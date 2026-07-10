@@ -15,6 +15,7 @@ import {
   openSync, readSync, closeSync,
 } from 'node:fs';
 import { join, sep, basename, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import {
   CLAUDE_DIR, CODEX_DIR, WATCH_OFFSETS_FILE, WATCH_FRESHNESS_MS,
   RESET_MARGIN_MS, FALLBACK_RESET_MS, TMUX_SESSION_NAME,
@@ -86,11 +87,44 @@ export function codexSource({ roots }) {
   };
 }
 
+// Claude desktop (cowork) sessions are sandboxed: each runs against an
+// isolated CLAUDE_CONFIG_DIR at <session>/local_<id>/.claude, so the global
+// hook never fires and the transcripts live outside ~/.claude. Reviving one
+// needs that same CLAUDE_CONFIG_DIR exported — carried on the record as env.
+// Experimental: desktop worktree/VM sessions may not resume cleanly.
+export function claudeDesktopSource({ roots }) {
+  const base = claudeSource({ roots });
+  return {
+    ...base,
+    parse(lines, path) {
+      const configDir = configDirFromPath(path);
+      return base.parse(lines, path).map(rec => ({
+        ...rec,
+        origin: 'desktop',
+        env: configDir ? { CLAUDE_CONFIG_DIR: configDir } : undefined,
+      }));
+    },
+  };
+}
+
+function configDirFromPath(path) {
+  const marker = `${sep}.claude${sep}`;
+  const idx = path.indexOf(marker);
+  return idx === -1 ? null : path.slice(0, idx + marker.length - 1);
+}
+
 export function defaultSources() {
-  return [
+  const sources = [
     claudeSource({ roots: [join(CLAUDE_DIR, 'projects')] }),
     codexSource({ roots: [join(CODEX_DIR, 'sessions')] }),
   ];
+  if (process.platform === 'darwin') {
+    sources.push(claudeDesktopSource({
+      roots: [process.env.UNSNOOZE_CLAUDE_DESKTOP_DIR
+        || join(homedir(), 'Library', 'Application Support', 'Claude', 'local-agent-mode-sessions')],
+    }));
+  }
+  return sources;
 }
 
 // Turn a watcher candidate into a ledger record. No pane key at all — a merge
@@ -105,7 +139,7 @@ export function dispatchCandidate(c) {
       marginMs: RESET_MARGIN_MS, fallbackMs: FALLBACK_RESET_MS,
     }));
   }
-  upsertSession({
+  const record = {
     sessionId: c.sessionId || null,
     cwd: c.cwd || null,
     agent: c.agent,
@@ -120,7 +154,9 @@ export function dispatchCandidate(c) {
     attempts: 0,
     lastAttemptAt: null,
     lastError: null,
-  });
+  };
+  if (c.env) record.env = c.env;   // e.g. CLAUDE_CONFIG_DIR for sandboxed desktop sessions
+  upsertSession(record);
   log(`limit stop via transcript: agent=${c.agent} session=${c.sessionId || '?'} origin=${c.origin || '?'} resetAt=${new Date(at).toISOString()} (${source})`);
   notify('limit hit 😴', `${c.cwd || c.agent}: tracked — resumes when the limit resets`);
 }

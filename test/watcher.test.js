@@ -18,7 +18,8 @@ const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-watcher-test-'));
 process.env.UNSNOOZE_STATE_DIR = join(DIR, 'state');
 process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 
-const { createWatcher, claudeSource, codexSource } = await import('../src/watcher.js');
+const { createWatcher, claudeSource, claudeDesktopSource, codexSource, dispatchCandidate } = await import('../src/watcher.js');
+const { readState } = await import('../src/state.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
@@ -165,6 +166,55 @@ test('stale entries older than freshnessMs are dropped', async () => {
   appendFileSync(file, limitLine({ sessionId: 'stale-stop', timestamp: new Date(Date.now() - 3_600_000).toISOString() }));
   await watcher.tick();
   assert.equal(stops.length, 0);
+});
+
+test('desktop source: sandboxed transcript → origin desktop + CLAUDE_CONFIG_DIR env', async () => {
+  // Claude desktop (cowork) layout: each session runs against an isolated
+  // CLAUDE_CONFIG_DIR at <...>/local_<id>/.claude with its own projects tree.
+  const root = join(DIR, 'd1', 'local-agent-mode-sessions');
+  const sandbox = join(root, 'org-uuid', 'sess-uuid', 'local_abc123');
+  const projects = join(sandbox, '.claude', 'projects', '-sandbox-outputs');
+  mkdirSync(projects, { recursive: true });
+  const file = join(projects, 'dddd-1111.jsonl');
+  writeFileSync(file, '');
+
+  const stops = [];
+  const watcher = createWatcher({
+    sources: [claudeDesktopSource({ roots: [root] })],
+    offsetsPath: join(DIR, 'd1', 'offsets.json'),
+    onStop: rec => stops.push(rec),
+  });
+  await watcher.tick();
+  appendFileSync(file, limitLine({ sessionId: 'desktop-stop', cwd: join(sandbox, 'outputs') }));
+  await watcher.tick();
+
+  assert.equal(stops.length, 1);
+  assert.equal(stops[0].origin, 'desktop');
+  assert.equal(stops[0].sessionId, 'desktop-stop');
+  assert.equal(stops[0].cwd, join(sandbox, 'outputs'));
+  assert.deepEqual(stops[0].env, { CLAUDE_CONFIG_DIR: join(sandbox, '.claude') });
+});
+
+test('dispatchCandidate persists origin and env in the ledger, without a pane key', () => {
+  dispatchCandidate({
+    agent: 'claude',
+    sessionId: 'ledger-stop',
+    cwd: '/tmp/proj-ledger',
+    limitType: '5h',
+    resetLine: SESSION_TEXT,
+    resetAt: null,
+    origin: 'desktop',
+    env: { CLAUDE_CONFIG_DIR: '/tmp/sandbox/.claude' },
+    timestampMs: Date.now(),
+  });
+  const rec = readState().sessions['ledger-stop'];
+  assert.ok(rec);
+  assert.equal(rec.status, 'stopped');
+  assert.equal(rec.detectedVia, 'transcript');
+  assert.equal(rec.origin, 'desktop');
+  assert.deepEqual(rec.env, { CLAUDE_CONFIG_DIR: '/tmp/sandbox/.claude' });
+  assert.ok(!('pane' in rec), 'watcher records must not carry a pane key');
+  assert.ok(rec.resetAt > Date.now(), 'reset parsed from the reset line');
 });
 
 test('codex source: exhausted token_count in a fresh rollout → candidate with epoch reset', async () => {
