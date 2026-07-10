@@ -64,7 +64,7 @@ export function installGrokHooks({ grokDir = GROK_DIR(), unsnoozeBin } = {}) {
     hooks: {
       StopFailure: [{
         matcher: 'overloaded|server_error|rate_limit',
-        hooks: [{ type: 'command', command: `node ${bin} _hook-stopfailure --agent grok`, timeout: 5 }],
+        hooks: [{ type: 'command', command: `test -f "${bin}" && node "${bin}" _hook-stopfailure --agent grok || exit 0`, timeout: 5 }],
       }],
     },
   };

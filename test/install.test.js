@@ -24,7 +24,7 @@ test('merge replaces claude-auto-retry hook, preserves everything else', () => {
   assert.equal(out.hooks.SessionStart.length, 1);
   assert.equal(out.hooks.StopFailure.length, 1);
   const cmd = out.hooks.StopFailure[0].hooks[0].command;
-  assert.match(cmd, /unsnooze\.js _hook-stopfailure/);
+  assert.match(cmd, /unsnooze\.js"? _hook-stopfailure/);
   assert.ok(!cmd.includes('claude-auto-retry'));
 });
 
@@ -112,7 +112,7 @@ test('merge replaces legacy csg hook entry', () => {
   const out = JSON.parse(mergeHookIntoSettings(legacy));
   assert.equal(out.hooks.StopFailure.length, 1);
   const cmd = out.hooks.StopFailure[0].hooks[0].command;
-  assert.match(cmd, /unsnooze\.js _hook-stopfailure/);
+  assert.match(cmd, /unsnooze\.js"? _hook-stopfailure/);
   assert.ok(!cmd.includes('csg.js'));
 });
 
@@ -120,6 +120,21 @@ test('stripFencedBlock leaves untouched content when no block', () => {
   const { content, found } = stripFencedBlock('a\nb\n', '# >>> x >>>', '# <<< x <<<');
   assert.equal(found, false);
   assert.equal(content, 'a\nb\n');
+});
+
+test('wrapper falls back to the real CLI when the unsnooze entry point is gone', () => {
+  // Regression: renaming/deleting bin/*.js while a wrapper still pointed at it
+  // bricked the `claude` command entirely (MODULE_NOT_FOUND on every launch).
+  const { content } = installZshrcBlock('', ['claude']);
+  const guard = content.match(/if \[ "\$\{UNSNOOZE_ACTIVE\}" = "1" \] \|\| \[ ! -f "([^"]+)" \]/);
+  assert.ok(guard, 'wrapper must check the entry point exists before exec-ing it');
+  assert.match(guard[1], /unsnooze\.js$/);
+});
+
+test('settings hook command is guarded so a missing entry point exits 0', () => {
+  const out = JSON.parse(mergeHookIntoSettings('{}'));
+  const cmd = out.hooks.StopFailure[0].hooks[0].command;
+  assert.match(cmd, /test -f .*unsnooze\.js.*&&/, 'hook must no-op (exit 0) when the entry point is gone');
 });
 
 test('wrapper block contains one function per enabled agent, routed via _run', () => {

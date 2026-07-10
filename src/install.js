@@ -46,7 +46,7 @@ function atomicWrite(path, content) {
 // --- settings.json hook management ---
 
 function isOurs(entry) {
-  return (entry.hooks || []).some(h => (h.command || '').includes('unsnooze.js _hook-stopfailure'));
+  return (entry.hooks || []).some(h => /unsnooze\.js"? _hook-stopfailure/.test(h.command || ''));
 }
 function isLegacy(entry) {
   return (entry.hooks || []).some(h => /claude-auto-retry|csg\.js _hook-stopfailure/.test(h.command || ''));
@@ -58,7 +58,9 @@ export function mergeHookIntoSettings(settingsJson) {
   const list = (settings.hooks.StopFailure || []).filter(e => !isLegacy(e) && !isOurs(e));
   list.push({
     matcher: 'overloaded|server_error|rate_limit',
-    hooks: [{ type: 'command', command: `node ${UNSNOOZE_BIN} _hook-stopfailure`, timeout: 5 }],
+    // Guarded like the shell wrapper: a vanished entry point must exit 0, not
+    // spray MODULE_NOT_FOUND errors into every Claude Code turn.
+    hooks: [{ type: 'command', command: `test -f "${UNSNOOZE_BIN}" && node "${UNSNOOZE_BIN}" _hook-stopfailure || exit 0`, timeout: 5 }],
   });
   settings.hooks.StopFailure = list;
   return JSON.stringify(settings, null, 2) + '\n';
@@ -77,9 +79,12 @@ export function removeHookFromSettings(settingsJson) {
 // --- zshrc block management ---
 
 export function wrapperBlock(agents = ['claude']) {
+  // The missing-file guard is load-bearing: if unsnooze is ever uninstalled,
+  // moved, or renamed without cleaning the rc file, the wrapper must degrade
+  // to the plain CLI — never brick the user's `claude`/`codex` command.
   const fns = agents.map(id => `unalias ${id} 2>/dev/null || true
 ${id}() {
-  if [ "\${UNSNOOZE_ACTIVE}" = "1" ]; then
+  if [ "\${UNSNOOZE_ACTIVE}" = "1" ] || [ ! -f "${UNSNOOZE_BIN}" ]; then
     command ${id} "$@"
     return $?
   fi
