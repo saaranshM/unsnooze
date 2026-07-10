@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.1.0 — 2026-07-10
+
+### Per-agent resume messages
+
+- **`resumeMessages.claude` / `.codex` / `.grok`**: optional per-agent override
+  of the global `resumeMessage` — `unsnooze config set resumeMessages.codex
+  "..."` or `UNSNOOZE_RESUME_MESSAGE_CODEX`. Empty means "use the global
+  message"; clear with `unsnooze config set resumeMessages.codex ""`.
+  Specificity beats source: a per-agent file value outranks a global env var.
+- **Setup wizard** asks for per-agent messages, prefills every message prompt
+  from the existing config, and merges over the config file — re-runs no
+  longer clobber values set via `unsnooze config`.
+- Blank or whitespace-only messages are never sent: resolution falls through
+  to the global message, then the built-in default.
+
+### CLI & fixes
+
+- **`-h` / `--help`** now print the unsnooze help (previously only
+  `unsnooze help`), and the usage documents every command.
+- **Install**: `unsnooze setup` / `install` no longer crashes with ENOENT on
+  machines without a `~/.claude/` directory.
+- `unsnooze config set <key> ""` is a valid way to clear string overrides, and
+  a config file holding non-object JSON is treated as empty instead of
+  corrupting later writes.
+
 ## 1.0.0 — 2026-07-10
 
 First public release (previously the private `claude-session-guard`/`csg`).
