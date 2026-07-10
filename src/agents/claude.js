@@ -23,6 +23,7 @@ export const patterns = {
     /resets?\s+in[:\s]\s*\d/i,
     /try again in \d+\s*(?:hours?|minutes?|h|m)/i,
     /resets?\s+(?:on\s+)?(?:mon|tue|wed|thu|fri|sat|sun)/i,   // weekly: "resets Tuesday 9am"
+    /resets?\s+(?:on\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}\b/i,   // weekly: "resets Jul 4 at 12:30am"
   ],
   weeklyPatterns: [
     /week(?:ly)?\s+limit/i,

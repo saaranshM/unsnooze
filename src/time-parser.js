@@ -9,6 +9,9 @@ const RELATIVE_TIME_REGEX = /(?:try again|wait|resets?\s+in)[:\s]\s*(?:for\s+)?(
 // "resets Tuesday 3pm" / "resets on Mon" — weekly limits carry a day name.
 const DAY_REGEX = /resets?\s+(?:on\s+)?(mon|tue|wed|thu|fri|sat|sun)[a-z]*/i;
 const DAY_INDEX = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+// Month-date weekly form (transcript/API error text):
+//   "resets Jul 4 at 12:30am (Asia/Calcutta)"
+const RESET_DATE_REGEX = /resets?\s+(?:on\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+\d{4})?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(([^)]+)\))?/i;
 
 // Codex CLI forms ("try again at …", local time):
 //   same day:  "or try again at 3:51 PM."
@@ -47,6 +50,24 @@ export function parseResetTime(text) {
       hour: to24h(parseInt(tryAtMatch[1], 10), tryAtMatch[3].toLowerCase()),
       minute: tryAtMatch[2] ? parseInt(tryAtMatch[2], 10) : 0,
       timezone: null, ambiguous: false, day: null,
+    };
+  }
+
+  const resetDateMatch = text.match(RESET_DATE_REGEX);
+  if (resetDateMatch) {
+    const [, mon, dayOfMonth, hourRaw, minuteRaw, ampmRaw, timezone] = resetDateMatch;
+    const ampm = ampmRaw?.toLowerCase() || null;
+    let hour = parseInt(hourRaw, 10);
+    if (ampm === 'pm' && hour !== 12) hour += 12;
+    if (ampm === 'am' && hour === 12) hour = 0;
+    return {
+      month: MONTH_INDEX[mon.toLowerCase()],
+      dayOfMonth: parseInt(dayOfMonth, 10),
+      hour,
+      minute: minuteRaw ? parseInt(minuteRaw, 10) : 0,
+      timezone: timezone || null,
+      ambiguous: !ampm && hour >= 1 && hour <= 12,
+      day: null,
     };
   }
 
@@ -120,16 +141,7 @@ export function resetAtMs(parsed, { marginMs = 60_000, fallbackMs = 5 * 3_600_00
   // UTC guess until it formats as the desired local h:m. Correction normalized
   // to [-720, +720] minutes to take the minimum-magnitude step (avoids the
   // off-by-a-day bug in high-offset timezones).
-  function targetTimestamp(h, m) {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour12: false,
-    }).formatToParts(now);
-    const y = parseInt(parts.find(p => p.type === 'year').value);
-    const mo = parseInt(parts.find(p => p.type === 'month').value);
-    const d = parseInt(parts.find(p => p.type === 'day').value);
-
-    const targetStr = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
-    let candidate = new Date(targetStr + 'Z').getTime();
+  function correctWallClock(candidate, h, m) {
     for (let i = 0; i < 3; i++) {
       const fp = new Intl.DateTimeFormat('en-US', {
         timeZone: tz, hour: 'numeric', minute: 'numeric', hour12: false,
@@ -145,6 +157,18 @@ export function resetAtMs(parsed, { marginMs = 60_000, fallbackMs = 5 * 3_600_00
     return candidate;
   }
 
+  function targetTimestamp(h, m) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour12: false,
+    }).formatToParts(now);
+    const y = parseInt(parts.find(p => p.type === 'year').value);
+    const mo = parseInt(parts.find(p => p.type === 'month').value);
+    const d = parseInt(parts.find(p => p.type === 'day').value);
+
+    const targetStr = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
+    return correctWallClock(new Date(targetStr + 'Z').getTime(), h, m);
+  }
+
   function nextOccurrence(h, m) {
     let t = targetTimestamp(h, m);
     if (t <= now.getTime()) t += 86_400_000;
@@ -158,6 +182,40 @@ export function resetAtMs(parsed, { marginMs = 60_000, fallbackMs = 5 * 3_600_00
       }
     }
     return t;
+  }
+
+  // Month-date form ("resets Jul 4 at 12:30am (tz)"): roll forward from today
+  // in the target tz to the named month/day, re-correct the wall-clock (the
+  // walk may cross DST). An already-past date means we misread stale text —
+  // fall back rather than waiting toward next year.
+  if (parsed.month != null) {
+    const monthDayAt = t => {
+      const fp = new Intl.DateTimeFormat('en-US', { timeZone: tz, month: 'numeric', day: 'numeric' })
+        .formatToParts(new Date(t));
+      return [
+        parseInt(fp.find(p => p.type === 'month').value, 10) - 1,
+        parseInt(fp.find(p => p.type === 'day').value, 10),
+      ];
+    };
+    const resolve = (h, m) => {
+      let t = targetTimestamp(h, m);
+      for (let i = 0; i <= 366; i++) {
+        const [mo, d] = monthDayAt(t);
+        if (mo === parsed.month && d === parsed.dayOfMonth) return correctWallClock(t, h, m);
+        t += 86_400_000;
+      }
+      return null;   // impossible date (e.g. Feb 30)
+    };
+    const candidates = parsed.ambiguous
+      ? [resolve(parsed.hour, parsed.minute), resolve((parsed.hour + 12) % 24, parsed.minute)]
+      : [resolve(parsed.hour, parsed.minute)];
+    // The yearless form only ever names a date within the weekly window; a
+    // resolution further out means the date already passed and the walk landed
+    // on NEXT year's occurrence — that's a misread, not an 11-month wait.
+    const maxAhead = now.getTime() + 10 * 86_400_000;
+    const future = candidates.filter(t => t != null && t > now.getTime() && t <= maxAhead);
+    if (future.length === 0) return { at: now.getTime() + fallbackMs + marginMs, source: 'fallback' };
+    return { at: Math.min(...future) + marginMs, source };
   }
 
   let at;

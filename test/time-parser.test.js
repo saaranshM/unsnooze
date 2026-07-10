@@ -33,6 +33,32 @@ test('parses "resets in: 3 hours"', () => {
   assert.equal(p.waitMs, 3 * H);
 });
 
+test('parses month-date weekly form "resets Jul 4 at 12:30am (Asia/Calcutta)"', () => {
+  const p = parseResetTime("You've hit your weekly limit · resets Jul 4 at 12:30am (Asia/Calcutta)");
+  assert.ok(p);
+  assert.equal(p.month, 6);          // 0-indexed July
+  assert.equal(p.dayOfMonth, 4);
+  assert.equal(p.hour, 0);
+  assert.equal(p.minute, 30);
+  assert.equal(p.timezone, 'Asia/Calcutta');
+  assert.equal(p.ambiguous, false);
+});
+
+test('month-date reset resolves to that date in the stated timezone', () => {
+  const now = new Date('2026-07-01T12:00:00Z');
+  const { at, source } = resetAtMs(parseResetTime('resets Jul 4 at 12:30am (Asia/Calcutta)'), { now, marginMs: MARGIN });
+  assert.equal(source, 'absolute');
+  // 00:30 IST on Jul 4 == 19:00 UTC on Jul 3
+  assert.equal(at, new Date('2026-07-03T19:00:00Z').getTime() + MARGIN);
+});
+
+test('month-date already past → fallback, never next year', () => {
+  const now = new Date('2026-07-10T12:00:00Z');
+  const { at, source } = resetAtMs(parseResetTime('resets Jul 4 at 12:30am (Asia/Calcutta)'), { now, fallbackMs: 5 * H, marginMs: MARGIN });
+  assert.equal(source, 'fallback');
+  assert.equal(at, now.getTime() + 5 * H + MARGIN);
+});
+
 test('unparseable → null → fallback used', () => {
   assert.equal(parseResetTime('garbage text'), null);
   const now = new Date('2026-07-05T12:00:00Z');

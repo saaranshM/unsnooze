@@ -44,6 +44,35 @@ test('hook + scrape dedupe on same pane within window; sessionId wins', () => {
   assert.equal(matches[0].sessionId, 'real-id');
 });
 
+test('transcript record with sessionId merges into a pane record lacking one (same agent+cwd)', () => {
+  const t = Date.now();
+  upsertSession(record({ pane: '%12', agent: 'codex', cwd: '/tmp/proj-c', detectedAt: t }));
+  // Watcher record: no pane key at all — a GUI/transcript detection.
+  upsertSession({
+    sessionId: 'roll-1', agent: 'codex', cwd: '/tmp/proj-c', tmuxSession: 'unsnooze',
+    status: 'stopped', limitType: '5h', detectedVia: 'transcript',
+    detectedAt: t + 4_000, resetAt: t + 3_600_000, resetSource: 'absolute',
+    attempts: 0, lastAttemptAt: null, lastError: null,
+  });
+  const matches = Object.values(readState().sessions)
+    .filter(s => s.cwd === '/tmp/proj-c' && s.agent === 'codex');
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].sessionId, 'roll-1');
+  assert.equal(matches[0].pane, '%12');   // the live pane must survive the merge
+
+  // A later tick re-detecting the same sessionId must still merge, even though
+  // the record's key is the original pane key.
+  upsertSession({
+    sessionId: 'roll-1', agent: 'codex', cwd: '/tmp/proj-c', tmuxSession: 'unsnooze',
+    status: 'stopped', limitType: '5h', detectedVia: 'transcript',
+    detectedAt: t + 8_000, resetAt: t + 3_600_000, resetSource: 'absolute',
+    attempts: 0, lastAttemptAt: null, lastError: null,
+  });
+  const again = Object.values(readState().sessions)
+    .filter(s => s.cwd === '/tmp/proj-c' && s.agent === 'codex');
+  assert.equal(again.length, 1);
+});
+
 test('setStatus + activeStopped + dueSessions', () => {
   upsertSession(record({ sessionId: 'due-1', pane: '%3', resetAt: Date.now() - 1000 }));
   upsertSession(record({ sessionId: 'later-1', pane: '%4', resetAt: Date.now() + 9_999_999 }));

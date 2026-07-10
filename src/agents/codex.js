@@ -48,7 +48,7 @@ export const patterns = {
 // the first JSONL line carries the session cwd. Conservative: no cwd match →
 // null (the resumer then uses `codex resume --last`, which codex itself scopes
 // to the launch cwd).
-const ROLLOUT_RE = /^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+export const ROLLOUT_RE = /^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
 
 function fileHead(path, bytes = 4096) {
   let fd;

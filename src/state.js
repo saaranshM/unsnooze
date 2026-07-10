@@ -111,7 +111,18 @@ export function upsertSession(record) {
 function findDuplicate(state, record) {
   if (record.sessionId && state.sessions[record.sessionId]) return record.sessionId;
   for (const [key, s] of Object.entries(state.sessions)) {
+    // Same sessionId living under a pane-based key (a scrape record that later
+    // learned its id through a merge).
+    if (record.sessionId && s.sessionId === record.sessionId) return key;
     if (s.pane && s.pane === record.pane
+      && s.status === 'stopped'
+      && Math.abs((s.detectedAt || 0) - record.detectedAt) < DEDUPE_WINDOW_MS) {
+      return key;
+    }
+    // A transcript/hook record with a sessionId matches a scrape record that
+    // never learned its id — same agent, same cwd, same detection window.
+    if (record.sessionId && !s.sessionId
+      && s.agent === record.agent && s.cwd && s.cwd === record.cwd
       && s.status === 'stopped'
       && Math.abs((s.detectedAt || 0) - record.detectedAt) < DEDUPE_WINDOW_MS) {
       return key;
