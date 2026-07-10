@@ -124,7 +124,12 @@ export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = re
     }
 
     // Interactive menu takes priority — it blocks the session until answered.
-    if (agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES)) {
+    // Checked against the VISIBLE screen only: a menu in scrollback history
+    // was already answered, and re-driving it would inject stray keys.
+    const visible = tmux.capturePaneVisible
+      ? await tmux.capturePaneVisible(pane).catch(() => '')
+      : text;
+    if (agent.menu && agent.menu.isPrompt(visible, PANE_SCAN_LINES)) {
       if (!getConfig('menuAutoAnswer')) {
         // Watch-only mode: record the stop (reset time may not be visible
         // until the menu is answered — fallback covers that), touch nothing.
@@ -137,7 +142,7 @@ export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = re
         }
         return;
       }
-      await driveMenu(text);
+      await driveMenu(visible);
       return;
     }
 

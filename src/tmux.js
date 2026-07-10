@@ -30,6 +30,13 @@ export async function capturePane(pane, lines = 200) {
   return tmux('capture-pane', '-t', pane, '-p', '-S', `-${lines}`);
 }
 
+// Visible screen ONLY (no scrollback). Interactive menus must be checked
+// against this: a menu that scrolled into history was already answered —
+// re-driving it sends stray keystrokes into whatever is foreground now.
+export async function capturePaneVisible(pane) {
+  return tmux('capture-pane', '-t', pane, '-p');
+}
+
 // Type a message into a TUI and submit it (split form; -l sends literally so
 // tmux key names inside the message are typed, not interpreted).
 export async function sendText(pane, text) {

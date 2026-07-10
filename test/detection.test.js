@@ -75,6 +75,39 @@ test('menu is driven to "Stop and wait", never blind Enter', async () => {
   assert.deepEqual(tmux.sent.map(s => s.key), ['Down', 'Enter']);
 });
 
+test('menu detection uses the VISIBLE screen, not scrollback history', async () => {
+  // Regression: an answered menu lingers in tmux history; scanning history
+  // made the monitor re-drive the menu (stray keystrokes) forever.
+  const MENU_IN_HISTORY = [
+    'What do you want to do?',
+    '❯ 1. Upgrade your plan',
+    '  2. Stop and wait for limit to reset',
+    '(enter to confirm)',
+    'CHOSE: 2. Stop and wait for limit to reset',
+    "⚠ You've hit your 5-hour limit",
+    '· resets 3pm (UTC)',
+  ].join('\n');
+  const VISIBLE_NOW = [
+    'CHOSE: 2. Stop and wait for limit to reset',
+    "⚠ You've hit your 5-hour limit",
+    '· resets 3pm (UTC)',
+  ].join('\n');
+  const sent = [];
+  const tmux = {
+    paneAlive: async () => true,
+    capturePane: async () => MENU_IN_HISTORY,          // full capture incl. history
+    capturePaneVisible: async () => VISIBLE_NOW,       // what's actually on screen
+    sendText: async (pane, text) => sent.push({ type: 'text', text }),
+    sendKey: async (pane, key) => sent.push({ type: 'key', key }),
+  };
+  const monitor = createMonitor({ pane: '%55', cwd: '/tmp/proj-f', tmux });
+  await monitor._tick();
+  assert.equal(sent.length, 0, 'must NOT re-drive a menu that is only in history');
+  const recs = Object.values(readState().sessions).filter(s => s.pane === '%55');
+  assert.equal(recs.length, 1, 'the banner on the visible screen must be recorded');
+  assert.equal(recs[0].status, 'stopped');
+});
+
 test('banner cleared + tracked → record flips to resumed', async () => {
   const script = { text: BANNER };
   const tmux = fakeTmux(script);
