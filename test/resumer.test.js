@@ -108,6 +108,44 @@ test('dead codex pane → reopened via `_run codex resume <id> "msg"`, nothing t
   assert.equal(sent.length, 0);                                     // message travels in argv
 });
 
+test('reopen command embeds absolute node + entry-point paths (tmux server PATH is not ours)', async () => {
+  // Regression: `unsnooze _run ...` resolved through the tmux SERVER's PATH,
+  // which may lack npm globals or nvm's node entirely — reopen then fails
+  // with command-not-found (or runs some other unsnooze).
+  const rec = seed({ pane: '%21', sessionId: '55555555-6666-4777-8888-999999999999' });
+  let windowCmd = null;
+  const tmux = {
+    paneAlive: async () => false,
+    paneCurrentCommand: async () => null,
+    capturePane: async () => '❯ \n',
+    sendText: async () => {},
+    newWindow: async (session, cwd, command) => { windowCmd = command; return '%96'; },
+  };
+  await dispatchOne(rec, { tmux });
+  assert.ok(windowCmd.startsWith(process.execPath) || windowCmd.startsWith(`'${process.execPath}'`),
+    `command must start with the absolute node path, got: ${windowCmd}`);
+  assert.match(windowCmd, /bin\/unsnooze\.js'? _run claude/);
+});
+
+test('UNSNOOZE_SELF overrides the reopen binary (test harness escape hatch)', async () => {
+  process.env.UNSNOOZE_SELF = '/fake/bin/unsnooze';
+  try {
+    const rec = seed({ pane: '%22', sessionId: '66666666-7777-4888-8999-aaaaaaaaaaaa' });
+    let windowCmd = null;
+    const tmux = {
+      paneAlive: async () => false,
+      paneCurrentCommand: async () => null,
+      capturePane: async () => '❯ \n',
+      sendText: async () => {},
+      newWindow: async (session, cwd, command) => { windowCmd = command; return '%95'; },
+    };
+    await dispatchOne(rec, { tmux });
+    assert.match(windowCmd, /^\/fake\/bin\/unsnooze _run claude/);
+  } finally {
+    delete process.env.UNSNOOZE_SELF;
+  }
+});
+
 test('verifyOne: banner back → rescheduled as stopped with attempts+1', async () => {
   const rec = seed({ pane: '%14' });
   const tmuxSend = {

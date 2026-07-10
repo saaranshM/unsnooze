@@ -18,6 +18,7 @@ import { parseResetTime, resetAtMs } from './time-parser.js';
 import { readState, updateState, setStatus, dueSessions, activeStopped } from './state.js';
 import { getConfig } from './settings.js';
 import { notify } from './notify.js';
+import { UNSNOOZE_BIN } from './spawn.js';
 import { makeLogger } from './logger.js';
 
 const log = makeLogger('resumer');
@@ -56,9 +57,18 @@ function shellQuote(arg) {
   return /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
+// The reopen command runs inside a fresh tmux window, i.e. with the tmux
+// SERVER's environment — which may lack npm globals or nvm's node on PATH.
+// Always embed absolute paths. UNSNOOZE_SELF is the test-harness override.
+function selfCommand() {
+  return process.env.UNSNOOZE_SELF
+    ? [process.env.UNSNOOZE_SELF]
+    : [process.execPath, UNSNOOZE_BIN];
+}
+
 // Decide how to act on one due record. Pure-ish; tmux injectable.
 // Returns: 'sent' | 'reopened' | 'deferred' | 'skip' | 'failed'
-export async function dispatchOne(rec, { tmux = realTmux, resumeMessage = getConfig('resumeMessage'), unsnoozeBin = 'unsnooze' } = {}) {
+export async function dispatchOne(rec, { tmux = realTmux, resumeMessage = getConfig('resumeMessage'), selfCmd = selfCommand() } = {}) {
   const key = rec.key;
   const agent = getAgent(rec.agent);
 
@@ -81,7 +91,7 @@ export async function dispatchOne(rec, { tmux = realTmux, resumeMessage = getCon
 
   // Re-open path: new tmux window in the well-known session, resume by id.
   const resume = agent.resumeArgs(rec.sessionId, resumeMessage);
-  const command = [unsnoozeBin, '_run', agent.id, ...resume.args].map(shellQuote).join(' ');
+  const command = [...selfCmd, '_run', agent.id, ...resume.args].map(shellQuote).join(' ');
   setStatus(key, 'resuming', { lastAttemptAt: Date.now() });
   let newPane;
   try {
