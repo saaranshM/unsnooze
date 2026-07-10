@@ -61,6 +61,8 @@ async function main() {
       return runResumer();
     }
     case 'help':
+    case '-h':
+    case '--help':
     case '--help-unsnooze': {
       console.log(`unsnooze — wakes every limit-stopped AI coding session when the limit resets
 
@@ -71,11 +73,13 @@ Usage:
   unsnooze resume-now [id|--all]   resume stopped session(s) immediately
   unsnooze cancel [id|--all]       stop tracking session(s)
   unsnooze logs [-f]               show (or follow) the unsnooze log
-  unsnooze config [list|get|set]   view or change settings (toggles, message)
+  unsnooze config [list|get|set]   view or change settings (toggles, global +
+                                   per-agent resume messages)
   unsnooze setup                   interactive setup wizard (agents + toggles)
   unsnooze install [--yes]         wire up shell wrappers + hooks (non-interactive)
   unsnooze uninstall [--purge]     remove wrappers + hooks (and state with --purge)
-  unsnooze report [agent] [pane]   capture a pane to report an undetected banner`);
+  unsnooze report [agent] [pane]   capture a pane to report an undetected banner
+  unsnooze help                    show this help (also -h / --help)`);
       return 0;
     }
     default: {

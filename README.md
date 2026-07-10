@@ -103,6 +103,7 @@ unsnooze config set <k> <v>     # e.g. autoResume off
 unsnooze logs [-f]              # what unsnooze has been doing
 unsnooze report [agent]         # capture a pane to report an undetected banner
 unsnooze uninstall [--purge]    # remove wrappers + hooks (+ state with --purge)
+unsnooze help                   # full command list (also -h / --help)
 ```
 
 ## Settings
