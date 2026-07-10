@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.0 — unreleased
+## 1.2.0 — 2026-07-10
 
 ### GUI surfaces: VS Code extension, desktop apps
 

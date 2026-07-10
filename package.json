@@ -1,6 +1,6 @@
 {
   "name": "unsnooze",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Wakes every limit-stopped AI coding session (Claude Code, Codex CLI, Grok) in tmux the moment the usage limit resets.",
   "keywords": [
     "claude-code",
