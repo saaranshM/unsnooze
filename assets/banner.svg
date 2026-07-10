@@ -1,0 +1,46 @@
+<svg width="880" height="230" viewBox="0 0 880 230" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="unsnooze — wake every limit-stopped AI coding session">
+  <defs>
+    <linearGradient id="glow" x1="0" y1="0" x2="880" y2="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f59e0b"/>
+      <stop offset="1" stop-color="#fb7185"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="1" stop-color="#010409"/>
+    </linearGradient>
+  </defs>
+
+  <!-- card -->
+  <rect x="1" y="1" width="878" height="228" rx="18" fill="url(#card)" stroke="#30363d" stroke-width="2"/>
+
+  <!-- prompt glyph -->
+  <text x="72" y="128" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="64" font-weight="700" fill="url(#glow)">❯</text>
+
+  <!-- sleeping z's drifting away -->
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#8b949e" font-weight="700">
+    <text x="126" y="86" font-size="26">
+      z
+      <animate attributeName="opacity" values="0.9;0;0.9" dur="4s" repeatCount="indefinite"/>
+    </text>
+    <text x="150" y="66" font-size="20" opacity="0.7">
+      z
+      <animate attributeName="opacity" values="0.7;0;0.7" dur="4s" begin="0.6s" repeatCount="indefinite"/>
+    </text>
+    <text x="170" y="50" font-size="15" opacity="0.5">
+      z
+      <animate attributeName="opacity" values="0.5;0;0.5" dur="4s" begin="1.2s" repeatCount="indefinite"/>
+    </text>
+  </g>
+
+  <!-- wordmark -->
+  <text x="210" y="128" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="72" font-weight="800" letter-spacing="-2">
+    <tspan fill="url(#glow)">un</tspan><tspan fill="#e6edf3">snooze</tspan>
+  </text>
+  <!-- blinking cursor -->
+  <rect x="672" y="76" width="30" height="58" fill="#e6edf3">
+    <animate attributeName="opacity" values="1;1;0;0" keyTimes="0;0.5;0.5;1" dur="1.2s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- tagline -->
+  <text x="212" y="176" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="16" fill="#8b949e">wakes every limit-stopped AI session the moment the limit resets</text>
+</svg>

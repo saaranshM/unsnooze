@@ -1,0 +1,61 @@
+<svg width="880" height="380" viewBox="0 0 880 380" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="animated demo: limits detected across sessions, then everything resumes at reset time">
+  <defs>
+    <linearGradient id="term" x1="0" y1="0" x2="0" y2="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="1" stop-color="#010409"/>
+    </linearGradient>
+  </defs>
+
+  <!-- window -->
+  <rect x="1" y="1" width="878" height="378" rx="14" fill="url(#term)" stroke="#30363d" stroke-width="2"/>
+  <!-- title bar -->
+  <rect x="1" y="1" width="878" height="44" rx="14" fill="#161b22"/>
+  <rect x="1" y="30" width="878" height="15" fill="#161b22"/>
+  <circle cx="28" cy="23" r="7" fill="#ff5f57"/>
+  <circle cx="52" cy="23" r="7" fill="#febc2e"/>
+  <circle cx="76" cy="23" r="7" fill="#28c840"/>
+  <text x="440" y="29" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="14" fill="#8b949e">tmux · 3 agent sessions · unsnooze watching</text>
+
+  <!-- log lines: 14s loop -->
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="17">
+
+    <g opacity="0">
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.02;0.97;1" dur="14s" begin="0.4s" repeatCount="indefinite"/>
+      <text x="32" y="84" fill="#f85149">⚠ claude · You've hit your 5-hour limit — resets 3am</text>
+    </g>
+
+    <g opacity="0">
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.02;0.97;1" dur="14s" begin="1.6s" repeatCount="indefinite"/>
+      <text x="32" y="122" fill="#f85149">■ codex · You've hit your usage limit. Try again at 3:00 AM.</text>
+    </g>
+
+    <g opacity="0">
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.02;0.97;1" dur="14s" begin="2.8s" repeatCount="indefinite"/>
+      <text x="32" y="168" fill="#e6edf3">❯ unsnooze status</text>
+    </g>
+
+    <g opacity="0">
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.02;0.97;1" dur="14s" begin="3.6s" repeatCount="indefinite"/>
+      <text x="32" y="200" fill="#8b949e">  [STOPPED] claude · ~/work/api      resets 3:00 AM (4h 12m)</text>
+    </g>
+    <g opacity="0">
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.02;0.97;1" dur="14s" begin="4.2s" repeatCount="indefinite"/>
+      <text x="32" y="228" fill="#8b949e">  [STOPPED] codex  · ~/work/webapp   resets 3:00 AM (4h 12m)</text>
+    </g>
+
+    <g opacity="0">
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.02;0.97;1" dur="14s" begin="5.4s" repeatCount="indefinite"/>
+      <text x="32" y="270" fill="#8b949e">…you go to sleep. unsnooze doesn't. ⏰ 3:00 AM —</text>
+    </g>
+
+    <g opacity="0">
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.02;0.97;1" dur="14s" begin="7.2s" repeatCount="indefinite"/>
+      <text x="32" y="308" fill="#d29922">→ waking claude in pane %1 · reopening codex: codex resume --last "continue"</text>
+    </g>
+
+    <g opacity="0">
+      <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.02;0.97;1" dur="14s" begin="8.8s" repeatCount="indefinite"/>
+      <text x="32" y="346" fill="#3fb950">✔ all sessions verified running — good morning, the work is done</text>
+    </g>
+  </g>
+</svg>

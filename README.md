@@ -1,24 +1,37 @@
-# unsnooze
+<div align="center">
 
-**Unsnooze your agents.** When Claude Code, Codex, or Grok hits a usage limit,
-your session just… stops. unsnooze tracks **every** limit-stopped session
-across all your projects and **wakes each one up in tmux the moment the limit
-resets** — so overnight and long-running work finishes without you babysitting
-a terminal.
+<img src="assets/banner.svg" alt="unsnooze — your agents hit a usage limit. unsnooze wakes them the second it resets." width="880"/>
 
+<br/>
+
+[![CI](https://github.com/saaranshM/unsnooze/actions/workflows/ci.yml/badge.svg)](https://github.com/saaranshM/unsnooze/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/unsnooze?color=f59e0b)](https://www.npmjs.com/package/unsnooze)
+[![node](https://img.shields.io/badge/node-%E2%89%A5%2020-3fb950)](package.json)
+[![license](https://img.shields.io/badge/license-MIT-8b949e)](LICENSE)
+
+**Claude Code · Codex CLI · Grok** — when they hit a usage limit, your session just… stops.<br/>
+unsnooze tracks **every** limit-stopped session across all your projects and
+**wakes each one up in tmux the moment the limit resets.**
+
+```sh
+npm install -g unsnooze && unsnooze setup
 ```
-npm install -g unsnooze
-unsnooze setup        # interactive wizard: pick CLIs, toggles, done
-```
+
+<img src="assets/demo.svg" alt="animated demo: limit banners detected in two sessions, unsnooze waits for the reset, then resumes everything" width="880"/>
+
+</div>
 
 ## Why unsnooze
 
-| | unsnooze | claude-auto-retry | autoclaude | hydra |
-|---|---|---|---|---|
+Overnight and long-running agent work dies at the 5-hour / weekly limit, and every
+existing tool solves only a slice of it:
+
+| | **unsnooze** | claude-auto-retry | autoclaude | hydra |
+|---|:---:|:---:|:---:|:---:|
 | Multi-CLI (Claude Code + Codex + Grok) | ✅ | ❌ Claude only | ❌ Claude only | ✅ |
-| Waits for reset & resumes the SAME session | ✅ | ✅ | ✅ | ❌ switches provider |
+| Waits for reset & resumes the **same** session | ✅ | ✅ | ✅ | ❌ switches provider |
 | All sessions at once (shared ledger + one daemon) | ✅ | ❌ one pane | ✅ | ✅ |
-| Revives sessions whose pane/process is gone | ✅ `--resume <id>` | ❌ | ❌ | ❌ |
+| Revives sessions whose pane/process is **gone** | ✅ `--resume <id>` | ❌ | ❌ | ❌ |
 | Survives laptop sleep & weekly-scale waits | ✅ epoch polling | partial | partial | n/a |
 | Settings + first-run wizard | ✅ | ❌ | ❌ | ❌ |
 
@@ -26,7 +39,7 @@ unsnooze setup        # interactive wizard: pick CLIs, toggles, done
 
 - **Claude Code** — dual-channel detection: the `StopFailure` hook (authoritative,
   carries `session_id`) plus tmux pane scraping for banners and the interactive
-  limit menu (always answered with "Stop and wait for limit to reset", never a
+  limit menu (always answered with *"Stop and wait for limit to reset"*, never a
   blind Enter). Dead sessions revive via `claude --resume <id>`.
 - **OpenAI Codex CLI** — scrape-based (Codex fires no event on limits). Detects
   the exact `■ You've hit your usage limit …` banner strings from the Codex
@@ -72,15 +85,15 @@ the fresh banner, capped at 5 attempts).
 ## Usage
 
 ```sh
-claude / codex / grok        # normal usage — wrapped automatically
-unsnooze status              # tracked sessions + reset countdowns
+claude / codex / grok           # normal usage — wrapped automatically
+unsnooze status                 # tracked sessions + reset countdowns
 unsnooze resume-now [id|--all]  # don't wait for the reset time
-unsnooze cancel [id|--all]   # stop tracking a session
-unsnooze config list         # settings (see below)
-unsnooze config set <k> <v>  # e.g. autoResume off
-unsnooze logs [-f]           # what unsnooze has been doing
-unsnooze report [agent]      # capture a pane to report an undetected banner
-unsnooze uninstall [--purge] # remove wrappers + hooks (+ state with --purge)
+unsnooze cancel [id|--all]      # stop tracking a session
+unsnooze config list            # settings (see below)
+unsnooze config set <k> <v>     # e.g. autoResume off
+unsnooze logs [-f]              # what unsnooze has been doing
+unsnooze report [agent]         # capture a pane to report an undetected banner
+unsnooze uninstall [--purge]    # remove wrappers + hooks (+ state with --purge)
 ```
 
 ## Settings
@@ -133,4 +146,4 @@ npm test                     # unit tests (node:test)
 
 ## License
 
-MIT
+[MIT](LICENSE)
