@@ -1,164 +1,360 @@
 #!/usr/bin/env bash
-# End-to-end simulation of the full detect → wait → re-open cycle without
-# hitting a real usage limit. Uses a scratch tmux session + isolated state dir.
+# Full end-to-end scenario suite: every agent, every safety-relevant path,
+# in REAL tmux with real monitor/hook/resumer processes — no mocked tmux.
+# No real usage limits needed; agent CLIs are simulated by pane stubs.
 #
-#   Phase 1: a scratch pane displays a fake limit banner; a monitor scrapes it
-#            and records the stop.
-#   Phase 2: the record's resetAt is rewritten to "now"; the resumer runs,
-#            re-opens the (killed) session as a new window running a stub
-#            "claude" that prints what it receives, and sends the resume
-#            message.
+#   S1  claude: banner scraped → stop recorded with parsed reset time
+#   S2  claude: interactive limit menu driven — arrow keys to "Stop and wait",
+#       never a blind Enter (raw-key menu stub verifies the actual selection)
+#   S3  claude: menuAutoAnswer=off → menu NOT touched, stop still recorded
+#   S4  claude: StopFailure hook JSON on stdin → ledger entry
+#   S5  claude: dead pane → reopened via tmux window + resume message typed
+#   S6  claude: live idle pane → resume message sent into the SAME pane
+#   S7  codex: banner scraped → stop recorded, "try again at" parsed
+#   S8  codex: dead pane → `_run codex resume --last "<msg>"` — prompt in
+#       argv, NOTHING typed into the pane
+#   S9  grok: generic banner scraped → stop recorded (fallback reset)
+#   S10 grok: StopFailure hook (--agent grok) → ledger entry
+#   S11 autoResume=off → due session NOT dispatched; still tracked
+#   S12 overload (API Error 529) → seconds-scale retry message, ledger untouched
 #
-# Everything is namespaced (session unsnooze-e2e, state dir in a tmpdir) — safe to
-# run alongside real work.
+# SAFETY: this suite must never reach a real agent binary or the user's
+# sessions. Three layers guarantee it:
+#   - a fake `unsnooze` shadows any globally-installed one on PATH throughout
+#   - detection-scenario monitors run with UNSNOOZE_AUTO_RESUME=off, so the
+#     resumers they auto-spawn can never dispatch anything
+#   - every scenario ends by killing its monitor and any resumer
+# Everything is namespaced (tmux sessions e2e-*, state under a tmpdir).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
-export UNSNOOZE_STATE_DIR="$WORK/state"
+BIN="$ROOT/bin/unsnooze.js"
+
 export UNSNOOZE_TMUX_SESSION=unsnooze-e2e
-export UNSNOOZE_SCRAPE_INTERVAL_MS=500
-export UNSNOOZE_POLL_INTERVAL_MS=1000
-export UNSNOOZE_VERIFY_DELAY_MS=2000
-export UNSNOOZE_STAGGER_MS=500
-export UNSNOOZE_CLAUDE_DIR="$WORK/claude"   # no transcripts — sessionId stays null
-export UNSNOOZE_CODEX_DIR="$WORK/codex"     # no rollouts — sessionId stays null
-export UNSNOOZE_NOTIFICATIONS=off           # no desktop popups from the simulation
-SES=unsnooze-e2e-src
+export UNSNOOZE_SCRAPE_INTERVAL_MS=400
+export UNSNOOZE_POLL_INTERVAL_MS=800
+export UNSNOOZE_VERIFY_DELAY_MS=1500
+export UNSNOOZE_STAGGER_MS=300
+export UNSNOOZE_READY_TIMEOUT_MS=15000
+export UNSNOOZE_NOTIFICATIONS=off
+export UNSNOOZE_CLAUDE_DIR="$WORK/claude-home"    # no transcripts — no id backfill
+export UNSNOOZE_CODEX_DIR="$WORK/codex-home"
+export UNSNOOZE_GROK_DIR="$WORK/grok-home"
+
+SESSIONS=()
+PIDS=()
 
 cleanup() {
-  tmux kill-session -t "$SES" 2>/dev/null || true
-  tmux kill-session -t "unsnooze-e2e" 2>/dev/null || true
+  # enumerate by name: SESSIONS+= inside $(new_pane ...) runs in a subshell
+  # and never reaches this trap
+  tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^e2e-' \
+    | while read -r s; do tmux kill-session -t "$s" 2>/dev/null || true; done
+  tmux kill-session -t unsnooze-e2e 2>/dev/null || true
+  for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
   pkill -f "unsnooze.js _monitor %" 2>/dev/null || true
   pkill -f "unsnooze.js _resumer" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
 
-fail() { echo "E2E FAIL: $1" >&2; exit 1; }
+CURRENT=""
+fail() { echo "E2E FAIL [$CURRENT]: $1" >&2; exit 1; }
+pass() { echo "PASS [$CURRENT]"; }
 
-echo "== Phase 1: detection =="
-# Plain /bin/sh — the user's zsh can take seconds to start, and the banner
-# must be on screen before the monitor's first scrape.
-tmux kill-session -t "$SES" 2>/dev/null || true
-tmux new-session -d -s "$SES" -x 80 -y 24 /bin/sh
-PANE=$(tmux display-message -t "$SES" -p '#{pane_id}')
-sleep 1
+# End-of-scenario hygiene: no monitor or resumer may outlive its scenario
+# (a leaked resumer once revived a fake record through the REAL claude).
+scenario_end() {
+  pkill -f "unsnooze.js _monitor %" 2>/dev/null || true
+  pkill -f "unsnooze.js _resumer" 2>/dev/null || true
+  sleep 0.3
+}
 
-# Paint a fake limit banner (reset 1 minute from now so phase 2 is quick).
-RESET_TIME=$(date -v+1M '+%-I:%M%p' | tr '[:upper:]' '[:lower:]')
-tmux send-keys -t "$PANE" "clear; echo; echo \"You've hit your 5-hour limit\"; echo \"resets $RESET_TIME\"" Enter
-for i in $(seq 1 20); do
-  tmux capture-pane -t "$PANE" -p | grep -q '5-hour limit' && break
-  sleep 0.5
-done
-tmux capture-pane -t "$PANE" -p | grep -q '5-hour limit' || fail "banner never appeared in scratch pane"
+# ---------- stubs ----------
 
-UNSNOOZE_CWD="$WORK/fakeproj" node "$ROOT/bin/unsnooze.js" _monitor "$PANE" &
-MONITOR_PID=$!
-sleep 3
-kill "$MONITOR_PID" 2>/dev/null || true
-
-STATE="$UNSNOOZE_STATE_DIR/state.json"
-[ -f "$STATE" ] || fail "no state file written"
-grep -q '"status": "stopped"' "$STATE" || fail "no stopped record"
-grep -q '"limitType": "5h"' "$STATE" || fail "limit type not classified"
-grep -q '"resetSource": "absolute"' "$STATE" || fail "reset time not parsed from banner"
-echo "PASS: banner detected, stop recorded with parsed reset time"
-
-echo "== Phase 2: resume after refresh =="
-# Kill the original pane (simulates the session being gone at reset time) and
-# point the record at a stub claude so we can observe the resume message.
-tmux kill-session -t "$SES"
-
-# The monitor auto-spawned a resumer; kill it so OUR resumer (with the fake
-# unsnooze on PATH) takes the singleton lock instead.
-pkill -f "unsnooze.js _resumer" 2>/dev/null || true
-sleep 1
-rm -f "$UNSNOOZE_STATE_DIR/resumer.lock"
-
-STUB="$WORK/claude-stub.sh"
-cat > "$STUB" <<'EOF'
-#!/usr/bin/env bash
-echo "STUB CLAUDE READY"
-echo "❯ "
-while IFS= read -r line; do echo "RECEIVED: $line" >> "$WORK_OUT"; done
-EOF
-chmod +x "$STUB"
-export WORK_OUT="$WORK/received.txt"
-
-# Make the record due now, and swap the resume command for the stub via
-# unsnooze launcher indirection: easiest is editing the record's cwd + using a
-# custom unsnooze bin name. dispatchOne runs `unsnooze --resume <id>` / `unsnooze -c`; here we
-# override by rewriting state so pane is dead and letting newWindow run the
-# stub through an env-provided fake unsnooze.
-node - "$STATE" <<'EOF'
+# Idle-agent stub: prints a prompt glyph, appends every stdin line to a file.
+cat > "$WORK/echo-stub.js" <<'EOF'
 const fs = require('fs');
-const [,, stateFile] = process.argv;
-const s = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
-for (const rec of Object.values(s.sessions)) rec.resetAt = Date.now() - 1000;
-fs.writeFileSync(stateFile, JSON.stringify(s, null, 2));
+const [,, glyph, out] = process.argv;
+process.stdout.write((process.env.STUB_BANNER || '') + '\n' + glyph + ' \n');
+let buf = '';
+process.stdin.on('data', c => {
+  buf += c;
+  let i;
+  while ((i = buf.indexOf('\r')) !== -1 || (i = buf.indexOf('\n')) !== -1) {
+    fs.appendFileSync(out, 'RECEIVED: ' + buf.slice(0, i) + '\n');
+    buf = buf.slice(i + 1);
+  }
+});
 EOF
 
-# Fake unsnooze on PATH that ignores args and execs the stub (records what a real
-# re-open would have run).
-FAKEBIN="$WORK/bin"; mkdir -p "$FAKEBIN"
-cat > "$FAKEBIN/unsnooze" <<EOF
-#!/usr/bin/env bash
-echo "\$@" > "$WORK/resume-args.txt"
-WORK_OUT="$WORK_OUT" exec "$STUB"
+# Raw-key menu stub: a REAL selectable menu. Renders Claude's limit menu,
+# moves the cursor on arrow keys, and only on Enter reveals what was chosen —
+# then prints the limit banner like the real TUI does after selection.
+cat > "$WORK/menu-stub.js" <<'EOF'
+const opts = ['1. Upgrade your plan', '2. Stop and wait for limit to reset'];
+let cur = 0;
+function render() {
+  process.stdout.write('\x1b[2J\x1b[H');
+  process.stdout.write('What do you want to do?\n');
+  opts.forEach((o, i) => process.stdout.write((i === cur ? '❯ ' : '  ') + o + '\n'));
+  process.stdout.write('(enter to confirm)\n');
+}
+if (process.stdin.isTTY) process.stdin.setRawMode(true);
+render();
+let chosen = false;
+process.stdin.on('data', b => {
+  const s = b.toString();
+  if (chosen) return;
+  if (s.includes('\x1b[B') || s.includes('\x1bOB')) { cur = Math.min(cur + 1, opts.length - 1); render(); }
+  else if (s.includes('\x1b[A') || s.includes('\x1bOA')) { cur = Math.max(cur - 1, 0); render(); }
+  else if (s.includes('\r') || s.includes('\n')) {
+    chosen = true;
+    process.stdout.write('\x1b[2J\x1b[H');
+    process.stdout.write('CHOSE: ' + opts[cur] + '\n');
+    if (cur === 1) process.stdout.write("You've hit your 5-hour limit\nresets 9pm\n");
+  }
+});
 EOF
-chmod +x "$FAKEBIN/unsnooze"
+
+# Fake `unsnooze` for reopen paths: records argv, then becomes an idle stub.
+# First on PATH for the WHOLE suite — shadows any real global install.
+# Paths are BAKED IN per scenario (arm_fake): a process started by
+# `tmux new-window` inherits the tmux server's environment, not the
+# resumer's, so runtime env vars would never reach it.
+FAKEBIN="$WORK/fakebin"; mkdir -p "$FAKEBIN"
+arm_fake() {  # $1 args-file, $2 received-file, $3 prompt-glyph
+  cat > "$FAKEBIN/unsnooze" <<EOF
+#!/usr/bin/env bash
+echo "\$@" > "$1"
+exec node "$WORK/echo-stub.js" "$3" "$2"
+EOF
+  chmod +x "$FAKEBIN/unsnooze"
+}
+arm_fake "$WORK/unexpected-reopen.txt" "$WORK/unexpected-received.txt" "❯"
 export PATH="$FAKEBIN:$PATH"
 
-# (no `timeout` on stock macOS — background + kill)
-node "$ROOT/bin/unsnooze.js" _resumer &
-RESUMER_PID=$!
-for i in $(seq 1 30); do
-  kill -0 "$RESUMER_PID" 2>/dev/null || break   # resumer exited on its own
-  grep -q '"status": "resumed"' "$STATE" 2>/dev/null && break
-  sleep 1
+# ---------- helpers ----------
+
+new_pane() {  # $1 session-name, rest: command
+  local ses="$1"; shift
+  tmux kill-session -t "$ses" 2>/dev/null || true
+  tmux new-session -d -s "$ses" -x 100 -y 28 "$@"
+  SESSIONS+=("$ses")
+  tmux display-message -t "$ses" -p '#{pane_id}'
+}
+
+wait_pane() {  # $1 pane, $2 regex, $3 tries(0.4s each)
+  local tries="${3:-25}"
+  for _ in $(seq 1 "$tries"); do
+    tmux capture-pane -t "$1" -p 2>/dev/null | grep -qE "$2" && return 0
+    sleep 0.4
+  done
+  return 1
+}
+
+wait_state() {  # $1 state-file, $2 grep-regex, $3 tries(0.4s each)
+  local tries="${3:-25}"
+  for _ in $(seq 1 "$tries"); do
+    [ -f "$1" ] && grep -qE "$2" "$1" && return 0
+    sleep 0.4
+  done
+  return 1
+}
+
+# Detection-scenario monitor: output goes to a log file (NOT the command-
+# substitution pipe — that deadlocks), autoResume forced off so the resumer
+# it auto-spawns is inert. Extra env pairs may precede the state dir.
+run_monitor() {  # [ENV=V ...] state-dir pane agent cwd
+  local envs=()
+  while [[ "$1" == *=* ]]; do envs+=("$1"); shift; done
+  local sdir="$1" pane="$2" agent="$3" cwd="$4"
+  env "${envs[@]:-UNSNOOZE_E2E=1}" UNSNOOZE_AUTO_RESUME=off \
+    UNSNOOZE_STATE_DIR="$sdir" UNSNOOZE_CWD="$cwd" \
+    node "$BIN" _monitor "$pane" "$agent" > "$sdir/monitor.log" 2>&1 &
+  echo $!
+}
+
+seed_record() {  # $1 state-dir, $2 agent, $3 cwd, $4 pane, $5 sessionId('' = null)
+  node --input-type=module -e "
+    process.env.UNSNOOZE_STATE_DIR = '$1';
+    const { upsertSession } = await import('$ROOT/src/state.js');
+    upsertSession({
+      sessionId: '$5' || null, cwd: '$3', pane: '$4', agent: '$2',
+      tmuxSession: 'unsnooze-e2e', status: 'stopped', limitType: '5h',
+      detectedVia: 'scrape', detectedAt: Date.now() - 60000,
+      resetAt: Date.now() - 1000, resetSource: 'absolute',
+      attempts: 0, lastAttemptAt: null, lastError: null,
+    });
+  "
+}
+
+run_resumer_until() {  # $1 state-dir, $2 regex to wait for in state, $3 tries
+  UNSNOOZE_SELF="$FAKEBIN/unsnooze" UNSNOOZE_STATE_DIR="$1" node "$BIN" _resumer > "$1/resumer.log" 2>&1 &
+  local pid=$!
+  PIDS+=("$pid")
+  local ok=1
+  wait_state "$1/state.json" "$2" "${3:-40}" && ok=0
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  return $ok
+}
+
+# ============================================================
+CURRENT="S1 claude scrape-detect"
+S="$WORK/s1"; mkdir -p "$S/proj"
+RESET_TIME=$(date -v+3M '+%-I:%M%p' 2>/dev/null | tr '[:upper:]' '[:lower:]' || date -d '+3 minutes' '+%-I:%M%p' | tr '[:upper:]' '[:lower:]')
+PANE=$(new_pane e2e-s1 /bin/sh)
+sleep 0.6
+tmux send-keys -t "$PANE" "clear; echo; echo \"You've hit your 5-hour limit\"; echo \"resets $RESET_TIME\"" Enter
+wait_pane "$PANE" "5-hour limit" || fail "banner never appeared"
+MPID=$(run_monitor "$S" "$PANE" claude "$S/proj"); PIDS+=("$MPID")
+wait_state "$S/state.json" '"status": "stopped"' || fail "no stopped record"
+grep -q '"limitType": "5h"' "$S/state.json" || fail "limit type not classified"
+grep -q '"resetSource": "absolute"' "$S/state.json" || fail "reset not parsed"
+grep -q '"agent": "claude"' "$S/state.json" || fail "agent id missing"
+scenario_end
+pass
+
+# ============================================================
+CURRENT="S2 claude menu driven to 'Stop and wait'"
+S="$WORK/s2"; mkdir -p "$S/proj"
+PANE=$(new_pane e2e-s2 node "$WORK/menu-stub.js")
+wait_pane "$PANE" "What do you want to do" || fail "menu never rendered"
+MPID=$(run_monitor "$S" "$PANE" claude "$S/proj"); PIDS+=("$MPID")
+wait_pane "$PANE" "CHOSE:" 30 || fail "monitor never confirmed a selection"
+tmux capture-pane -t "$PANE" -p | grep -q "CHOSE: 2. Stop and wait for limit to reset" \
+  || fail "WRONG option chosen: $(tmux capture-pane -t "$PANE" -p | grep CHOSE)"
+# after selection the stub shows the banner — the monitor must record it
+wait_state "$S/state.json" '"status": "stopped"' || fail "stop not recorded after menu"
+scenario_end
+pass
+
+# ============================================================
+CURRENT="S3 menuAutoAnswer=off → watch-only"
+S="$WORK/s3"; mkdir -p "$S/proj"
+PANE=$(new_pane e2e-s3 node "$WORK/menu-stub.js")
+wait_pane "$PANE" "What do you want to do" || fail "menu never rendered"
+MPID=$(run_monitor UNSNOOZE_MENU_AUTO_ANSWER=off "$S" "$PANE" claude "$S/proj"); PIDS+=("$MPID")
+wait_state "$S/state.json" '"status": "stopped"' || fail "stop not recorded in watch-only mode"
+tmux capture-pane -t "$PANE" -p | grep -q "CHOSE:" && fail "keys were sent despite menuAutoAnswer=off"
+scenario_end
+pass
+
+# ============================================================
+CURRENT="S4 claude StopFailure hook ingest"
+S="$WORK/s4"; mkdir -p "$S/proj"
+echo '{"session_id":"44444444-5555-4666-8777-888888888888","cwd":"'"$S/proj"'","error":{"type":"rate_limit_error"}}' \
+  | UNSNOOZE_AUTO_RESUME=off UNSNOOZE_STATE_DIR="$S" node "$BIN" _hook-stopfailure
+grep -q '"sessionId": "44444444-5555-4666-8777-888888888888"' "$S/state.json" || fail "hook did not record the session id"
+grep -q '"detectedVia": "hook"' "$S/state.json" || fail "detection channel wrong"
+grep -q '"resetSource": "fallback"' "$S/state.json" || fail "expected fallback reset (no pane to scrape)"
+scenario_end
+pass
+
+# ============================================================
+CURRENT="S5 claude dead pane → reopen + typed resume message"
+S="$WORK/s5"; mkdir -p "$S/proj"
+arm_fake "$S/reopen-args.txt" "$S/received.txt" "❯"
+seed_record "$S" claude "$S/proj" "%999" "11111111-2222-4333-8444-555555555555"
+run_resumer_until "$S" '"status": "resumed"' || fail "record never reached resumed: $(cat "$S/state.json")"
+grep -q -- "_run claude --resume 11111111-2222-4333-8444-555555555555" "$S/reopen-args.txt" || fail "wrong reopen args: $(cat "$S/reopen-args.txt")"
+grep -q "RECEIVED: Continue where you left off" "$S/received.txt" || fail "resume message never typed: $(cat "$S/received.txt" 2>/dev/null)"
+scenario_end
+pass
+
+# ============================================================
+CURRENT="S6 claude live idle pane → message into SAME pane"
+S="$WORK/s6"; mkdir -p "$S/proj"
+arm_fake "$S/reopen-args.txt" "$S/received.txt" "❯"
+PANE=$(new_pane e2e-s6 node "$WORK/echo-stub.js" "❯" "$S/live-received.txt")
+wait_pane "$PANE" "❯" || fail "stub never ready"
+seed_record "$S" claude "$S/proj" "$PANE" ""
+run_resumer_until "$S" '"status": "resumed"' || fail "record never resumed: $(cat "$S/state.json")"
+grep -q "RECEIVED: Continue where you left off" "$S/live-received.txt" || fail "message not delivered to live pane"
+[ -f "$S/reopen-args.txt" ] && fail "reopened a window despite live pane"
+scenario_end
+pass
+
+# ============================================================
+CURRENT="S7 codex scrape-detect + reset parse"
+S="$WORK/s7"; mkdir -p "$S/proj"
+CODEX_RESET=$(date -v+3M '+%-I:%M %p' 2>/dev/null || date -d '+3 minutes' '+%-I:%M %p')
+PANE=$(new_pane e2e-s7 /bin/sh)
+sleep 0.6
+tmux send-keys -t "$PANE" "clear; echo; echo \"■ You've hit your usage limit. Upgrade to Pro or try again at $CODEX_RESET.\"" Enter
+wait_pane "$PANE" "usage limit" || fail "codex banner never appeared"
+MPID=$(run_monitor "$S" "$PANE" codex "$S/proj"); PIDS+=("$MPID")
+wait_state "$S/state.json" '"agent": "codex"' || fail "codex stop not recorded"
+grep -q '"resetSource": "absolute"' "$S/state.json" || fail "'try again at' not parsed"
+scenario_end
+pass
+
+# ============================================================
+CURRENT="S8 codex dead pane → resume via argv, nothing typed"
+S="$WORK/s8"; mkdir -p "$S/proj"
+arm_fake "$S/reopen-args.txt" "$S/received.txt" "›"
+seed_record "$S" codex "$S/proj" "%998" ""
+run_resumer_until "$S" '"status": "resumed"' || fail "codex record never resumed: $(cat "$S/state.json")"
+grep -q -- "_run codex resume --last" "$S/reopen-args.txt" || fail "wrong codex reopen args: $(cat "$S/reopen-args.txt")"
+grep -q "Continue where you left off" "$S/reopen-args.txt" || fail "resume prompt missing from argv"
+[ -s "$S/received.txt" ] && fail "text was typed into codex pane (argv resume must not type): $(cat "$S/received.txt")"
+scenario_end
+pass
+
+# ============================================================
+CURRENT="S9 grok generic banner scrape-detect"
+S="$WORK/s9"; mkdir -p "$S/proj"
+PANE=$(new_pane e2e-s9 /bin/sh)
+sleep 0.6
+tmux send-keys -t "$PANE" "clear; echo; echo 'Rate limit exceeded. Please wait a moment and try again.'" Enter
+wait_pane "$PANE" "Rate limit exceeded" || fail "grok banner never appeared"
+MPID=$(run_monitor UNSNOOZE_AGENT_GROK=on "$S" "$PANE" grok "$S/proj"); PIDS+=("$MPID")
+wait_state "$S/state.json" '"agent": "grok"' || fail "grok stop not recorded"
+grep -q '"resetSource": "fallback"' "$S/state.json" || fail "grok should use fallback reset"
+scenario_end
+pass
+
+# ============================================================
+CURRENT="S10 grok StopFailure hook (--agent grok)"
+S="$WORK/s10"; mkdir -p "$S/proj"
+echo '{"sessionId":"grok-e2e","cwd":"'"$S/proj"'","error":"rate_limit"}' \
+  | UNSNOOZE_AUTO_RESUME=off UNSNOOZE_AGENT_GROK=on UNSNOOZE_STATE_DIR="$S" node "$BIN" _hook-stopfailure --agent grok
+grep -q '"agent": "grok"' "$S/state.json" || fail "grok hook did not record"
+scenario_end
+pass
+
+# ============================================================
+CURRENT="S11 autoResume=off → tracked but never dispatched"
+S="$WORK/s11"; mkdir -p "$S/proj"
+arm_fake "$S/reopen-args.txt" "$S/received.txt" "❯"
+seed_record "$S" claude "$S/proj" "%997" ""
+UNSNOOZE_SELF="$FAKEBIN/unsnooze" UNSNOOZE_AUTO_RESUME=off UNSNOOZE_STATE_DIR="$S" node "$BIN" _resumer > "$S/resumer.log" 2>&1 &
+RPID=$!; PIDS+=("$RPID")
+sleep 4
+kill "$RPID" 2>/dev/null || true; wait "$RPID" 2>/dev/null || true
+[ -f "$S/reopen-args.txt" ] && fail "dispatched despite autoResume=off"
+grep -q '"status": "stopped"' "$S/state.json" || fail "record lost while paused"
+scenario_end
+pass
+
+# ============================================================
+CURRENT="S12 overload 529 → seconds-scale retry, ledger untouched"
+S="$WORK/s12"; mkdir -p "$S/proj"
+PANE=$(new_pane e2e-s12 env STUB_BANNER="API Error: 529 overloaded" node "$WORK/echo-stub.js" "❯" "$S/overload-received.txt")
+wait_pane "$PANE" "API Error: 529" || fail "overload text never appeared"
+MPID=$(run_monitor UNSNOOZE_OVERLOAD_BACKOFF_S=1,2 "$S" "$PANE" claude "$S/proj"); PIDS+=("$MPID")
+for _ in $(seq 1 25); do
+  grep -q "transient API error" "$S/overload-received.txt" 2>/dev/null && break
+  sleep 0.4
 done
-kill "$RESUMER_PID" 2>/dev/null || true
-wait "$RESUMER_PID" 2>/dev/null || true
+grep -q "transient API error" "$S/overload-received.txt" || fail "overload retry message never sent"
+[ -f "$S/state.json" ] && grep -q '"status": "stopped"' "$S/state.json" && fail "overload wrongly entered the limit ledger"
+scenario_end
+pass
 
-[ -f "$WORK/resume-args.txt" ] || fail "resumer never re-opened a window"
-grep -q '\-c' "$WORK/resume-args.txt" || fail "expected -c resume args (no sessionId), got: $(cat "$WORK/resume-args.txt")"
-[ -f "$WORK_OUT" ] || fail "stub never received the resume message"
-grep -q "Continue where you left off" "$WORK_OUT" || fail "resume message wrong: $(cat "$WORK_OUT")"
-grep -q '"status": "resumed"' "$STATE" || fail "record not marked resumed"
-echo "PASS: dead session re-opened in tmux window and resume message delivered"
-
-echo "== Phase 3: codex banner detection =="
-SES3=unsnooze-e2e-codex
-tmux kill-session -t "$SES3" 2>/dev/null || true
-tmux new-session -d -s "$SES3" -x 80 -y 24 /bin/sh
-PANE3=$(tmux display-message -t "$SES3" -p '#{pane_id}')
-sleep 1
-CODEX_RESET=$(date -v+2M '+%-I:%M %p')
-tmux send-keys -t "$PANE3" "clear; echo; echo \"■ You've hit your usage limit. Upgrade to Pro or try again at $CODEX_RESET.\"" Enter
-for i in $(seq 1 20); do
-  tmux capture-pane -t "$PANE3" -p | grep -q 'usage limit' && break
-  sleep 0.5
-done
-tmux capture-pane -t "$PANE3" -p | grep -q 'usage limit' || fail "codex banner never appeared"
-
-UNSNOOZE_CWD="$WORK/fakeproj-codex" node "$ROOT/bin/unsnooze.js" _monitor "$PANE3" codex &
-MONITOR3_PID=$!
-sleep 3
-kill "$MONITOR3_PID" 2>/dev/null || true
-tmux kill-session -t "$SES3" 2>/dev/null || true
-
-grep -q '"agent": "codex"' "$STATE" || fail "codex stop not recorded with agent id"
-node - "$STATE" <<'EOF' || fail "codex record invalid"
-const fs = require('fs');
-const s = JSON.parse(fs.readFileSync(process.argv[2], 'utf-8'));
-const rec = Object.values(s.sessions).find(r => r.agent === 'codex');
-if (!rec) { console.error('no codex record'); process.exit(1); }
-if (rec.resetSource !== 'absolute') { console.error(`codex reset not parsed (source=${rec.resetSource})`); process.exit(1); }
-if (rec.resetAt <= Date.now()) { console.error('codex resetAt not in the future'); process.exit(1); }
-EOF
-echo "PASS: codex banner detected, reset time parsed from 'try again at'"
+# no leaked dispatch may have reached the fake unsnooze outside its scenario
+[ -f "$WORK/unexpected-reopen.txt" ] && fail "a stray resumer dispatched outside its scenario: $(cat "$WORK/unexpected-reopen.txt")"
 
 echo
-echo "E2E OK"
+echo "E2E OK — all 12 scenarios green"

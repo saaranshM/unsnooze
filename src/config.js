@@ -36,7 +36,8 @@ export const CAPTURE_LINES = envInt('UNSNOOZE_CAPTURE_LINES', 200);
 // Limits & retries
 export const MAX_RESUME_ATTEMPTS = envInt('UNSNOOZE_MAX_RESUME_ATTEMPTS', 5);
 export const MAX_BUSY_DEFERS = envInt('UNSNOOZE_MAX_BUSY_DEFERS', 10);
-export const OVERLOAD_BACKOFF_S = [30, 60, 120, 240, 300];
+export const OVERLOAD_BACKOFF_S = (process.env.UNSNOOZE_OVERLOAD_BACKOFF_S || '30,60,120,240,300')
+  .split(',').map(Number).filter(Number.isFinite);
 export const OVERLOAD_JITTER = 0.15;
 export const DEDUPE_WINDOW_MS = envInt('UNSNOOZE_DEDUPE_WINDOW_MS', 120_000);
 export const PRUNE_AFTER_MS = envInt('UNSNOOZE_PRUNE_AFTER_MS', 7 * 86_400_000);
