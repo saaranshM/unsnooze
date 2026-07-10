@@ -124,7 +124,7 @@ test('reopen command embeds absolute node + entry-point paths (tmux server PATH 
   await dispatchOne(rec, { tmux });
   assert.ok(windowCmd.startsWith(process.execPath) || windowCmd.startsWith(`'${process.execPath}'`),
     `command must start with the absolute node path, got: ${windowCmd}`);
-  assert.match(windowCmd, /bin\/unsnooze\.js'? _run claude/);
+  assert.match(windowCmd, /bin[/\\]unsnooze\.js'? _run claude/);
 });
 
 test('UNSNOOZE_SELF overrides the reopen binary (test harness escape hatch)', async () => {
