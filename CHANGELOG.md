@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.2.0 — unreleased
+
+### GUI surfaces: VS Code extension, desktop apps
+
+Sessions running outside a terminal — Claude Code's VS Code extension and
+desktop app, Codex's IDE extension and desktop app — are now guarded too.
+There is no pane to scrape and (for Codex) no hook, so detection tails the
+session files the CLIs already write:
+
+- **Claude Code**: rate-limit stops land in `~/.claude/projects` transcripts
+  as structured entries (`error:"rate_limit"`, session id, cwd, reset text).
+  The new watcher turns them into ledger records; the weekly banner form
+  ("resets Jul 4 at 12:30am (tz)") now parses, DST-safe.
+- **Codex**: rollouts never persist error events, but every turn's
+  `token_count` event carries a `rate_limits` snapshot (`used_percent`,
+  `resets_at` epoch). An exhausted window becomes a stop with an exact epoch
+  reset — more precise than any scraped banner — and works for every Codex
+  surface, since they share `~/.codex/sessions`.
+- **Claude desktop (cowork) sessions** *(experimental, macOS)*: sandboxed
+  sessions under `~/Library/Application Support/Claude` are detected, and
+  revival exports the session's isolated `CLAUDE_CONFIG_DIR`.
+
+Revival stays terminal-based: when the limit resets, the session reopens in a
+tmux window via `claude --resume <id>` / `codex resume <id>` — the same
+session file continues, so the conversation stays visible in the GUI's own
+history. Resuming *inside* the GUI panels is not possible today (no IPC/URI
+sends a prompt into them).
+
+- **`unsnooze daemon`**: persistent watcher process; `unsnooze install
+  --daemon` (or the new wizard step) installs it as a launchd agent (macOS)
+  or systemd user unit (Linux) so GUI sessions are watched without a shell.
+- **`guiWatch` setting** (default on) gates the watching; `unsnooze status`
+  shows each stop's origin (`cli`, `vscode`, `desktop`, …).
+- Ledger dedupe: transcript records merge with hook/scrape records of the
+  same session, so terminal sessions are never double-resumed.
+
 ## 1.1.0 — 2026-07-10
 
 ### Per-agent resume messages

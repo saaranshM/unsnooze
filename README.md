@@ -29,6 +29,7 @@ existing tool solves only a slice of it:
 | | **unsnooze** | claude-auto-retry | autoclaude | hydra |
 |---|:---:|:---:|:---:|:---:|
 | Multi-CLI (Claude Code + Codex + Grok) | ✅ | ❌ Claude only | ❌ Claude only | ✅ |
+| GUI sessions (VS Code ext, desktop apps) | ✅ watcher daemon | ❌ | ❌ | ❌ |
 | Waits for reset & resumes the **same** session | ✅ | ✅ | ✅ | ❌ switches provider |
 | All sessions at once (shared ledger + one daemon) | ✅ | ❌ one pane | ✅ | ✅ |
 | Revives sessions whose pane/process is **gone** | ✅ `--resume <id>` | ❌ | ❌ | ❌ |
@@ -51,6 +52,34 @@ existing tool solves only a slice of it:
   not publicly documented, so detection uses generic patterns with a safe
   fallback. Hit a banner unsnooze missed? Run `unsnooze report` and paste the
   capture into an issue — that's how this adapter gets good.
+
+## GUI surfaces (VS Code extension, desktop apps)
+
+Terminal sessions are watched through the shell wrapper + tmux. Sessions in
+**Claude Code's VS Code extension / desktop app** and **Codex's IDE
+extension / desktop app** have no pane to scrape — so `unsnooze daemon` tails
+the session files those surfaces already write:
+
+- **Claude Code** records every rate-limit stop as a structured entry in its
+  `~/.claude/projects/**.jsonl` transcript (session id, cwd, reset time) —
+  shared by the CLI and the VS Code extension.
+- **Codex** writes a `rate_limits` snapshot (usage %, **exact epoch reset
+  time**) into every rollout under `~/.codex/sessions/` — shared by the CLI,
+  IDE extension, and desktop app.
+- **Claude desktop (cowork) sessions** *(experimental, macOS)* run in
+  sandboxes under `~/Library/Application Support/Claude`; unsnooze watches
+  those too and exports each session's isolated `CLAUDE_CONFIG_DIR` when
+  reviving.
+
+When the limit resets, the session is revived **in a tmux window** with
+`claude --resume <id>` / `codex resume <id>` — it's the same session file, so
+the continued conversation stays visible in the GUI's own history. (Resuming
+*inside* the GUI panel isn't possible today: no extension/app exposes an
+IPC/URI that can send a prompt.)
+
+Enable it in `unsnooze setup` (installs a launchd agent / systemd user unit),
+or run `unsnooze install --daemon` / `unsnooze daemon` yourself. Turn it off
+anytime with `unsnooze config set guiWatch off`.
 
 ## How it works
 
@@ -101,6 +130,8 @@ unsnooze cancel [id|--all]      # stop tracking a session
 unsnooze config list            # settings (see below)
 unsnooze config set <k> <v>     # e.g. autoResume off
 unsnooze logs [-f]              # what unsnooze has been doing
+unsnooze daemon                 # persistent GUI-session watcher (usually run
+                                # by launchd/systemd via `install --daemon`)
 unsnooze report [agent]         # capture a pane to report an undetected banner
 unsnooze uninstall [--purge]    # remove wrappers + hooks (+ state with --purge)
 unsnooze help                   # full command list (also -h / --help)
@@ -116,6 +147,7 @@ unsnooze help                   # full command list (also -h / --help)
 | `autoResume` | `true` | Master switch. Off = stops are still tracked, but nothing is resumed until you run `unsnooze resume-now` or turn it back on. |
 | `menuAutoAnswer` | `true` | May unsnooze answer Claude's limit menu (send keys in your pane)? Off = watch-only. |
 | `notifications` | `true` | Desktop notification on limit detected / session resumed / gave up. |
+| `guiWatch` | `true` | May the daemon watch session files for GUI-surface stops (VS Code extension, desktop apps)? Needs the daemon running (`unsnooze install --daemon`). |
 | `resumeMessage` | *"Continue where you left off…"* | The message sent to wake a session. |
 | `resumeMessages.claude` / `.codex` / `.grok` | `""` | Per-agent override of `resumeMessage`. Empty = use the global message; clear one with `unsnooze config set resumeMessages.claude ""`. |
 | `agents.claude` / `agents.codex` / `agents.grok` | `true` / `true` / `false` | Which CLIs are guarded. |

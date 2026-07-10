@@ -17,6 +17,12 @@
 #   S10 grok: StopFailure hook (--agent grok) → ledger entry
 #   S11 autoResume=off → due session NOT dispatched; still tracked
 #   S12 overload (API Error 529) → seconds-scale retry message, ledger untouched
+#   S13 claude GUI path: transcript rate_limit entry → daemon records via
+#       watcher (no pane, no hook) and revives in a tmux window
+#   S14 codex GUI path: rollout token_count with an exhausted window → daemon
+#       records with the epoch reset and revives via `codex resume <id>`
+#   S15 (macOS) claude desktop sandbox: stop in an isolated CLAUDE_CONFIG_DIR
+#       → revived with that CLAUDE_CONFIG_DIR exported
 #
 # SAFETY: this suite must never reach a real agent binary or the user's
 # sessions. Three layers guarantee it:
@@ -54,6 +60,7 @@ cleanup() {
   for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
   pkill -f "unsnooze.js _monitor %" 2>/dev/null || true
   pkill -f "unsnooze.js _resumer" 2>/dev/null || true
+  pkill -f "unsnooze.js daemon" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -67,6 +74,7 @@ pass() { echo "PASS [$CURRENT]"; }
 scenario_end() {
   pkill -f "unsnooze.js _monitor %" 2>/dev/null || true
   pkill -f "unsnooze.js _resumer" 2>/dev/null || true
+  pkill -f "unsnooze.js daemon" 2>/dev/null || true
   sleep 0.3
 }
 
@@ -353,8 +361,123 @@ grep -q "transient API error" "$S/overload-received.txt" || fail "overload retry
 scenario_end
 pass
 
+# Daemon helper for the GUI scenarios: watcher enabled, per-scenario homes.
+# SAFETY: every watch root defaults to a scratch dir so the daemon can never
+# see (or revive) the user's real sessions; scenarios override as needed.
+run_daemon() {  # [ENV=V ...] state-dir
+  local envs=()
+  while [[ "$1" == *=* ]]; do envs+=("$1"); shift; done
+  local sdir="$1"
+  env UNSNOOZE_CLAUDE_DESKTOP_DIR="$sdir/desktop-unused" "${envs[@]:-UNSNOOZE_E2E=1}" \
+    UNSNOOZE_SELF="$FAKEBIN/unsnooze" UNSNOOZE_STATE_DIR="$sdir" \
+    UNSNOOZE_RESET_MARGIN_MS=0 \
+    node "$BIN" daemon > "$sdir/daemon.log" 2>&1 &
+  echo $!
+}
+
+# ============================================================
+CURRENT="S13 claude GUI: transcript entry → watcher detect + revive"
+S="$WORK/s13"; mkdir -p "$S/claude-home/projects/-s13-proj"
+arm_fake "$S/reopen-args.txt" "$S/received.txt" "❯"
+TRANSCRIPT="$S/claude-home/projects/-s13-proj/13131313-1414-4151-8161-171717171717.jsonl"
+: > "$TRANSCRIPT"
+DPID=$(run_daemon UNSNOOZE_CLAUDE_DIR="$S/claude-home" UNSNOOZE_CODEX_DIR="$S/codex-home" "$S"); PIDS+=("$DPID")
+sleep 2   # let the daemon take its first tick (offsets at EOF)
+node -e "
+  const line = JSON.stringify({
+    isSidechain: false, type: 'assistant', timestamp: new Date().toISOString(),
+    message: { role: 'assistant', content: [{ type: 'text', text: \"You've hit your session limit · try again in 0 minutes\" }] },
+    error: 'rate_limit', isApiErrorMessage: true, apiErrorStatus: 429,
+    entrypoint: 'vscode', cwd: '$S/proj',
+    sessionId: '13131313-1414-4151-8161-171717171717',
+  });
+  require('fs').appendFileSync('$TRANSCRIPT', line + '\n');
+"
+wait_state "$S/state.json" '"detectedVia": "transcript"' 40 || fail "watcher never recorded the transcript stop: $(cat "$S/state.json" 2>/dev/null)"
+grep -q '"origin": "vscode"' "$S/state.json" || fail "origin not taken from the transcript entrypoint"
+wait_state "$S/state.json" '"status": "resumed"' 40 || fail "GUI stop never revived: $(cat "$S/state.json")"
+grep -q -- "_run claude --resume 13131313-1414-4151-8161-171717171717" "$S/reopen-args.txt" || fail "wrong reopen args: $(cat "$S/reopen-args.txt")"
+kill "$DPID" 2>/dev/null || true; wait "$DPID" 2>/dev/null || true
+scenario_end
+pass
+
+# ============================================================
+CURRENT="S14 codex GUI: exhausted rollout window → epoch reset + revive"
+S="$WORK/s14"; mkdir -p "$S/codex-home/sessions/2026/07/10"
+arm_fake "$S/reopen-args.txt" "$S/received.txt" "›"
+ROLLOUT="$S/codex-home/sessions/2026/07/10/rollout-2026-07-10T10-00-00-14141414-1515-4161-8171-181818181818.jsonl"
+node -e "
+  const meta = JSON.stringify({
+    timestamp: new Date().toISOString(), type: 'session_meta',
+    payload: { id: '14141414-1515-4161-8171-181818181818', cwd: '$S/proj', originator: 'codex-ide', source: 'ide' },
+  });
+  require('fs').writeFileSync('$ROLLOUT', meta + '\n');
+"
+DPID=$(run_daemon UNSNOOZE_CLAUDE_DIR="$S/claude-home" UNSNOOZE_CODEX_DIR="$S/codex-home" "$S"); PIDS+=("$DPID")
+sleep 2
+node -e "
+  const line = JSON.stringify({
+    timestamp: new Date().toISOString(), type: 'event_msg',
+    payload: { type: 'token_count', info: null, rate_limits: {
+      primary: { used_percent: 100, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) - 1 },
+      secondary: { used_percent: 9, window_minutes: 10080, resets_at: Math.floor(Date.now() / 1000) + 99999 },
+      rate_limit_reached_type: null,
+    } },
+  });
+  require('fs').appendFileSync('$ROLLOUT', line + '\n');
+"
+wait_state "$S/state.json" '"detectedVia": "transcript"' 40 || fail "codex rollout stop never recorded: $(cat "$S/state.json" 2>/dev/null)"
+grep -q '"origin": "codex-ide"' "$S/state.json" || fail "originator not captured"
+grep -q '"resetSource": "absolute"' "$S/state.json" || fail "epoch reset not used"
+wait_state "$S/state.json" '"status": "resumed"' 40 || fail "codex GUI stop never revived: $(cat "$S/state.json")"
+grep -q -- "_run codex resume 14141414-1515-4161-8171-181818181818" "$S/reopen-args.txt" || fail "wrong codex reopen args: $(cat "$S/reopen-args.txt")"
+kill "$DPID" 2>/dev/null || true; wait "$DPID" 2>/dev/null || true
+scenario_end
+pass
+
+# ============================================================
+CURRENT="S15 claude desktop sandbox → CLAUDE_CONFIG_DIR on revival"
+if [ "$(uname)" = "Darwin" ]; then
+  S="$WORK/s15"
+  SANDBOX="$S/desktop/org-e2e/sess-e2e/local_e2e"
+  mkdir -p "$SANDBOX/.claude/projects/-sandbox-outputs" "$SANDBOX/outputs"
+  # Custom fake: also record the CLAUDE_CONFIG_DIR the revived CLI sees.
+  cat > "$FAKEBIN/unsnooze" <<EOF
+#!/usr/bin/env bash
+echo "\$@" > "$S/reopen-args.txt"
+echo "\$CLAUDE_CONFIG_DIR" > "$S/reopen-configdir.txt"
+exec node "$WORK/echo-stub.js" "❯" "$S/received.txt"
+EOF
+  chmod +x "$FAKEBIN/unsnooze"
+  TRANSCRIPT="$SANDBOX/.claude/projects/-sandbox-outputs/15151515-1616-4171-8181-191919191919.jsonl"
+  : > "$TRANSCRIPT"
+  DPID=$(run_daemon UNSNOOZE_CLAUDE_DIR="$S/claude-home" UNSNOOZE_CODEX_DIR="$S/codex-home" UNSNOOZE_CLAUDE_DESKTOP_DIR="$S/desktop" "$S"); PIDS+=("$DPID")
+  sleep 2
+  node -e "
+    const line = JSON.stringify({
+      isSidechain: false, type: 'assistant', timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: [{ type: 'text', text: \"You've hit your session limit · try again in 0 minutes\" }] },
+      error: 'rate_limit', isApiErrorMessage: true, apiErrorStatus: 429,
+      entrypoint: 'cli', cwd: '$SANDBOX/outputs',
+      sessionId: '15151515-1616-4171-8181-191919191919',
+    });
+    require('fs').appendFileSync('$TRANSCRIPT', line + '\n');
+  "
+  wait_state "$S/state.json" '"origin": "desktop"' 40 || fail "desktop stop not recorded with origin: $(cat "$S/state.json" 2>/dev/null)"
+  wait_state "$S/state.json" '"status": "resumed"' 40 || fail "desktop stop never revived: $(cat "$S/state.json")"
+  grep -q -- "_run claude --resume 15151515-1616-4171-8181-191919191919" "$S/reopen-args.txt" || fail "wrong desktop reopen args: $(cat "$S/reopen-args.txt")"
+  grep -q "$SANDBOX/.claude" "$S/reopen-configdir.txt" || fail "CLAUDE_CONFIG_DIR not exported to the revived CLI: $(cat "$S/reopen-configdir.txt" 2>/dev/null)"
+  # restore the generic fake for the trailing leak check
+  arm_fake "$WORK/unexpected-reopen.txt" "$WORK/unexpected-received.txt" "❯"
+  kill "$DPID" 2>/dev/null || true; wait "$DPID" 2>/dev/null || true
+  scenario_end
+  pass
+else
+  echo "SKIP [S15 claude desktop sandbox] — macOS only"
+fi
+
 # no leaked dispatch may have reached the fake unsnooze outside its scenario
 [ -f "$WORK/unexpected-reopen.txt" ] && fail "a stray resumer dispatched outside its scenario: $(cat "$WORK/unexpected-reopen.txt")"
 
 echo
-echo "E2E OK — all 12 scenarios green"
+echo "E2E OK — all scenarios green"
