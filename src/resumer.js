@@ -156,17 +156,34 @@ export async function verifyOne(key, { tmux = realTmux } = {}) {
   notify('unsnoozed ✅', `${rec.cwd} is running again`);
 }
 
-export async function runResumer({ tmux = realTmux, pollInterval = POLL_INTERVAL_MS } = {}) {
-  if (!acquireSingleton()) { log('another resumer is running — exiting'); return 0; }
+// persistent: never exit on an empty ledger (daemon mode — `unsnooze daemon`,
+// launchd/systemd). watcher: transcript watcher ticked every loop, so GUI
+// sessions are detected without a hook or pane. signal: clean shutdown.
+export async function runResumer({
+  tmux = realTmux, pollInterval = POLL_INTERVAL_MS,
+  persistent = false, watcher = null, signal = null,
+} = {}) {
+  // A transient hook-spawned resumer may hold the lock right now; a daemon
+  // outlives it, so wait for the lock instead of dying.
+  while (!acquireSingleton()) {
+    if (!persistent) { log('another resumer is running — exiting'); return 0; }
+    if (signal?.aborted) return 0;
+    log('another resumer holds the lock — daemon waiting');
+    await sleep(pollInterval);
+  }
   updateState(state => { state.resumerPid = process.pid; });
-  log(`resumer started (pid ${process.pid})`);
+  log(`resumer started (pid ${process.pid}${persistent ? ', persistent' : ''})`);
   const deferCounts = new Map();
 
   try {
     for (;;) {
+      if (signal?.aborted) { log('shutdown requested — resumer exiting'); return 0; }
+      if (watcher && getConfig('guiWatch')) {
+        try { await watcher.tick(); } catch (err) { log(`watcher tick failed: ${err.message}`); }
+      }
       const stopped = activeStopped();
       const resuming = Object.values(readState().sessions).filter(s => s.status === 'resuming');
-      if (stopped.length === 0 && resuming.length === 0) {
+      if (stopped.length === 0 && resuming.length === 0 && !persistent) {
         log('no pending sessions — resumer exiting');
         return 0;
       }

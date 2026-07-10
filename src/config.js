@@ -15,6 +15,10 @@ export const RESUMER_LOCK = join(STATE_DIR, 'resumer.lock');
 
 export const CLAUDE_DIR = process.env.UNSNOOZE_CLAUDE_DIR || join(homedir(), '.claude');
 export const CLAUDE_SETTINGS = join(CLAUDE_DIR, 'settings.json');
+export const CODEX_DIR = process.env.UNSNOOZE_CODEX_DIR || join(homedir(), '.codex');
+
+// Transcript/rollout watcher (GUI detection channel)
+export const WATCH_OFFSETS_FILE = join(STATE_DIR, 'watch-offsets.json');
 
 export const TMUX_SESSION_NAME = process.env.UNSNOOZE_TMUX_SESSION || 'unsnooze';
 
@@ -28,6 +32,8 @@ export const VERIFY_DELAY_MS = envInt('UNSNOOZE_VERIFY_DELAY_MS', 20_000);
 export const BUSY_DEFER_MS = envInt('UNSNOOZE_BUSY_DEFER_MS', 60_000);
 export const READY_TIMEOUT_MS = envInt('UNSNOOZE_READY_TIMEOUT_MS', 60_000);
 export const EVENT_MARKER_TTL_MS = envInt('UNSNOOZE_EVENT_MARKER_TTL_MS', 120_000);
+export const WATCH_INTERVAL_MS = envInt('UNSNOOZE_WATCH_INTERVAL_MS', 15_000);      // daemon transcript watching
+export const WATCH_FRESHNESS_MS = envInt('UNSNOOZE_WATCH_FRESHNESS_MS', 15 * 60_000);
 
 // Pane scanning
 export const PANE_SCAN_LINES = envInt('UNSNOOZE_PANE_SCAN_LINES', 12);

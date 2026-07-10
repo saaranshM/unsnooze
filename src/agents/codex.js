@@ -11,10 +11,8 @@
 // the overload path, never the ledger.
 
 import { openSync, readSync, closeSync, readdirSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
-
-const CODEX_DIR = process.env.UNSNOOZE_CODEX_DIR || join(homedir(), '.codex');
+import { CODEX_DIR } from '../config.js';
 
 const LIMIT_ANCHORS = [
   /You've hit your usage limit/i,

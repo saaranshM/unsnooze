@@ -16,6 +16,7 @@ export const DEFAULTS = {
   autoResume: true,        // master switch: dispatch resumes when limits reset
   menuAutoAnswer: true,    // may unsnooze drive Claude's limit menu (send keys)?
   notifications: true,     // desktop notifications on detect/resume
+  guiWatch: true,          // daemon watches transcripts/rollouts for GUI-session stops
   resumeMessage: 'Continue where you left off. The session was interrupted by a usage limit which has now reset — pick up the task you were working on and finish it.',
   resumeMessages: { claude: '', codex: '', grok: '' },  // per-agent override; '' = use resumeMessage
   agents: { claude: true, codex: true, grok: false },   // grok is experimental
@@ -26,6 +27,7 @@ const ENV_NAMES = {
   autoResume: 'UNSNOOZE_AUTO_RESUME',
   menuAutoAnswer: 'UNSNOOZE_MENU_AUTO_ANSWER',
   notifications: 'UNSNOOZE_NOTIFICATIONS',
+  guiWatch: 'UNSNOOZE_GUI_WATCH',
   resumeMessage: 'UNSNOOZE_RESUME_MESSAGE',
   'resumeMessages.claude': 'UNSNOOZE_RESUME_MESSAGE_CLAUDE',
   'resumeMessages.codex': 'UNSNOOZE_RESUME_MESSAGE_CODEX',

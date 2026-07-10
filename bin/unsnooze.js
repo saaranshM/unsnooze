@@ -60,6 +60,17 @@ async function main() {
       const { runResumer } = await import('../src/resumer.js');
       return runResumer();
     }
+    case 'daemon': {
+      // Persistent resumer + transcript watcher: detects and revives limit
+      // stops from GUI surfaces (VS Code extension, desktop apps) where no
+      // shell wrapper or tmux pane exists. Run via launchd/systemd or a shell.
+      const { runResumer } = await import('../src/resumer.js');
+      const { createWatcher } = await import('../src/watcher.js');
+      const controller = new AbortController();
+      process.on('SIGTERM', () => controller.abort());
+      process.on('SIGINT', () => controller.abort());
+      return runResumer({ persistent: true, watcher: createWatcher(), signal: controller.signal });
+    }
     case 'help':
     case '-h':
     case '--help':
@@ -73,6 +84,9 @@ Usage:
   unsnooze resume-now [id|--all]   resume stopped session(s) immediately
   unsnooze cancel [id|--all]       stop tracking session(s)
   unsnooze logs [-f]               show (or follow) the unsnooze log
+  unsnooze daemon                  persistent watcher for GUI sessions (VS Code
+                                   extension, desktop apps) — no tmux needed to
+                                   detect; revival still opens in tmux
   unsnooze config [list|get|set]   view or change settings (toggles, global +
                                    per-agent resume messages)
   unsnooze setup                   interactive setup wizard (agents + toggles)
