@@ -52,6 +52,15 @@ test('month-date reset resolves to that date in the stated timezone', () => {
   assert.equal(at, new Date('2026-07-03T19:00:00Z').getTime() + MARGIN);
 });
 
+test('month-date day-walk across a DST fall-back stays on the named date', () => {
+  // America/New_York falls back on 2026-11-01; the walk from Oct 30 to Nov 3
+  // crosses it. Raw 24h steps would drift the wall clock and land on Nov 4.
+  const now = new Date('2026-10-30T12:00:00-04:00');
+  const { at, source } = resetAtMs(parseResetTime('resets Nov 3 at 12:30am (America/New_York)'), { now, marginMs: 0 });
+  assert.equal(source, 'absolute');
+  assert.equal(at, new Date('2026-11-03T05:30:00Z').getTime());   // 00:30 EST
+});
+
 test('month-date already past → fallback, never next year', () => {
   const now = new Date('2026-07-10T12:00:00Z');
   const { at, source } = resetAtMs(parseResetTime('resets Jul 4 at 12:30am (Asia/Calcutta)'), { now, fallbackMs: 5 * H, marginMs: MARGIN });

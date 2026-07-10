@@ -12,7 +12,7 @@
 
 import {
   readdirSync, statSync, readFileSync, writeFileSync, renameSync, mkdirSync,
-  openSync, readSync, closeSync,
+  openSync, readSync, closeSync, existsSync,
 } from 'node:fs';
 import { join, sep, basename, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -24,7 +24,7 @@ import { parseTranscriptLine } from './watchers/claude.js';
 import { parseRolloutLine, rolloutMeta } from './watchers/codex.js';
 import { ROLLOUT_RE } from './agents/codex.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
-import { upsertSession } from './state.js';
+import { upsertSession, readState, updateState } from './state.js';
 import { getConfig } from './settings.js';
 import { notify } from './notify.js';
 import { makeLogger } from './logger.js';
@@ -129,16 +129,42 @@ export function defaultSources() {
 
 // Turn a watcher candidate into a ledger record. No pane key at all — a merge
 // into an existing scrape/hook record must never clobber a live pane id.
+//
+// The same stop is re-emitted whenever the CLI appends another limit line (a
+// GUI auto-retry, or the revived session hitting the still-active limit), so
+// an existing record's lifecycle must be respected: an active record only
+// gets its reset time refreshed — never its status/attempts reset, or the
+// MAX_RESUME_ATTEMPTS cap could never bind — and a cancelled record stays
+// cancelled.
 export function dispatchCandidate(c) {
   const detectedAt = c.timestampMs || Date.now();
   let at, source;
   if (c.resetAt) {
-    ({ at, source } = { at: c.resetAt + RESET_MARGIN_MS, source: 'absolute' });
+    at = c.resetAt + RESET_MARGIN_MS;
+    source = 'absolute';
   } else {
     ({ at, source } = resetAtMs(parseResetTime(c.resetLine), {
       marginMs: RESET_MARGIN_MS, fallbackMs: FALLBACK_RESET_MS,
     }));
   }
+
+  const existing = c.sessionId
+    ? Object.values(readState().sessions).find(s => s.sessionId === c.sessionId)
+    : null;
+  if (existing && existing.status === 'cancelled') return;
+  if (existing && (existing.status === 'stopped' || existing.status === 'resuming')) {
+    updateState(state => {
+      const s = state.sessions[existing.key];
+      if (s && (s.status === 'stopped' || s.status === 'resuming')) {
+        s.resetAt = at;
+        s.resetSource = source;
+        if (c.limitType && c.limitType !== 'unknown') s.limitType = c.limitType;
+      }
+    });
+    log(`refreshed reset for tracked stop: session=${c.sessionId} resetAt=${new Date(at).toISOString()}`);
+    return;
+  }
+
   const record = {
     sessionId: c.sessionId || null,
     cwd: c.cwd || null,
@@ -200,16 +226,26 @@ export function createWatcher({
   let offsets = loadOffsets(offsetsPath);
   let coldStart = offsets === null;
   if (coldStart) offsets = {};
+  let dirty = coldStart;
+
+  function setOffset(path, value) {
+    if (offsets[path] !== value) { offsets[path] = value; dirty = true; }
+  }
 
   function saveOffsets(seen) {
+    // Unseen ≠ gone: a source may be disabled this tick or a root transiently
+    // unreadable — wiping those offsets would replay history on re-enable.
+    // Only forget files that no longer exist.
     for (const key of Object.keys(offsets)) {
-      if (!seen.has(key)) delete offsets[key];   // rotated/deleted files
+      if (!seen.has(key) && !existsSync(key)) { delete offsets[key]; dirty = true; }
     }
+    if (!dirty) return;
     try {
       mkdirSync(dirname(offsetsPath), { recursive: true });
       const tmp = join(dirname(offsetsPath), `.offsets.tmp.${process.pid}`);
       writeFileSync(tmp, JSON.stringify(offsets));
       renameSync(tmp, offsetsPath);
+      dirty = false;
     } catch (err) {
       log(`offsets save failed: ${err.message}`);
     }
@@ -223,17 +259,17 @@ export function createWatcher({
     const known = Object.prototype.hasOwnProperty.call(offsets, path);
     let offset;
     if (!known) {
-      if (coldStart) { offsets[path] = size; return null; }
+      if (coldStart) { setOffset(path, size); return null; }
       offset = Math.max(0, size - MAX_READ_BYTES);
     } else {
       offset = offsets[path];
     }
-    if (size < offset) { offsets[path] = size; return null; }   // rewritten shorter
-    if (size === offset) { offsets[path] = size; return null; }
+    // Nothing new, or rewritten shorter (rotate/truncate) — pin to EOF.
+    if (size <= offset) { setOffset(path, size); return null; }
     const buf = readRange(path, offset, size);
     const lastNl = buf.lastIndexOf(0x0a);
-    if (lastNl === -1) { offsets[path] = offset; return null; }  // partial line — wait
-    offsets[path] = offset + lastNl + 1;
+    if (lastNl === -1) { setOffset(path, offset); return null; }  // partial line — wait
+    setOffset(path, offset + lastNl + 1);
     return buf.subarray(0, lastNl + 1).toString('utf-8').split('\n').filter(l => l.trim());
   }
 
@@ -272,7 +308,15 @@ export function createWatcher({
       }
       coldStart = false;
       saveOffsets(seen);
-      const fresh = candidates.filter(c => c.timestampMs == null || now() - c.timestampMs <= freshnessMs);
+      // Strict freshness: a candidate without a parseable timestamp cannot be
+      // dated, and dispatching it risks reviving a long-finished session (the
+      // offsets can legitimately replay old lines after a file reappears).
+      // Every real transcript/rollout line carries an ISO timestamp.
+      const fresh = [];
+      for (const c of candidates) {
+        if (Number.isFinite(c.timestampMs) && now() - c.timestampMs <= freshnessMs) fresh.push(c);
+        else log(`dropped stale/undatable candidate: agent=${c.agent} session=${c.sessionId || '?'} ts=${c.timestampMs}`);
+      }
       for (const c of fresh) {
         try { onStop(c); } catch (err) { log(`onStop failed: ${err.message}`); }
       }

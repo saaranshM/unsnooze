@@ -26,6 +26,7 @@ export function parseTranscriptLine(line) {
   const content = entry.message?.content;
   const text = (Array.isArray(content) && content.find(c => c?.type === 'text')?.text) || '';
   const d = detectLimit(text, PANE_SCAN_LINES, patterns);
+  const ts = entry.timestamp ? Date.parse(entry.timestamp) : NaN;
 
   return {
     sessionId: entry.sessionId || null,
@@ -33,6 +34,6 @@ export function parseTranscriptLine(line) {
     entrypoint: entry.entrypoint || null,
     limitType: d.hit ? d.limitType : 'unknown',
     resetLine: d.hit ? d.resetLine : null,
-    timestampMs: entry.timestamp ? Date.parse(entry.timestamp) : null,
+    timestampMs: Number.isFinite(ts) ? ts : null,
   };
 }

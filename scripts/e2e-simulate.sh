@@ -47,6 +47,8 @@ export UNSNOOZE_NOTIFICATIONS=off
 export UNSNOOZE_CLAUDE_DIR="$WORK/claude-home"    # no transcripts — no id backfill
 export UNSNOOZE_CODEX_DIR="$WORK/codex-home"
 export UNSNOOZE_GROK_DIR="$WORK/grok-home"
+export UNSNOOZE_LAUNCH_AGENTS_DIR="$WORK/launch-agents"   # never touch the real
+export UNSNOOZE_SYSTEMD_USER_DIR="$WORK/systemd-user"     # daemon autostart
 
 SESSIONS=()
 PIDS=()

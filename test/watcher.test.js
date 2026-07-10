@@ -19,7 +19,7 @@ process.env.UNSNOOZE_STATE_DIR = join(DIR, 'state');
 process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 
 const { createWatcher, claudeSource, claudeDesktopSource, codexSource, dispatchCandidate } = await import('../src/watcher.js');
-const { readState } = await import('../src/state.js');
+const { readState, setStatus } = await import('../src/state.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
@@ -215,6 +215,77 @@ test('dispatchCandidate persists origin and env in the ledger, without a pane ke
   assert.deepEqual(rec.env, { CLAUDE_CONFIG_DIR: '/tmp/sandbox/.claude' });
   assert.ok(!('pane' in rec), 'watcher records must not carry a pane key');
   assert.ok(rec.resetAt > Date.now(), 'reset parsed from the reset line');
+});
+
+test('re-emitted stop must not clobber a resuming record or reset attempts', () => {
+  const candidate = sid => ({
+    agent: 'claude', sessionId: sid, cwd: '/tmp/proj-re', limitType: '5h',
+    resetLine: SESSION_TEXT, resetAt: null, origin: 'vscode', timestampMs: Date.now(),
+  });
+  dispatchCandidate(candidate('re-emit-1'));
+  setStatus('re-emit-1', 'resuming', { attempts: 2, lastAttemptAt: Date.now() });
+
+  // The revived CLI writes a fresh limit line → watcher re-emits the stop.
+  dispatchCandidate(candidate('re-emit-1'));
+  const rec = readState().sessions['re-emit-1'];
+  assert.equal(rec.status, 'resuming', 'in-flight resume must not be flipped back to stopped');
+  assert.equal(rec.attempts, 2, 'attempts must survive re-emission or MAX_RESUME_ATTEMPTS never binds');
+});
+
+test('a cancelled session is not resurrected by a re-emitted stop', () => {
+  dispatchCandidate({
+    agent: 'claude', sessionId: 'cancel-1', cwd: '/tmp/proj-re', limitType: '5h',
+    resetLine: SESSION_TEXT, resetAt: null, origin: 'vscode', timestampMs: Date.now(),
+  });
+  setStatus('cancel-1', 'cancelled');
+  dispatchCandidate({
+    agent: 'claude', sessionId: 'cancel-1', cwd: '/tmp/proj-re', limitType: '5h',
+    resetLine: SESSION_TEXT, resetAt: null, origin: 'vscode', timestampMs: Date.now(),
+  });
+  assert.equal(readState().sessions['cancel-1'].status, 'cancelled');
+});
+
+test('candidates with unparseable timestamps are dropped, not treated as fresh', async () => {
+  const root = join(DIR, 't8', 'projects', '-tmp-proj-w');
+  mkdirSync(root, { recursive: true });
+  const stops = [];
+  const watcher = createWatcher({
+    sources: [claudeSource({ roots: [join(DIR, 't8', 'projects')] })],
+    offsetsPath: join(DIR, 't8', 'offsets.json'),
+    onStop: rec => stops.push(rec),
+  });
+  const file = join(root, 'hhhh.jsonl');
+  writeFileSync(file, '');
+  await watcher.tick();
+  appendFileSync(file, limitLine({ sessionId: 'bad-ts', timestamp: 'not-a-date' }));
+  await watcher.tick();
+  assert.equal(stops.length, 0);
+});
+
+test('a temporarily disabled source does not lose its offsets', async () => {
+  const root = join(DIR, 't9', 'projects', '-tmp-proj-w');
+  mkdirSync(root, { recursive: true });
+  const stops = [];
+  const watcher = createWatcher({
+    sources: [claudeSource({ roots: [join(DIR, 't9', 'projects')] })],
+    offsetsPath: join(DIR, 't9', 'offsets.json'),
+    onStop: rec => stops.push(rec),
+  });
+  const file = join(root, 'iiii.jsonl');
+  writeFileSync(file, limitLine({ sessionId: 'history-stop' }));   // history
+  await watcher.tick();                                            // offset at EOF
+
+  process.env.UNSNOOZE_AGENT_CLAUDE = 'off';
+  await watcher.tick();                                            // source skipped
+  process.env.UNSNOOZE_AGENT_CLAUDE = 'on';
+  await watcher.tick();
+  assert.equal(stops.length, 0, 'history must not replay after a disable/enable cycle');
+
+  appendFileSync(file, limitLine({ sessionId: 'post-toggle-stop' }));
+  await watcher.tick();
+  delete process.env.UNSNOOZE_AGENT_CLAUDE;
+  assert.equal(stops.length, 1);
+  assert.equal(stops[0].sessionId, 'post-toggle-stop');
 });
 
 test('codex source: exhausted token_count in a fresh rollout → candidate with epoch reset', async () => {

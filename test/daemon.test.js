@@ -2,7 +2,7 @@
 // the injected watcher every loop, and shuts down cleanly on abort.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -48,6 +48,26 @@ test('persistent daemon survives an empty ledger, ticks the watcher, stops on ab
   assert.equal(code, 0);
   // The singleton bookkeeping must be released after shutdown.
   assert.equal(readState().resumerPid, null);
+});
+
+test('daemon waiting on a foreign lock still ticks the watcher', async () => {
+  // Another process (use our live parent pid) holds the resumer lock — the
+  // daemon must keep watching for stops while it waits, or GUI stops that
+  // happen during the wait age past the freshness window and are lost.
+  writeFileSync(join(DIR, 'resumer.lock'), String(process.ppid));
+  let ticks = 0;
+  const controller = new AbortController();
+  const done = runResumer({
+    tmux: {},
+    pollInterval: 10,
+    persistent: true,
+    watcher: { tick: async () => { ticks++; } },
+    signal: controller.signal,
+  });
+  assert.ok(await waitUntil(() => ticks >= 2), 'watcher must tick while the lock is held elsewhere');
+  controller.abort();
+  await done;
+  rmSync(join(DIR, 'resumer.lock'), { force: true });
 });
 
 test('a watcher that throws does not kill the daemon', async () => {

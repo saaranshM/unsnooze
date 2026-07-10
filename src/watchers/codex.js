@@ -50,11 +50,12 @@ export function parseRolloutLine(line) {
   }
   if (!binding) return null;
 
+  const ts = entry.timestamp ? Date.parse(entry.timestamp) : NaN;
   return {
     limitType: windowLimitType(binding.window_minutes),
     resetAt: binding.resets_at ? binding.resets_at * 1000 : null,
     reachedType: rl.rate_limit_reached_type || null,
-    timestampMs: entry.timestamp ? Date.parse(entry.timestamp) : null,
+    timestampMs: Number.isFinite(ts) ? ts : null,
   };
 }
 

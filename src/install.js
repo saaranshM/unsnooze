@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { CLAUDE_SETTINGS, STATE_DIR } from './config.js';
 import { getConfig, configFileExists } from './settings.js';
+import { xmlEscape } from './notify.js';
 import { installGrokHooks, uninstallGrokHooks } from './agents/grok.js';
 import { UNSNOOZE_BIN } from './spawn.js';
 
@@ -134,8 +135,12 @@ export function installZshrcBlock(content, agents = ['claude']) {
 
 export const DAEMON_LABEL = 'com.unsnooze.daemon';
 
-function xmlEscape(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+// Env overrides keep tests/e2e away from the real LaunchAgents / systemd dirs.
+function autostartDir(platform) {
+  if (platform === 'darwin') {
+    return process.env.UNSNOOZE_LAUNCH_AGENTS_DIR || join(homedir(), 'Library', 'LaunchAgents');
+  }
+  return process.env.UNSNOOZE_SYSTEMD_USER_DIR || join(homedir(), '.config', 'systemd', 'user');
 }
 
 export function launchdPlist({
@@ -187,14 +192,14 @@ function defaultActivate(cmd, args) {
 
 export function installDaemonAutostart({ platform = process.platform, dir = null, activate = defaultActivate } = {}) {
   if (platform === 'darwin') {
-    const target = join(dir || join(homedir(), 'Library', 'LaunchAgents'), `${DAEMON_LABEL}.plist`);
+    const target = join(dir || autostartDir(platform), `${DAEMON_LABEL}.plist`);
     atomicWrite(target, launchdPlist());
     activate('launchctl', ['unload', target]);   // reload cleanly if already loaded
     activate('launchctl', ['load', '-w', target]);
     return target;
   }
   if (platform === 'linux') {
-    const target = join(dir || join(homedir(), '.config', 'systemd', 'user'), 'unsnooze.service');
+    const target = join(dir || autostartDir(platform), 'unsnooze.service');
     atomicWrite(target, systemdUnit());
     activate('systemctl', ['--user', 'daemon-reload']);
     activate('systemctl', ['--user', 'enable', '--now', 'unsnooze.service']);
@@ -205,14 +210,14 @@ export function installDaemonAutostart({ platform = process.platform, dir = null
 
 export function uninstallDaemonAutostart({ platform = process.platform, dir = null, activate = defaultActivate } = {}) {
   if (platform === 'darwin') {
-    const target = join(dir || join(homedir(), 'Library', 'LaunchAgents'), `${DAEMON_LABEL}.plist`);
+    const target = join(dir || autostartDir(platform), `${DAEMON_LABEL}.plist`);
     if (!existsSync(target)) return null;
     activate('launchctl', ['unload', target]);
     try { unlinkSync(target); } catch { /* already gone */ }
     return target;
   }
   if (platform === 'linux') {
-    const target = join(dir || join(homedir(), '.config', 'systemd', 'user'), 'unsnooze.service');
+    const target = join(dir || autostartDir(platform), 'unsnooze.service');
     if (!existsSync(target)) return null;
     activate('systemctl', ['--user', 'disable', '--now', 'unsnooze.service']);
     try { unlinkSync(target); } catch { /* already gone */ }

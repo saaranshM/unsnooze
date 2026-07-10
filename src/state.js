@@ -121,6 +121,11 @@ function findDuplicate(state, record) {
     }
     // A transcript/hook record with a sessionId matches a scrape record that
     // never learned its id — same agent, same cwd, same detection window.
+    // Known trade-off: TWO different sessions of the same agent in the same
+    // cwd stopping within the window would wrongly merge — but a pane session
+    // writes the very transcript the watcher reads, so same-cwd evidence is
+    // almost always the same session, and the alternative (two records) would
+    // double-resume it.
     if (record.sessionId && !s.sessionId
       && s.agent === record.agent && s.cwd && s.cwd === record.cwd
       && s.status === 'stopped'

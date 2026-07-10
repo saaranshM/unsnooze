@@ -5,6 +5,7 @@
 // Exits when no non-terminal records remain; the next limit event respawns it.
 
 import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import * as realTmux from './tmux.js';
 import {
   RESUMER_LOCK, STATE_DIR, POLL_INTERVAL_MS, STAGGER_MS, VERIFY_DELAY_MS,
@@ -95,14 +96,18 @@ export async function dispatchOne(rec, { tmux = realTmux, resumeMessage, selfCmd
   // Records from sandboxed GUI sessions carry env (e.g. CLAUDE_CONFIG_DIR) the
   // revived CLI needs to find its session store.
   const resume = agent.resumeArgs(rec.sessionId, resumeMessage);
+  // `env K=V cmd`, not a bare `K=V cmd` prefix: the command runs in the
+  // user's default shell, and fish/nushell reject POSIX prefix assignments.
   const envPrefix = rec.env
-    ? Object.entries(rec.env).map(([k, v]) => `${k}=${shellQuote(String(v))}`).join(' ') + ' '
+    ? 'env ' + Object.entries(rec.env).map(([k, v]) => `${k}=${shellQuote(String(v))}`).join(' ') + ' '
     : '';
   const command = envPrefix + [...selfCmd, '_run', agent.id, ...resume.args].map(shellQuote).join(' ');
   setStatus(key, 'resuming', { lastAttemptAt: Date.now() });
   let newPane;
   try {
-    newPane = await tmux.newWindow(rec.tmuxSession || TMUX_SESSION_NAME, rec.cwd, command);
+    // cwd can be null on watcher records (unreadable rollout head) — execFile
+    // rejects null args, so fall back to the home dir rather than crash-loop.
+    newPane = await tmux.newWindow(rec.tmuxSession || TMUX_SESSION_NAME, rec.cwd || homedir(), command);
   } catch (err) {
     setStatus(key, 'stopped', { attempts: (rec.attempts || 0) + 1, lastError: `new-window: ${err.message}` });
     return 'failed';
@@ -170,10 +175,17 @@ export async function runResumer({
   persistent = false, watcher = null, signal = null,
 } = {}) {
   // A transient hook-spawned resumer may hold the lock right now; a daemon
-  // outlives it, so wait for the lock instead of dying.
+  // outlives it, so wait for the lock instead of dying. The watcher MUST keep
+  // ticking during the wait: it only records stops (its own state lock covers
+  // that), and a stop left unread past the freshness window is lost for good.
+  const tickWatcher = async () => {
+    if (!watcher || !getConfig('guiWatch')) return;
+    try { await watcher.tick(); } catch (err) { log(`watcher tick failed: ${err.message}`); }
+  };
   while (!acquireSingleton()) {
     if (!persistent) { log('another resumer is running — exiting'); return 0; }
     if (signal?.aborted) return 0;
+    await tickWatcher();
     log('another resumer holds the lock — daemon waiting');
     await sleep(pollInterval);
   }
@@ -184,9 +196,7 @@ export async function runResumer({
   try {
     for (;;) {
       if (signal?.aborted) { log('shutdown requested — resumer exiting'); return 0; }
-      if (watcher && getConfig('guiWatch')) {
-        try { await watcher.tick(); } catch (err) { log(`watcher tick failed: ${err.message}`); }
-      }
+      await tickWatcher();
       const stopped = activeStopped();
       const resuming = Object.values(readState().sessions).filter(s => s.status === 'resuming');
       if (stopped.length === 0 && resuming.length === 0 && !persistent) {

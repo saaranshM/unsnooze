@@ -198,13 +198,18 @@ export function resetAtMs(parsed, { marginMs = 60_000, fallbackMs = 5 * 3_600_00
       ];
     };
     const resolve = (h, m) => {
+      // Re-correct the wall clock on EVERY day step: a raw 24h jump across a
+      // DST transition drifts the local time, and a drifted probe can match
+      // the named date at the wrong instant (landing a day late after the
+      // final correction). The walk is capped just past the 10-day acceptance
+      // window below — longer walks are discarded anyway.
       let t = targetTimestamp(h, m);
-      for (let i = 0; i <= 366; i++) {
+      for (let i = 0; i <= 12; i++) {
         const [mo, d] = monthDayAt(t);
-        if (mo === parsed.month && d === parsed.dayOfMonth) return correctWallClock(t, h, m);
-        t += 86_400_000;
+        if (mo === parsed.month && d === parsed.dayOfMonth) return t;
+        t = correctWallClock(t + 86_400_000, h, m);
       }
-      return null;   // impossible date (e.g. Feb 30)
+      return null;   // beyond the weekly window (or an impossible date)
     };
     const candidates = parsed.ambiguous
       ? [resolve(parsed.hour, parsed.minute), resolve((parsed.hour + 12) % 24, parsed.minute)]

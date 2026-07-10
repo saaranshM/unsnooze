@@ -28,7 +28,7 @@ function seed(overrides = {}) {
   return Object.values(state.sessions).find(s => s.sessionId === rec.sessionId || s.pane === rec.pane);
 }
 
-test('pane-less record with env → reopened with the env prefixed to the command', async () => {
+test('pane-less record with env → reopened via shell-agnostic `env` prefix', async () => {
   const rec = seed({ pane: null, agent: 'codex', env: { CLAUDE_CONFIG_DIR: '/tmp/sandbox/.claude' } });
   const windows = [];
   const tmux = {
@@ -38,7 +38,21 @@ test('pane-less record with env → reopened with the env prefixed to the comman
   const result = await dispatchOne(rec, { tmux });
   assert.equal(result, 'reopened');
   assert.equal(windows.length, 1);
-  assert.match(windows[0].command, /^CLAUDE_CONFIG_DIR=\/tmp\/sandbox\/\.claude /);
+  // `env K=V cmd` works in every default shell (fish rejects bare K=V prefixes).
+  assert.match(windows[0].command, /^env CLAUDE_CONFIG_DIR=\/tmp\/sandbox\/\.claude /);
+});
+
+test('record with cwd null → reopened in the home dir, not a newWindow crash', async () => {
+  const rec = seed({ pane: null, agent: 'codex', cwd: null });
+  const windows = [];
+  const tmux = {
+    paneAlive: async () => false,
+    newWindow: async (session, cwd, command) => { windows.push({ session, cwd, command }); return '%78'; },
+  };
+  const result = await dispatchOne(rec, { tmux });
+  assert.equal(result, 'reopened');
+  assert.equal(typeof windows[0].cwd, 'string');
+  assert.ok(windows[0].cwd.length > 0, 'cwd must be a real path — execFile rejects null args');
 });
 
 test('live idle claude pane → message sent', async () => {
