@@ -7,7 +7,7 @@ import { join } from 'node:path';
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-settings-test-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
 
-const { getConfig, setConfigValue, listConfig, DEFAULTS } = await import('../src/settings.js');
+const { getConfig, setConfigValue, listConfig, resolveResumeMessage, readFileConfig, DEFAULTS } = await import('../src/settings.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
@@ -57,9 +57,69 @@ test('setConfigValue rejects unknown keys and bad types', () => {
 
 test('listConfig returns every known key with its effective value', () => {
   const listed = listConfig();
-  for (const key of ['autoResume', 'menuAutoAnswer', 'notifications', 'resumeMessage', 'agents.claude', 'agents.codex', 'agents.grok']) {
+  for (const key of ['autoResume', 'menuAutoAnswer', 'notifications', 'resumeMessage', 'agents.claude', 'agents.codex', 'agents.grok', 'resumeMessages.claude', 'resumeMessages.codex', 'resumeMessages.grok']) {
     assert.ok(key in listed, `${key} missing from listConfig`);
   }
+});
+
+test('per-agent resume messages default to unset → global message', () => {
+  assert.equal(getConfig('resumeMessages.claude'), '');
+  assert.equal(resolveResumeMessage('claude'), DEFAULTS.resumeMessage);
+});
+
+test('per-agent file value overrides global; empty string means unset', () => {
+  writeFileSync(join(DIR, 'config.json'), JSON.stringify({
+    resumeMessage: 'global msg',
+    resumeMessages: { codex: 'codex msg', grok: '' },
+  }));
+  assert.equal(resolveResumeMessage('codex'), 'codex msg');
+  assert.equal(resolveResumeMessage('claude'), 'global msg');   // no override → global
+  assert.equal(resolveResumeMessage('grok'), 'global msg');     // '' → unset → global
+  rmSync(join(DIR, 'config.json'));
+});
+
+test('per-agent env beats file; per-agent file beats global env', () => {
+  writeFileSync(join(DIR, 'config.json'), JSON.stringify({
+    resumeMessage: 'global msg',
+    resumeMessages: { claude: 'claude file msg' },
+  }));
+  process.env.UNSNOOZE_RESUME_MESSAGE_CLAUDE = 'claude env msg';
+  assert.equal(resolveResumeMessage('claude'), 'claude env msg');
+  delete process.env.UNSNOOZE_RESUME_MESSAGE_CLAUDE;
+  process.env.UNSNOOZE_RESUME_MESSAGE = 'global env msg';
+  assert.equal(resolveResumeMessage('claude'), 'claude file msg');   // specificity beats source
+  assert.equal(resolveResumeMessage('codex'), 'global env msg');
+  delete process.env.UNSNOOZE_RESUME_MESSAGE;
+  rmSync(join(DIR, 'config.json'));
+});
+
+test('resolveResumeMessage falls back to global for unknown agent ids', () => {
+  assert.equal(resolveResumeMessage('nonsense'), DEFAULTS.resumeMessage);
+  assert.equal(resolveResumeMessage(undefined), DEFAULTS.resumeMessage);
+});
+
+test('resolveResumeMessage treats whitespace-only values as unset', () => {
+  writeFileSync(join(DIR, 'config.json'), JSON.stringify({
+    resumeMessage: ' ',
+    resumeMessages: { claude: '  ' },
+  }));
+  assert.equal(resolveResumeMessage('claude'), DEFAULTS.resumeMessage);
+  rmSync(join(DIR, 'config.json'));
+});
+
+test('readFileConfig returns an object even when the file holds non-object JSON', () => {
+  writeFileSync(join(DIR, 'config.json'), JSON.stringify('hi'));
+  assert.deepEqual(readFileConfig(), {});
+  rmSync(join(DIR, 'config.json'));
+});
+
+test('setConfigValue sets and clears per-agent messages', () => {
+  setConfigValue('resumeMessages.claude', 'be quick');
+  assert.equal(resolveResumeMessage('claude'), 'be quick');
+  const onDisk = JSON.parse(readFileSync(join(DIR, 'config.json'), 'utf-8'));
+  assert.equal(onDisk.resumeMessages.claude, 'be quick');
+  setConfigValue('resumeMessages.claude', '');
+  assert.equal(resolveResumeMessage('claude'), DEFAULTS.resumeMessage);
 });
 
 test('DEFAULTS include grok disabled (experimental)', () => {

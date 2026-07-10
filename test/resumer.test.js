@@ -108,6 +108,63 @@ test('dead codex pane → reopened via `_run codex resume <id> "msg"`, nothing t
   assert.equal(sent.length, 0);                                     // message travels in argv
 });
 
+test('per-agent message: UNSNOOZE_RESUME_MESSAGE_CLAUDE overrides the global for a live claude pane', async () => {
+  process.env.UNSNOOZE_RESUME_MESSAGE_CLAUDE = 'claude, wake up';
+  try {
+    const rec = seed({ pane: '%23' });
+    const sent = [];
+    const tmux = {
+      paneAlive: async () => true,
+      paneCurrentCommand: async () => 'claude',
+      capturePane: async () => '❯ \n',
+      sendText: async (pane, text) => sent.push({ pane, text }),
+    };
+    assert.equal(await dispatchOne(rec, { tmux }), 'sent');
+    assert.equal(sent[0].text, 'claude, wake up');
+  } finally {
+    delete process.env.UNSNOOZE_RESUME_MESSAGE_CLAUDE;
+  }
+});
+
+test('per-agent message: UNSNOOZE_RESUME_MESSAGE_CODEX lands in the codex resume argv', async () => {
+  process.env.UNSNOOZE_RESUME_MESSAGE_CODEX = 'codex custom wake';
+  try {
+    const rec = seed({ pane: '%24', agent: 'codex', sessionId: '44444444-5555-4666-8777-888888888888' });
+    const sent = [];
+    let windowCmd = null;
+    const tmux = {
+      paneAlive: async () => false,
+      paneCurrentCommand: async () => null,
+      capturePane: async () => '› Ask Codex to do anything\n',
+      sendText: async (pane, text) => sent.push({ pane, text }),
+      newWindow: async (session, cwd, command) => { windowCmd = { session, cwd, command }; return '%94'; },
+    };
+    assert.equal(await dispatchOne(rec, { tmux }), 'reopened');
+    assert.match(windowCmd.command, /'codex custom wake'/);
+    assert.equal(sent.length, 0);
+  } finally {
+    delete process.env.UNSNOOZE_RESUME_MESSAGE_CODEX;
+  }
+});
+
+test('explicit resumeMessage option beats the per-agent env override', async () => {
+  process.env.UNSNOOZE_RESUME_MESSAGE_CLAUDE = 'from env';
+  try {
+    const rec = seed({ pane: '%25' });
+    const sent = [];
+    const tmux = {
+      paneAlive: async () => true,
+      paneCurrentCommand: async () => 'claude',
+      capturePane: async () => '❯ \n',
+      sendText: async (pane, text) => sent.push({ pane, text }),
+    };
+    assert.equal(await dispatchOne(rec, { tmux, resumeMessage: 'explicit wins' }), 'sent');
+    assert.equal(sent[0].text, 'explicit wins');
+  } finally {
+    delete process.env.UNSNOOZE_RESUME_MESSAGE_CLAUDE;
+  }
+});
+
 test('reopen command embeds absolute node + entry-point paths (tmux server PATH is not ours)', async () => {
   // Regression: `unsnooze _run ...` resolved through the tmux SERVER's PATH,
   // which may lack npm globals or nvm's node entirely — reopen then fails

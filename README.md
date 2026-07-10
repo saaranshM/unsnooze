@@ -116,6 +116,7 @@ unsnooze uninstall [--purge]    # remove wrappers + hooks (+ state with --purge)
 | `menuAutoAnswer` | `true` | May unsnooze answer Claude's limit menu (send keys in your pane)? Off = watch-only. |
 | `notifications` | `true` | Desktop notification on limit detected / session resumed / gave up. |
 | `resumeMessage` | *"Continue where you left off…"* | The message sent to wake a session. |
+| `resumeMessages.claude` / `.codex` / `.grok` | `""` | Per-agent override of `resumeMessage`. Empty = use the global message; clear one with `unsnooze config set resumeMessages.claude ""`. |
 | `agents.claude` / `agents.codex` / `agents.grok` | `true` / `true` / `false` | Which CLIs are guarded. |
 
 Every setting also has a `UNSNOOZE_*` env override (see `src/settings.js`), and

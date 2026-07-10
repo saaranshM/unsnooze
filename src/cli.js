@@ -89,7 +89,7 @@ export function cmdConfig(rest) {
       const listed = listConfig();
       console.log(`unsnooze settings (${CONFIG_FILE()}):\n`);
       for (const [k, v] of Object.entries(listed)) {
-        console.log(`  ${k.padEnd(16)} ${JSON.stringify(v)}`);
+        console.log(`  ${k.padEnd(24)} ${JSON.stringify(v)}`);
       }
       return 0;
     }
@@ -100,7 +100,9 @@ export function cmdConfig(rest) {
     }
     if (action === 'set') {
       const value = valueParts.join(' ');
-      if (!key || value === '') { console.error('unsnooze config set <key> <value>'); return 2; }
+      // An explicit "" is a valid value (clears string overrides); only a
+      // genuinely missing value is a usage error.
+      if (!key || valueParts.length === 0) { console.error('unsnooze config set <key> <value>'); return 2; }
       const applied = setConfigValue(key, value);
       console.log(`unsnooze: ${key} = ${JSON.stringify(applied)}`);
       return 0;

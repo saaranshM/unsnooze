@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import * as p from '@clack/prompts';
 import { listAgents } from './agents/index.js';
 import { isCommunityGrokCli } from './agents/grok.js';
-import { DEFAULTS, writeConfig } from './settings.js';
+import { DEFAULTS, writeConfig, readFileConfig } from './settings.js';
 
 export function detectInstalledAgents({ which = defaultWhich } = {}) {
   return listAgents().map(agent => ({ agent, installed: which(agent.bin) }));
@@ -69,25 +69,55 @@ export async function runWizard() {
   });
   if (p.isCancel(notifications)) return cancelled();
 
+  // Seed message prompts from the existing config so a setup re-run shows —
+  // and keeps — values previously set here or via `unsnooze config`.
+  const existing = readFileConfig();
+  const existingMsgs = existing.resumeMessages
+    && typeof existing.resumeMessages === 'object' && !Array.isArray(existing.resumeMessages)
+    ? existing.resumeMessages : {};
+
   const customizeMsg = await p.confirm({
     message: 'Customize the message sent to resume a session?',
     initialValue: false,
   });
   if (p.isCancel(customizeMsg)) return cancelled();
 
-  let resumeMessage = DEFAULTS.resumeMessage;
+  let resumeMessage = typeof existing.resumeMessage === 'string' && existing.resumeMessage.trim()
+    ? existing.resumeMessage : DEFAULTS.resumeMessage;
   if (customizeMsg) {
     const msg = await p.text({
       message: 'Resume message:',
-      initialValue: DEFAULTS.resumeMessage,
+      initialValue: resumeMessage,
       validate: v => (v.trim() ? undefined : 'message cannot be empty'),
     });
     if (p.isCancel(msg)) return cancelled();
     resumeMessage = msg;
   }
 
+  const customizePerAgent = await p.confirm({
+    message: 'Set a different resume message for specific agents?',
+    initialValue: false,
+  });
+  if (p.isCancel(customizePerAgent)) return cancelled();
+
+  const resumeMessages = {};
+  if (customizePerAgent) {
+    for (const agent of listAgents().filter(a => agents.includes(a.id))) {
+      const msg = await p.text({
+        message: `Message for ${agent.name} (leave empty to use the global message):`,
+        initialValue: typeof existingMsgs[agent.id] === 'string' ? existingMsgs[agent.id] : '',
+      });
+      if (p.isCancel(msg)) return cancelled();
+      resumeMessages[agent.id] = typeof msg === 'string' && msg.trim() ? msg : '';
+    }
+  }
+
+  // Merge over the existing file so a setup re-run keeps settings the wizard
+  // doesn't ask about (e.g. per-agent messages set via `unsnooze config`).
   writeConfig({
+    ...existing,
     autoResume, menuAutoAnswer, notifications, resumeMessage,
+    resumeMessages: { ...existingMsgs, ...resumeMessages },
     agents: Object.fromEntries(listAgents().map(a => [a.id, agents.includes(a.id)])),
   });
 

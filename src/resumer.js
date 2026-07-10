@@ -16,7 +16,7 @@ import { detectLimit, isBusy } from './patterns.js';
 import { getAgent } from './agents/index.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { readState, updateState, setStatus, dueSessions, activeStopped } from './state.js';
-import { getConfig } from './settings.js';
+import { getConfig, resolveResumeMessage } from './settings.js';
 import { notify } from './notify.js';
 import { UNSNOOZE_BIN } from './spawn.js';
 import { makeLogger } from './logger.js';
@@ -68,9 +68,11 @@ function selfCommand() {
 
 // Decide how to act on one due record. Pure-ish; tmux injectable.
 // Returns: 'sent' | 'reopened' | 'deferred' | 'skip' | 'failed'
-export async function dispatchOne(rec, { tmux = realTmux, resumeMessage = getConfig('resumeMessage'), selfCmd = selfCommand() } = {}) {
+export async function dispatchOne(rec, { tmux = realTmux, resumeMessage, selfCmd = selfCommand() } = {}) {
   const key = rec.key;
   const agent = getAgent(rec.agent);
+  // Explicit option wins; otherwise the agent's own message (or the global).
+  resumeMessage = resumeMessage ?? resolveResumeMessage(agent.id);
 
   // Live-pane path: only if the pane still exists AND the agent CLI is its
   // foreground command (pane ids get recycled — never inject into a random
