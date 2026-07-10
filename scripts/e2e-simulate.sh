@@ -448,6 +448,7 @@ if [ "$(uname)" = "Darwin" ]; then
 #!/usr/bin/env bash
 echo "\$@" > "$S/reopen-args.txt"
 echo "\$CLAUDE_CONFIG_DIR" > "$S/reopen-configdir.txt"
+echo "securestore=[\${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}]" > "$S/reopen-securestore.txt"
 exec node "$WORK/echo-stub.js" "❯" "$S/received.txt"
 EOF
   chmod +x "$FAKEBIN/unsnooze"
@@ -469,6 +470,7 @@ EOF
   wait_state "$S/state.json" '"status": "resumed"' 40 || fail "desktop stop never revived: $(cat "$S/state.json")"
   grep -q -- "_run claude --resume 15151515-1616-4171-8181-191919191919" "$S/reopen-args.txt" || fail "wrong desktop reopen args: $(cat "$S/reopen-args.txt")"
   grep -q "$SANDBOX/.claude" "$S/reopen-configdir.txt" || fail "CLAUDE_CONFIG_DIR not exported to the revived CLI: $(cat "$S/reopen-configdir.txt" 2>/dev/null)"
+  grep -q 'securestore=\[\]' "$S/reopen-securestore.txt" || fail "CLAUDE_SECURESTORAGE_CONFIG_DIR must be set-but-empty (default keychain auth): $(cat "$S/reopen-securestore.txt" 2>/dev/null)"
   # restore the generic fake for the trailing leak check
   arm_fake "$WORK/unexpected-reopen.txt" "$WORK/unexpected-received.txt" "❯"
   kill "$DPID" 2>/dev/null || true; wait "$DPID" 2>/dev/null || true

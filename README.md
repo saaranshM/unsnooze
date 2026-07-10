@@ -68,8 +68,9 @@ the session files those surfaces already write:
   IDE extension, and desktop app.
 - **Claude desktop (cowork) sessions** *(experimental, macOS)* run in
   sandboxes under `~/Library/Application Support/Claude`; unsnooze watches
-  those too and exports each session's isolated `CLAUDE_CONFIG_DIR` when
-  reviving.
+  those too and revives with the session's isolated `CLAUDE_CONFIG_DIR`
+  (plus the keychain-scope override that keeps auth working — verified
+  against a real desktop session).
 
 When the limit resets, the session is revived **in a tmux window** with
 `claude --resume <id>` / `codex resume <id>` — it's the same session file, so

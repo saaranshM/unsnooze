@@ -90,8 +90,13 @@ export function codexSource({ roots }) {
 // Claude desktop (cowork) sessions are sandboxed: each runs against an
 // isolated CLAUDE_CONFIG_DIR at <session>/local_<id>/.claude, so the global
 // hook never fires and the transcripts live outside ~/.claude. Reviving one
-// needs that same CLAUDE_CONFIG_DIR exported — carried on the record as env.
-// Experimental: desktop worktree/VM sessions may not resume cleanly.
+// needs that same CLAUDE_CONFIG_DIR exported — carried on the record as env —
+// plus CLAUDE_SECURESTORAGE_CONFIG_DIR='' so auth stays on the DEFAULT
+// keychain entry: the service name is otherwise derived from the config dir,
+// and the sandbox holds no credentials (verified against a real cowork
+// session: with the pair set, `claude -p --resume <id>` answers; without the
+// override it dies with "Not logged in").
+// Experimental: desktop worktree/VM sessions may still differ.
 export function claudeDesktopSource({ roots }) {
   const base = claudeSource({ roots });
   return {
@@ -101,7 +106,9 @@ export function claudeDesktopSource({ roots }) {
       return base.parse(lines, path).map(rec => ({
         ...rec,
         origin: 'desktop',
-        env: configDir ? { CLAUDE_CONFIG_DIR: configDir } : undefined,
+        env: configDir
+          ? { CLAUDE_CONFIG_DIR: configDir, CLAUDE_SECURESTORAGE_CONFIG_DIR: '' }
+          : undefined,
       }));
     },
   };

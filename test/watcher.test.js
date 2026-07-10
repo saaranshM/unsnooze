@@ -192,7 +192,14 @@ test('desktop source: sandboxed transcript → origin desktop + CLAUDE_CONFIG_DI
   assert.equal(stops[0].origin, 'desktop');
   assert.equal(stops[0].sessionId, 'desktop-stop');
   assert.equal(stops[0].cwd, join(sandbox, 'outputs'));
-  assert.deepEqual(stops[0].env, { CLAUDE_CONFIG_DIR: join(sandbox, '.claude') });
+  // CLAUDE_SECURESTORAGE_CONFIG_DIR='' keeps auth on the DEFAULT keychain
+  // entry: the service name is derived from the config dir otherwise, and the
+  // sandbox dir has no credentials (verified against a real cowork session —
+  // without it the revival dies with "Not logged in").
+  assert.deepEqual(stops[0].env, {
+    CLAUDE_CONFIG_DIR: join(sandbox, '.claude'),
+    CLAUDE_SECURESTORAGE_CONFIG_DIR: '',
+  });
 });
 
 test('dispatchCandidate persists origin and env in the ledger, without a pane key', () => {

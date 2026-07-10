@@ -20,7 +20,10 @@ session files the CLIs already write:
   surface, since they share `~/.codex/sessions`.
 - **Claude desktop (cowork) sessions** *(experimental, macOS)*: sandboxed
   sessions under `~/Library/Application Support/Claude` are detected, and
-  revival exports the session's isolated `CLAUDE_CONFIG_DIR`.
+  revival exports the session's isolated `CLAUDE_CONFIG_DIR` together with
+  `CLAUDE_SECURESTORAGE_CONFIG_DIR=''` so auth resolves through the default
+  keychain entry (the sandbox holds no credentials). Verified end-to-end
+  against a real desktop session.
 
 Revival stays terminal-based: when the limit resets, the session reopens in a
 tmux window via `claude --resume <id>` / `codex resume <id>` — the same
