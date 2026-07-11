@@ -4,6 +4,24 @@
 
 const [, , cmd, ...rest] = process.argv;
 
+// Only human-facing commands may print update notices — never the wrapper
+// passthrough, hooks, or daemons (their output lands in agent panes/logs).
+const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'help', '-h', '--help', '--help-unsnooze']);
+
+async function maybeUpdateNotices() {
+  try {
+    const { whatsNewNotice, updateNotice, isCacheStale } = await import('../src/update-check.js');
+    const whatsNew = whatsNewNotice();
+    if (whatsNew) console.error(`\n${whatsNew}`);
+    const notice = updateNotice();
+    if (notice) console.error(`\n${notice}`);
+    if (isCacheStale()) {
+      const { spawnDetached } = await import('../src/spawn.js');
+      spawnDetached(['_update-check']);
+    }
+  } catch { /* update UX must never break a command */ }
+}
+
 async function main() {
   switch (cmd) {
     case 'status': {
@@ -64,6 +82,10 @@ async function main() {
       const { runResumer } = await import('../src/resumer.js');
       return runResumer();
     }
+    case '_update-check': {
+      const { runUpdateCheck } = await import('../src/update-check.js');
+      return runUpdateCheck();
+    }
     case 'daemon': {
       // Persistent resumer + transcript watcher: detects and revives limit
       // stops from GUI surfaces (VS Code extension, desktop apps) where no
@@ -73,6 +95,11 @@ async function main() {
       const controller = new AbortController();
       process.on('SIGTERM', () => controller.abort());
       process.on('SIGINT', () => controller.abort());
+      // Daily update check from the daemon: GUI-only users never run CLI
+      // commands, so this is what gets them the "new version" desktop toast.
+      const { spawnDetached } = await import('../src/spawn.js');
+      spawnDetached(['_update-check']);
+      setInterval(() => spawnDetached(['_update-check']), 24 * 3_600_000).unref();
       return runResumer({ persistent: true, watcher: createWatcher(), signal: controller.signal });
     }
     case 'help':
@@ -93,7 +120,7 @@ Usage:
                                    extension, desktop apps) — no tmux needed to
                                    detect; revival still opens in tmux
   unsnooze config [list|get|set]   view or change settings (toggles, global +
-                                   per-agent resume messages)
+                                   per-agent resume messages, updateCheck)
   unsnooze setup                   interactive setup wizard (agents + toggles)
   unsnooze install [--yes]         wire up shell wrappers + hooks (non-interactive)
   unsnooze uninstall [--purge]     remove wrappers + hooks (and state with --purge)
@@ -111,5 +138,7 @@ Usage:
   }
 }
 
-main().then(code => { process.exitCode = typeof code === 'number' ? code : 0; })
-  .catch(err => { console.error(`unsnooze: ${err.stack || err}`); process.exitCode = 1; });
+main().then(async code => {
+  if (USER_FACING.has(cmd)) await maybeUpdateNotices();
+  process.exitCode = typeof code === 'number' ? code : 0;
+}).catch(err => { console.error(`unsnooze: ${err.stack || err}`); process.exitCode = 1; });

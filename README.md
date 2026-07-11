@@ -154,6 +154,7 @@ unsnooze help                   # full command list (also -h / --help)
 | `resumeMessage` | *"Continue where you left off…"* | The message sent to wake a session. Override it for a single session with `unsnooze message <id> "…"` — visible in `unsnooze status`. |
 | `resumeMessages.claude` / `.codex` / `.grok` | `""` | Per-agent override of `resumeMessage`. Empty = use the global message; clear one with `unsnooze config set resumeMessages.claude ""`. |
 | `agents.claude` / `agents.codex` / `agents.grok` | `true` / `true` / `false` | Which CLIs are guarded. |
+| `updateCheck` | `true` | Daily new-version check (a plain GET to the npm registry, nothing identifying is sent). Notices after commands + one desktop toast per version. |
 
 Every setting also has a `UNSNOOZE_*` env override (see `src/settings.js`), and
 all timings/paths are tunable via `UNSNOOZE_*` env vars (see `src/config.js`).
@@ -222,6 +223,14 @@ parsed from the banner.
 
 No. unsnooze waits for the reset exactly like you would, resumes once, and
 verifies the limit actually lifted. It replaces the 4am alarm, not the limit.
+
+### How do I update, and how do I know when to?
+
+`npm i -g unsnooze`. unsnooze checks the npm registry at most once a day and
+tells you when a newer version exists (a line after CLI commands, plus one
+desktop notification per version); after updating, the next command shows a
+short "what's new" from the changelog. It's a plain registry GET with nothing
+identifying — turn it off with `unsnooze config set updateCheck off`.
 
 ### Does it work if my laptop was asleep or the terminal was closed?
 

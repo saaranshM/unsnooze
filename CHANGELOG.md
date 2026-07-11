@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0 — 2026-07-12
+
+- **Update notices**: unsnooze now checks the npm registry (at most once a
+  day, a plain GET with nothing identifying) and tells you when a new version
+  is out — a one-line notice after CLI commands, and a single desktop toast
+  per version from the daemon. After you update, the next command shows a
+  short "what's new" straight from the bundled changelog. Turn it all off
+  with `unsnooze config set updateCheck off`.
+
 ## 1.3.0 — 2026-07-11
 
 - **Per-session wake messages**: `unsnooze message <id|--all> "<text>"` sets a
