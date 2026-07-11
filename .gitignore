@@ -4,3 +4,4 @@ node_modules/
 *.tgz
 docs/superpowers/
 .mcp.json
+.playwright-mcp/
