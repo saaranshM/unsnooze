@@ -73,6 +73,21 @@ test('transcript record with sessionId merges into a pane record lacking one (sa
   assert.equal(again.length, 1);
 });
 
+test('mid-resume detection dedupes into the resuming record and keeps its status', () => {
+  // Regression: while the resumer types into a pane, a monitor scrape can
+  // still see the banner for a few hundred ms. That must NOT create a second
+  // record (double-resume), and must not clobber 'resuming' — the post-resume
+  // verify pass owns that outcome.
+  const t = Date.now();
+  const state1 = upsertSession(record({ pane: '%80', cwd: '/tmp/proj-race', detectedAt: t }));
+  const key = Object.values(state1.sessions).find(s => s.pane === '%80').key;
+  setStatus(key, 'resuming', { lastAttemptAt: t });
+  upsertSession(record({ pane: '%80', cwd: '/tmp/proj-race', detectedAt: t + 2_000 }));   // scrape during the race window
+  const matches = Object.values(readState().sessions).filter(s => s.pane === '%80');
+  assert.equal(matches.length, 1, 'must not create a duplicate record');
+  assert.equal(matches[0].status, 'resuming', 'verify pass owns the resuming outcome');
+});
+
 test('setStatus + activeStopped + dueSessions', () => {
   upsertSession(record({ sessionId: 'due-1', pane: '%3', resetAt: Date.now() - 1000 }));
   upsertSession(record({ sessionId: 'later-1', pane: '%4', resetAt: Date.now() + 9_999_999 }));

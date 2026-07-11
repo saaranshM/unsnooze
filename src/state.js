@@ -96,6 +96,9 @@ export function upsertSession(record) {
         ...record,
         // Never downgrade a known sessionId to null.
         sessionId: record.sessionId || existing.sessionId,
+        // A detection that races an in-flight resume must not flip the record
+        // back to 'stopped' — the post-resume verify pass owns that outcome.
+        status: existing.status === 'resuming' ? existing.status : record.status,
         key: existingKey,
       };
       state.sessions[existingKey] = merged;
@@ -114,8 +117,11 @@ function findDuplicate(state, record) {
     // Same sessionId living under a pane-based key (a scrape record that later
     // learned its id through a merge).
     if (record.sessionId && s.sessionId === record.sessionId) return key;
+    // 'resuming' counts too: while the resumer types into a pane, a scrape can
+    // still see the banner for a few hundred ms — that must not fork a second
+    // record (it would double-resume the session).
     if (s.pane && s.pane === record.pane
-      && s.status === 'stopped'
+      && (s.status === 'stopped' || s.status === 'resuming')
       && Math.abs((s.detectedAt || 0) - record.detectedAt) < DEDUPE_WINDOW_MS) {
       return key;
     }
