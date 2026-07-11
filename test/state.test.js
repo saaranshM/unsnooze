@@ -19,7 +19,8 @@ after(() => rmSync(DIR, { recursive: true, force: true }));
 
 function record(overrides = {}) {
   return {
-    sessionId: null, cwd: '/tmp/proj', pane: '%1', tmuxSession: 'unsnooze',
+    sessionId: null, cwd: '/tmp/proj', pane: '%1', mux: 'tmux', paneOwner: null,
+    muxSession: 'unsnooze',
     status: 'stopped', limitType: '5h', detectedVia: 'scrape',
     detectedAt: Date.now(), resetAt: Date.now() + 3_600_000,
     resetSource: 'absolute', attempts: 0, lastAttemptAt: null, lastError: null,
@@ -32,6 +33,30 @@ test('upsert creates keyed record; sessionId key preferred', () => {
   const state = readState();
   assert.ok(state.sessions['abc-123']);
   assert.equal(state.sessions['abc-123'].status, 'stopped');
+});
+
+test('readState migrates live-pane and pane-less legacy records to tmux', () => {
+  const before = readState().sessions;
+  updateState(state => {
+    state.sessions = {
+      live: { ...record({ sessionId: 'live', pane: '%44' }), mux: undefined, muxSession: undefined, tmuxSession: 'legacy-live' },
+      paneless: { ...record({ sessionId: 'paneless', pane: null }), mux: undefined, muxSession: undefined, tmuxSession: 'legacy-paneless' },
+    };
+  });
+  const state = readState();
+  assert.equal(state.sessions.live.mux, 'tmux');
+  assert.equal(state.sessions.live.muxSession, 'legacy-live');
+  assert.equal(state.sessions.paneless.mux, 'tmux');
+  assert.equal(state.sessions.paneless.muxSession, 'legacy-paneless');
+  updateState(current => { current.sessions = before; });
+});
+
+test('pane dedupe includes mux and owner instead of colliding on raw pane id', () => {
+  const t = Date.now();
+  upsertSession(record({ pane: '1', mux: 'zellij', paneOwner: 'alpha', detectedAt: t }));
+  upsertSession(record({ pane: '1', mux: 'zellij', paneOwner: 'beta', detectedAt: t + 1 }));
+  const matches = Object.values(readState().sessions).filter(s => s.pane === '1');
+  assert.equal(matches.length, 2);
 });
 
 test('hook + scrape dedupe on same pane within window; sessionId wins', () => {
@@ -49,7 +74,7 @@ test('transcript record with sessionId merges into a pane record lacking one (sa
   upsertSession(record({ pane: '%12', agent: 'codex', cwd: '/tmp/proj-c', detectedAt: t }));
   // Watcher record: no pane key at all — a GUI/transcript detection.
   upsertSession({
-    sessionId: 'roll-1', agent: 'codex', cwd: '/tmp/proj-c', tmuxSession: 'unsnooze',
+    sessionId: 'roll-1', agent: 'codex', cwd: '/tmp/proj-c', mux: 'tmux', paneOwner: null, muxSession: 'unsnooze',
     status: 'stopped', limitType: '5h', detectedVia: 'transcript',
     detectedAt: t + 4_000, resetAt: t + 3_600_000, resetSource: 'absolute',
     attempts: 0, lastAttemptAt: null, lastError: null,
@@ -63,7 +88,7 @@ test('transcript record with sessionId merges into a pane record lacking one (sa
   // A later tick re-detecting the same sessionId must still merge, even though
   // the record's key is the original pane key.
   upsertSession({
-    sessionId: 'roll-1', agent: 'codex', cwd: '/tmp/proj-c', tmuxSession: 'unsnooze',
+    sessionId: 'roll-1', agent: 'codex', cwd: '/tmp/proj-c', mux: 'tmux', paneOwner: null, muxSession: 'unsnooze',
     status: 'stopped', limitType: '5h', detectedVia: 'transcript',
     detectedAt: t + 8_000, resetAt: t + 3_600_000, resetSource: 'absolute',
     attempts: 0, lastAttemptAt: null, lastError: null,

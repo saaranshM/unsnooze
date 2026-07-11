@@ -69,9 +69,9 @@ async function main() {
       return runHook(rest);
     }
     case '_monitor': {
-      if (!rest[0]) { console.error('unsnooze _monitor: pane id required'); return 2; }
+      if (!rest[0] || !rest[2]) { console.error('unsnooze _monitor: mux owner pane required'); return 2; }
       const { runMonitor } = await import('../src/monitor.js');
-      return runMonitor(rest[0], rest[1]);
+      return runMonitor(rest[0], rest[1], rest[2], rest[3], rest[4]);
     }
     case '_run': {
       if (!rest[0]) { console.error('unsnooze _run: agent id required'); return 2; }

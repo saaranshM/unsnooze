@@ -20,7 +20,9 @@ export const CODEX_DIR = process.env.UNSNOOZE_CODEX_DIR || join(homedir(), '.cod
 // Transcript/rollout watcher (GUI detection channel)
 export const WATCH_OFFSETS_FILE = join(STATE_DIR, 'watch-offsets.json');
 
-export const TMUX_SESSION_NAME = process.env.UNSNOOZE_TMUX_SESSION || 'unsnooze';
+export const MUX_SESSION_NAME = process.env.UNSNOOZE_SESSION_NAME
+  || process.env.UNSNOOZE_TMUX_SESSION || 'unsnooze';
+export const TMUX_SESSION_NAME = MUX_SESSION_NAME; // read compatibility
 
 // Timing (ms unless noted)
 export const RESET_MARGIN_MS = envInt('UNSNOOZE_RESET_MARGIN_MS', 60_000);
@@ -47,5 +49,4 @@ export const OVERLOAD_JITTER = 0.15;
 export const DEDUPE_WINDOW_MS = envInt('UNSNOOZE_DEDUPE_WINDOW_MS', 120_000);
 export const PRUNE_AFTER_MS = envInt('UNSNOOZE_PRUNE_AFTER_MS', 7 * 86_400_000);
 export const STALE_LOCK_MS = envInt('UNSNOOZE_STALE_LOCK_MS', 10_000);
-
 

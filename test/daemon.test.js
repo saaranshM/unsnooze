@@ -27,7 +27,7 @@ async function waitUntil(cond, timeoutMs = 5_000) {
 }
 
 test('non-persistent resumer still exits immediately on an empty ledger', async () => {
-  const code = await runResumer({ tmux: {}, pollInterval: 10 });
+  const code = await runResumer({ resolveMux: () => ({ }), pollInterval: 10 });
   assert.equal(code, 0);
 });
 
@@ -35,7 +35,7 @@ test('persistent daemon survives an empty ledger, ticks the watcher, stops on ab
   let ticks = 0;
   const controller = new AbortController();
   const done = runResumer({
-    tmux: {},
+    resolveMux: () => ({ }),
     pollInterval: 10,
     persistent: true,
     watcher: { tick: async () => { ticks++; } },
@@ -58,7 +58,7 @@ test('daemon waiting on a foreign lock still ticks the watcher', async () => {
   let ticks = 0;
   const controller = new AbortController();
   const done = runResumer({
-    tmux: {},
+    resolveMux: () => ({ }),
     pollInterval: 10,
     persistent: true,
     watcher: { tick: async () => { ticks++; } },
@@ -74,7 +74,7 @@ test('a watcher that throws does not kill the daemon', async () => {
   let calls = 0;
   const controller = new AbortController();
   const done = runResumer({
-    tmux: {},
+    resolveMux: () => ({ }),
     pollInterval: 10,
     persistent: true,
     watcher: { tick: async () => { calls++; throw new Error('boom'); } },

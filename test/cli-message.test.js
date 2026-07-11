@@ -17,7 +17,7 @@ after(() => rmSync(DIR, { recursive: true, force: true }));
 function seed(pane, extra = {}) {
   const state = upsertSession({
     sessionId: extra.sessionId ?? null, cwd: '/tmp/proj', pane,
-    agent: 'claude', tmuxSession: 'unsnooze-test', status: 'stopped',
+    agent: 'claude', mux: 'tmux', paneOwner: null, muxSession: 'unsnooze-test', status: 'stopped',
     limitType: '5h', detectedVia: 'scrape', detectedAt: Date.now() - 60_000,
     resetAt: Date.now() + 3_600_000, resetSource: 'absolute',
     attempts: 0, lastAttemptAt: null, lastError: null,

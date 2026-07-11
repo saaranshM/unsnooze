@@ -6,11 +6,11 @@
 
 import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import * as realTmux from './tmux.js';
+import { getMultiplexer } from './multiplexer.js';
 import {
   RESUMER_LOCK, STATE_DIR, POLL_INTERVAL_MS, STAGGER_MS, VERIFY_DELAY_MS,
   BUSY_DEFER_MS, MAX_BUSY_DEFERS, MAX_RESUME_ATTEMPTS, READY_TIMEOUT_MS,
-  CAPTURE_LINES, PANE_SCAN_LINES, TMUX_SESSION_NAME,
+  CAPTURE_LINES, PANE_SCAN_LINES, MUX_SESSION_NAME,
   RESET_MARGIN_MS, FALLBACK_RESET_MS,
 } from './config.js';
 import { detectLimit, isBusy } from './patterns.js';
@@ -22,6 +22,7 @@ import { workspaceFingerprint, workspaceChanged, describeChange } from './worksp
 import { notify } from './notify.js';
 import { UNSNOOZE_BIN } from './spawn.js';
 import { makeLogger } from './logger.js';
+import { createLeaseId, leaseMatches } from './lease.js';
 
 const log = makeLogger('resumer');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -56,22 +57,43 @@ export function dueForDispatch(now = Date.now()) {
   return dueSessions(now).filter(s => (auto || s.manual) && (!s.workspaceHold || s.manual));
 }
 
-function shellQuote(arg) {
-  return /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
-}
-
-// The reopen command runs inside a fresh tmux window, i.e. with the tmux
-// SERVER's environment — which may lack npm globals or nvm's node on PATH.
-// Always embed absolute paths. UNSNOOZE_SELF is the test-harness override.
 function selfCommand() {
   return process.env.UNSNOOZE_SELF
     ? [process.env.UNSNOOZE_SELF]
     : [process.execPath, UNSNOOZE_BIN];
 }
 
-// Decide how to act on one due record. Pure-ish; tmux injectable.
-// Returns: 'sent' | 'reopened' | 'deferred' | 'skip' | 'failed'
-export async function dispatchOne(rec, { tmux = realTmux, resumeMessage, selfCmd = selfCommand(), fingerprint = workspaceFingerprint, notifier = notify } = {}) {
+export function resolveRecordMux(rec) {
+  return getMultiplexer(rec.mux, { owner: rec.paneOwner });
+}
+
+function reopenEnv(rec, leaseId) {
+  const env = Object.fromEntries(Object.entries({ ...process.env, ...(rec.env || {}) })
+    .filter(([key]) => !key.startsWith('UNSNOOZE_PANE')
+      && key !== 'UNSNOOZE_MUX' && key !== 'UNSNOOZE_LEASE_ID'
+      && key !== 'UNSNOOZE_ACTIVE'));
+  env.UNSNOOZE_MUX = rec.mux;
+  if (rec.muxSession) env.UNSNOOZE_PANE_OWNER = rec.muxSession;
+  env.UNSNOOZE_LEASE_ID = leaseId;
+  return env;
+}
+
+async function driveMenu(mux, pane, agent, text) {
+  const steps = agent.menu.stepsToWait(text, PANE_SCAN_LINES);
+  if (steps === null) return false;
+  const key = steps > 0 ? 'Down' : 'Up';
+  for (let i = 0; i < Math.abs(steps); i++) await mux.sendKey(pane, key);
+  await mux.sendKey(pane, 'Enter');
+  return true;
+}
+
+// Ordered safety decision. Returns: busy | retry | held | injected | reopen.
+export async function dispatchOne(rec, {
+  mux = resolveRecordMux(rec), resolveMux = null,
+  resumeMessage, selfCmd = selfCommand(), fingerprint = workspaceFingerprint,
+  notifier = notify, matchesLease = leaseMatches,
+} = {}) {
+  resolveMux ||= () => mux;
   const key = rec.key;
   const agent = getAgent(rec.agent);
   // Wake-message precedence: per-session (`unsnooze message <id> "..."`) →
@@ -100,76 +122,107 @@ export async function dispatchOne(rec, { tmux = realTmux, resumeMessage, selfCmd
   // Live-pane path: only if the pane still exists AND the agent CLI is its
   // foreground command (pane ids get recycled — never inject into a random
   // program).
-  if (rec.pane && await tmux.paneAlive(rec.pane)) {
-    const cmd = await tmux.paneCurrentCommand(rec.pane);
-    if (agent.isForegroundCommand(cmd)) {
-      const text = await tmux.capturePane(rec.pane, CAPTURE_LINES).catch(() => '');
-      if (isBusy(text, agent.patterns.busyPatterns)) return 'deferred';
-      setStatus(key, 'resuming', { lastAttemptAt: Date.now() });
-      await tmux.sendText(rec.pane, resumeMessage);
-      log(`${key}: sent continue to live pane ${rec.pane}`);
-      return 'sent';
+  if (rec.pane && await mux.paneAlive(rec.pane)) {
+    let text;
+    try { text = await mux.capturePane(rec.pane, CAPTURE_LINES); }
+    catch (err) {
+      setStatus(key, 'stopped', { lastError: `capture: ${err.message}` });
+      return 'retry';
     }
-    // Pane alive but the agent gone (user's shell now) — fall through to
-    // re-open; never hijack a shell prompt with a chat message.
+    if (isBusy(text, agent.patterns.busyPatterns)) return 'busy';
+    const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
+    const menu = !!(agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES));
+    let cmd = null;
+    try { cmd = await mux.paneCurrentCommand(rec.pane); }
+    catch (err) { log(`${key}: pane command lookup failed: ${err.message}`); }
+    const contentOwned = menu || d.hit || agent.patterns.idleRegex.test(text);
+    const leased = await matchesLease(rec, { mux });
+    const authorized = leased || (agent.isForegroundCommand(cmd) && contentOwned);
+
+    if (menu) {
+      if (!authorized) return reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd });
+      if (!getConfig('menuAutoAnswer')) return 'held';
+      await driveMenu(mux, rec.pane, agent, text);
+      return 'retry';
+    }
+    if (authorized) {
+      setStatus(key, 'resuming', { lastAttemptAt: Date.now(), lastError: null });
+      await mux.sendText(rec.pane, resumeMessage);
+      log(`${key}: sent continue via ${rec.mux} ${rec.paneOwner ?? '-'}:${rec.pane}`);
+      return 'injected';
+    }
   }
 
-  // Re-open path: new tmux window in the well-known session, resume by id.
-  // Records from sandboxed GUI sessions carry env (e.g. CLAUDE_CONFIG_DIR) the
-  // revived CLI needs to find its session store.
+  return reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd });
+}
+
+async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd }) {
+  const key = rec.key;
   const resume = agent.resumeArgs(rec.sessionId, resumeMessage);
-  // `env K=V cmd`, not a bare `K=V cmd` prefix: the command runs in the
-  // user's default shell, and fish/nushell reject POSIX prefix assignments.
-  const envPrefix = rec.env
-    ? 'env ' + Object.entries(rec.env).map(([k, v]) => `${k}=${shellQuote(String(v))}`).join(' ') + ' '
-    : '';
-  const command = envPrefix + [...selfCmd, '_run', agent.id, ...resume.args].map(shellQuote).join(' ');
+  const leaseId = createLeaseId();
+  const launchSpec = {
+    file: selfCmd[0], args: [...selfCmd.slice(1), '_run', agent.id, ...resume.args],
+    env: reopenEnv(rec, leaseId),
+  };
   setStatus(key, 'resuming', { lastAttemptAt: Date.now() });
-  let newPane;
+  let address;
   try {
-    // cwd can be null on watcher records (unreadable rollout head) — execFile
-    // rejects null args, so fall back to the home dir rather than crash-loop.
-    newPane = await tmux.newWindow(rec.tmuxSession || TMUX_SESSION_NAME, rec.cwd || homedir(), command);
+    address = await mux.newWindow(rec.muxSession ?? rec.tmuxSession ?? MUX_SESSION_NAME,
+      rec.cwd || homedir(), launchSpec);
   } catch (err) {
     setStatus(key, 'stopped', { attempts: (rec.attempts || 0) + 1, lastError: `new-window: ${err.message}` });
-    return 'failed';
+    return 'retry';
   }
   updateState(state => {
     const s = state.sessions[key];
-    if (s) s.pane = newPane;
+    if (s) Object.assign(s, address, { leaseId });
   });
-  log(`${key}: re-opened in pane ${newPane} (${command})`);
+  const rebound = { ...rec, ...address, leaseId };
+  mux = resolveMux(rebound);
+  log(`${key}: re-opened via ${rec.mux} ${address.paneOwner ?? '-'}:${address.pane}`);
 
   // The resume prompt traveled in argv (e.g. `codex resume <id> "msg"`) —
   // nothing to type into the TUI; verifyOne checks the outcome later.
-  if (!resume.messageViaPane) return 'reopened';
+  if (!resume.messageViaPane) return 'reopen';
 
   // Wait for the TUI to be ready (input prompt visible), then send the message.
   const deadline = Date.now() + READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await sleep(2000);
-    const text = await tmux.capturePane(newPane, CAPTURE_LINES).catch(() => '');
+    let text;
+    try { text = await mux.capturePane(address.pane, CAPTURE_LINES); }
+    catch { continue; }
     if ((agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES)) || detectLimit(text, PANE_SCAN_LINES, agent.patterns).hit) {
       // Limit hadn't actually reset — the fresh session hit it immediately.
-      return 'failed';
+      return 'reopen';
     }
     // The idle input box: a prompt glyph with no busy footer.
     if (!isBusy(text, agent.patterns.busyPatterns) && agent.patterns.idleRegex.test(text)) {
-      await tmux.sendText(newPane, resumeMessage);
-      log(`${key}: resume message sent to new pane ${newPane}`);
-      return 'reopened';
+      await mux.sendText(address.pane, resumeMessage);
+      log(`${key}: resume message sent to new pane ${address.pane}`);
+      return 'reopen';
     }
   }
   setStatus(key, 'stopped', { attempts: (rec.attempts || 0) + 1, lastError: 'ready timeout' });
-  return 'failed';
+  return 'retry';
 }
 
 // Post-dispatch verification: did the limit banner come back?
-export async function verifyOne(key, { tmux = realTmux } = {}) {
+export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
   const rec = readState().sessions[key];
   if (!rec || rec.status !== 'resuming') return;
   const agent = getAgent(rec.agent);
-  const text = rec.pane ? await tmux.capturePane(rec.pane, CAPTURE_LINES).catch(() => '') : '';
+  if (!rec.pane) {
+    setStatus(key, 'resuming', { lastError: 'verify: pane unavailable' });
+    return 'retry';
+  }
+  const mux = resolveMux(rec);
+  let text;
+  try { text = await mux.capturePane(rec.pane, CAPTURE_LINES); }
+  catch (err) {
+    setStatus(key, 'resuming', { lastError: `verify capture: ${err.message}` });
+    return 'retry';
+  }
   const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
   if (d.hit || (agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES))) {
     // Limit not actually reset — reschedule from the fresh banner.
@@ -186,14 +239,36 @@ export async function verifyOne(key, { tmux = realTmux } = {}) {
   setStatus(key, 'resumed');
   log(`${key}: verified resumed`);
   const fromGui = rec.origin && rec.origin !== 'cli';
-  notify('unsnoozed ✅', `${rec.cwd} is running again${fromGui ? ` (was in ${rec.origin} — revived in tmux)` : ''}`);
+  notify('unsnoozed ✅', `${rec.cwd} is running again${fromGui ? ` (was in ${rec.origin} — revived in ${rec.mux})` : ''}`);
+  return 'resumed';
+}
+
+export function routeDispatchOutcome(result, rec, deferCounts, { maxBusyDefers = MAX_BUSY_DEFERS } = {}) {
+  if (result === 'busy') {
+    const n = (deferCounts.get(rec.key) || 0) + 1;
+    deferCounts.set(rec.key, n);
+    if (n > maxBusyDefers) {
+      setStatus(rec.key, 'resumed', { lastError: null });
+      return { verify: false, waitBusy: false };
+    }
+    return { verify: false, waitBusy: true };
+  }
+  if (result === 'retry') {
+    setStatus(rec.key, 'stopped', {
+      attempts: (rec.attempts || 0) + 1,
+      lastError: readState().sessions[rec.key]?.lastError || 'retry requested',
+    });
+    return { verify: false, waitBusy: false };
+  }
+  if (result === 'held') return { verify: false, waitBusy: false };
+  return { verify: result === 'injected' || result === 'reopen', waitBusy: false };
 }
 
 // persistent: never exit on an empty ledger (daemon mode — `unsnooze daemon`,
 // launchd/systemd). watcher: transcript watcher ticked every loop, so GUI
 // sessions are detected without a hook or pane. signal: clean shutdown.
 export async function runResumer({
-  tmux = realTmux, pollInterval = POLL_INTERVAL_MS,
+  resolveMux = resolveRecordMux, pollInterval = POLL_INTERVAL_MS,
   persistent = false, watcher = null, signal = null,
 } = {}) {
   // A transient hook-spawned resumer may hold the lock right now; a daemon
@@ -238,25 +313,18 @@ export async function runResumer({
 
       const dispatched = [];
       for (const rec of due) {
-        const result = await dispatchOne(rec, { tmux });
-        if (result === 'deferred') {
-          const n = (deferCounts.get(rec.key) || 0) + 1;
-          deferCounts.set(rec.key, n);
-          if (n > MAX_BUSY_DEFERS) {
-            setStatus(rec.key, 'resumed', { lastError: null });
-            log(`${rec.key}: busy through ${n} defers — it is clearly working, marking resumed`);
-          } else {
-            await sleep(BUSY_DEFER_MS);
-          }
-          continue;
-        }
-        if (result === 'sent' || result === 'reopened') dispatched.push(rec.key);
+        const result = await dispatchOne(rec, { mux: resolveMux(rec), resolveMux });
+        const routed = routeDispatchOutcome(result, rec, deferCounts);
+        if (routed.waitBusy) await sleep(BUSY_DEFER_MS);
+        if (routed.verify) dispatched.push(rec.key);
+        if (!routed.verify) continue;
         if (due.indexOf(rec) < due.length - 1) await sleep(STAGGER_MS);
       }
 
-      if (dispatched.length > 0) {
+      const verifying = [...new Set([...resuming.map(rec => rec.key), ...dispatched])];
+      if (verifying.length > 0) {
         await sleep(VERIFY_DELAY_MS);
-        for (const key of dispatched) await verifyOne(key, { tmux });
+        for (const key of verifying) await verifyOne(key, { resolveMux });
       }
 
       await sleep(pollInterval);

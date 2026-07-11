@@ -238,18 +238,11 @@ test('launchWrapped maps Ctrl-C termination to the conventional exit status', ()
   assert.equal(createTmux({ spawner, env: {} }).launchWrapped({ file: 'claude', args: [], env: {} }), 130);
 });
 
-test('backend probes and tmux shim retain their public surfaces', async () => {
+test('backend probes retain their public surfaces', () => {
   const tmuxSpawner = fakeSpawner(() => ({ status: 0 }));
   const zellijSpawner = fakeSpawner(() => ({ status: 0 }));
   assert.equal(createTmux({ spawner: tmuxSpawner, env: { TMUX: '/tmp/tmux' } }).available(), true);
   assert.equal(createTmux({ spawner: tmuxSpawner, env: { TMUX: '/tmp/tmux' } }).inside(), true);
   assert.equal(createZellij({ spawner: zellijSpawner, env: { ZELLIJ: '0' } }).available(), true);
   assert.equal(createZellij({ spawner: zellijSpawner, env: { ZELLIJ: '0' } }).inside(), true);
-
-  const shim = await import('../src/tmux.js');
-  for (const name of [
-    'tmuxAvailable', 'insideTmux', 'currentPaneId', 'capturePane', 'capturePaneVisible',
-    'sendText', 'sendKey', 'paneAlive', 'paneCurrentCommand', 'sessionExists', 'newWindow',
-    'SUBMIT_DELAY_MS',
-  ]) assert.ok(name in shim, `${name} missing from tmux shim`);
 });
