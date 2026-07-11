@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0 — 2026-07-11
+
+- **Per-session wake messages**: `unsnooze message <id|--all> "<text>"` sets a
+  custom resume message for specific tracked sessions (`--clear` reverts).
+  Precedence: per-session → per-agent (`resumeMessages.<id>`) → global
+  `resumeMessage`. Applies on both wake paths — typed into a live pane, or
+  carried in argv for `codex resume` — and sessions with a custom message
+  show a `msg: "…"` marker in `unsnooze status`.
+
 ## 1.2.0 — 2026-07-10
 
 ### GUI surfaces: VS Code extension, desktop apps

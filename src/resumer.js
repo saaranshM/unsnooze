@@ -72,8 +72,10 @@ function selfCommand() {
 export async function dispatchOne(rec, { tmux = realTmux, resumeMessage, selfCmd = selfCommand() } = {}) {
   const key = rec.key;
   const agent = getAgent(rec.agent);
-  // Explicit option wins; otherwise the agent's own message (or the global).
-  resumeMessage = resumeMessage ?? resolveResumeMessage(agent.id);
+  // Wake-message precedence: per-session (`unsnooze message <id> "..."`) →
+  // explicit option → per-agent (`resumeMessages.<id>`) → global. Applies to
+  // both the live-pane sendText and the argv reopen path.
+  resumeMessage = rec.resumeMessage ?? resumeMessage ?? resolveResumeMessage(agent.id);
 
   // Live-pane path: only if the pane still exists AND the agent CLI is its
   // foreground command (pane ids get recycled — never inject into a random

@@ -30,6 +30,10 @@ async function main() {
       const { cmdReport } = await import('../src/report.js');
       return cmdReport(rest);
     }
+    case 'message': {
+      const { cmdMessage } = await import('../src/cli.js');
+      return cmdMessage(rest);
+    }
     case 'config': {
       const { cmdConfig } = await import('../src/cli.js');
       return cmdConfig(rest);
@@ -83,6 +87,7 @@ Usage:
   unsnooze status                  list tracked sessions + reset countdowns
   unsnooze resume-now [id|--all]   resume stopped session(s) immediately
   unsnooze cancel [id|--all]       stop tracking session(s)
+  unsnooze message <id|--all> <t>  set a per-session wake message (--clear to reset)
   unsnooze logs [-f]               show (or follow) the unsnooze log
   unsnooze daemon                  persistent watcher for GUI sessions (VS Code
                                    extension, desktop apps) — no tmux needed to

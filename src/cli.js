@@ -30,16 +30,19 @@ export function cmdStatus() {
     const id = s.sessionId ? s.sessionId.slice(0, 8) : '(no id)';
     const reset = s.resetAt ? `${new Date(s.resetAt).toLocaleString()} (${fmtCountdown(s.resetAt - now)})` : '?';
     const origin = s.origin ?? (s.pane ? 'cli' : '?');
+    const msg = s.resumeMessage
+      ? ` · msg: "${s.resumeMessage.length > 44 ? s.resumeMessage.slice(0, 44) + '…' : s.resumeMessage}"`
+      : '';
     console.log(`  [${s.status.toUpperCase().padEnd(9)}] ${id}  ${(s.agent || 'claude').padEnd(6)} ${s.limitType?.padEnd(7) ?? 'unknown'} ${s.cwd}`);
-    console.log(`              pane ${s.pane ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}`);
+    console.log(`              pane ${s.pane ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}${msg}`);
   }
   return 0;
 }
 
-function selectKeys(state, idOrAll) {
-  const stopped = Object.values(state.sessions).filter(s => s.status === 'stopped');
-  if (idOrAll === '--all' || idOrAll === undefined) return stopped.map(s => s.key);
-  const match = stopped.filter(s => s.key.startsWith(idOrAll) || (s.sessionId || '').startsWith(idOrAll));
+function selectKeys(state, idOrAll, statuses = ['stopped']) {
+  const candidates = Object.values(state.sessions).filter(s => statuses.includes(s.status));
+  if (idOrAll === '--all' || idOrAll === undefined) return candidates.map(s => s.key);
+  const match = candidates.filter(s => s.key.startsWith(idOrAll) || (s.sessionId || '').startsWith(idOrAll));
   return match.map(s => s.key);
 }
 
@@ -79,6 +82,33 @@ export function cmdLogs(follow) {
   } catch {
     console.log('unsnooze: no log file yet.');
   }
+  return 0;
+}
+
+// `unsnooze message <id|--all> <text...>` — set (or --clear) the wake message
+// for specific sessions; the resumer prefers it over the global setting.
+export function cmdMessage(rest) {
+  const [idOrAll, ...textParts] = rest;
+  const clear = textParts[0] === '--clear';
+  const text = textParts.join(' ').trim();
+  if (!idOrAll || (!clear && !text)) {
+    console.error('unsnooze message <id|--all> <text...>   (or --clear to revert to the default)');
+    return 2;
+  }
+  const state = readState();
+  // stopped OR resuming: editing the message before a retry is legitimate.
+  const keys = selectKeys(state, idOrAll, ['stopped', 'resuming']);
+  if (keys.length === 0) { console.log('unsnooze: no matching active sessions.'); return 1; }
+  updateState(s => {
+    for (const key of keys) {
+      if (!s.sessions[key]) continue;
+      if (clear) delete s.sessions[key].resumeMessage;
+      else s.sessions[key].resumeMessage = text;
+    }
+  });
+  console.log(clear
+    ? `unsnooze: cleared custom message on ${keys.length} session(s) (global default applies).`
+    : `unsnooze: ${keys.length} session(s) will wake with: "${text}"`);
   return 0;
 }
 

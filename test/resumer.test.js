@@ -230,6 +230,47 @@ test('UNSNOOZE_SELF overrides the reopen binary (test harness escape hatch)', as
   }
 });
 
+test('per-session resumeMessage beats the global default (live-pane path)', async () => {
+  const rec = seed({ pane: '%23', resumeMessage: 'finish the tests then commit' });
+  const sent = [];
+  const tmux = {
+    paneAlive: async () => true,
+    paneCurrentCommand: async () => 'claude',
+    capturePane: async () => '❯ \n',
+    sendText: async (pane, text) => sent.push(text),
+  };
+  await dispatchOne(rec, { tmux });
+  assert.deepEqual(sent, ['finish the tests then commit']);
+});
+
+test('per-session resumeMessage reaches the codex argv path', async () => {
+  const rec = seed({ pane: '%24', agent: 'codex', resumeMessage: 'deploy checklist next' });
+  let windowCmd = null;
+  const tmux = {
+    paneAlive: async () => false,
+    paneCurrentCommand: async () => null,
+    capturePane: async () => '› \n',
+    sendText: async () => {},
+    newWindow: async (session, cwd, command) => { windowCmd = command; return '%94'; },
+  };
+  await dispatchOne(rec, { tmux });
+  assert.match(windowCmd, /'deploy checklist next'/);
+  assert.ok(!windowCmd.includes('Continue where you left off'));
+});
+
+test('without a per-session message the global default still applies', async () => {
+  const rec = seed({ pane: '%25' });
+  const sent = [];
+  const tmux = {
+    paneAlive: async () => true,
+    paneCurrentCommand: async () => 'claude',
+    capturePane: async () => '❯ \n',
+    sendText: async (pane, text) => sent.push(text),
+  };
+  await dispatchOne(rec, { tmux });
+  assert.match(sent[0], /^Continue where you left off/);
+});
+
 test('verifyOne: banner back → rescheduled as stopped with attempts+1', async () => {
   const rec = seed({ pane: '%14' });
   const tmuxSend = {

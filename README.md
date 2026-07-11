@@ -128,6 +128,7 @@ claude / codex / grok           # normal usage — wrapped automatically
 unsnooze status                 # tracked sessions + reset countdowns
 unsnooze resume-now [id|--all]  # don't wait for the reset time
 unsnooze cancel [id|--all]      # stop tracking a session
+unsnooze message <id> "text"    # per-session wake message (--clear to reset)
 unsnooze config list            # settings (see below)
 unsnooze config set <k> <v>     # e.g. autoResume off
 unsnooze logs [-f]              # what unsnooze has been doing
@@ -149,7 +150,7 @@ unsnooze help                   # full command list (also -h / --help)
 | `menuAutoAnswer` | `true` | May unsnooze answer Claude's limit menu (send keys in your pane)? Off = watch-only. |
 | `notifications` | `true` | Desktop notification on limit detected / session resumed / gave up. |
 | `guiWatch` | `true` | May the daemon watch session files for GUI-surface stops (VS Code extension, desktop apps)? Needs the daemon running (`unsnooze install --daemon`). |
-| `resumeMessage` | *"Continue where you left off…"* | The message sent to wake a session. |
+| `resumeMessage` | *"Continue where you left off…"* | The message sent to wake a session. Override it for a single session with `unsnooze message <id> "…"` — visible in `unsnooze status`. |
 | `resumeMessages.claude` / `.codex` / `.grok` | `""` | Per-agent override of `resumeMessage`. Empty = use the global message; clear one with `unsnooze config set resumeMessages.claude ""`. |
 | `agents.claude` / `agents.codex` / `agents.grok` | `true` / `true` / `false` | Which CLIs are guarded. |
 
