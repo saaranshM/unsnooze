@@ -129,7 +129,10 @@ export function createZellij({ spawner = defaultSpawner, env = process.env } = {
           const id = Number(pane);
           const entry = (await paneEntries()).find(candidate =>
             candidate.id === id && candidate.is_plugin === false && candidate.exited === false);
-          return entry?.pane_command ? basename(entry.pane_command) : null;
+          // zellij's pane_command includes arguments (e.g. "node -e …",
+          // "claude --resume <id>"), so take the executable token before basename.
+          if (!entry?.pane_command) return null;
+          return basename(entry.pane_command.trim().split(/\s+/)[0]);
         } catch {
           return null;
         }

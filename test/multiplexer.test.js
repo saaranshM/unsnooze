@@ -143,10 +143,19 @@ test('zellij paneAlive requires an exact live terminal JSON entry', async () => 
   assert.equal(await mux.paneAlive('0'), false);
 });
 
-test('zellij paneCurrentCommand returns basename(pane_command)', async () => {
-  const panes = [{ id: 4, is_plugin: false, exited: false, pane_command: '/opt/bin/claude' }];
-  const mux = createZellij({ spawner: fakeSpawner(() => JSON.stringify(panes)), env: {} }).bind('main');
-  assert.equal(await mux.paneCurrentCommand('4'), 'claude');
+test('zellij paneCurrentCommand returns basename of the executable token, ignoring args', async () => {
+  const cases = [
+    ['/opt/bin/claude', 'claude'],
+    ['claude --resume abc123', 'claude'],           // real reopen command carries args
+    ["node -e const fs=require('fs')", 'node'],      // wrapped/stub launch carries args
+    ['/usr/bin/node agent.js --resume x', 'node'],   // full path + args
+    ['/snap/yazi/907/yazi', 'yazi'],
+  ];
+  for (const [pane_command, expected] of cases) {
+    const panes = [{ id: 4, is_plugin: false, exited: false, pane_command }];
+    const mux = createZellij({ spawner: fakeSpawner(() => JSON.stringify(panes)), env: {} }).bind('main');
+    assert.equal(await mux.paneCurrentCommand('4'), expected, `for pane_command="${pane_command}"`);
+  }
 });
 
 test('zellij newWindow encodes env in argv and parses terminal id with its new owner', async () => {
