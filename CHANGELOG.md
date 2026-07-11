@@ -8,6 +8,8 @@
   per version from the daemon. After you update, the next command shows a
   short "what's new" straight from the bundled changelog. Turn it all off
   with `unsnooze config set updateCheck off`.
+- **`unsnooze update`**: one command to update unsnooze itself (runs
+  `npm install -g unsnooze@latest` and prints what changed).
 
 ## 1.3.0 — 2026-07-11
 

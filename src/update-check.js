@@ -8,6 +8,7 @@
 // The check is a plain GET to registry.npmjs.org — nothing identifying.
 
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig } from './settings.js';
@@ -75,7 +76,7 @@ export function updateNotice(pkgVersion = PKG_VERSION) {
   if (!getConfig('updateCheck')) return null;
   const { latest } = readCache();
   if (!latest || !isNewer(latest, pkgVersion)) return null;
-  return `unsnooze ${latest} is available (you have ${pkgVersion}) — npm i -g unsnooze · ${RELEASES_URL}`;
+  return `unsnooze ${latest} is available (you have ${pkgVersion}) — run: unsnooze update · ${RELEASES_URL}`;
 }
 
 // The "## <version>" block from the CHANGELOG.md that ships in the tarball.
@@ -113,8 +114,35 @@ export async function runUpdateCheck({ fetcher, notifier = notify, now = Date.no
   if (!latest) return 0;
   const cache = writeCache({ lastCheckedAt: now, latest });
   if (isNewer(latest, PKG_VERSION) && cache.notifiedVersion !== latest) {
-    notifier('unsnooze update available', `${latest} is out (you have ${PKG_VERSION}) — npm i -g unsnooze`);
+    notifier('unsnooze update available', `${latest} is out (you have ${PKG_VERSION}) — run: unsnooze update`);
     writeCache({ notifiedVersion: latest });
   }
+  return 0;
+}
+
+// `unsnooze update` — self-update via npm, then show what changed. npm -g
+// overwrites this install in place, so re-reading package.json/CHANGELOG.md
+// after a successful install yields the NEW version's info.
+export function runSelfUpdate({ runner = spawnSync, print = console.log } = {}) {
+  print(`unsnooze ${PKG_VERSION} — updating via npm install -g unsnooze@latest …`);
+  const r = runner('npm', ['install', '-g', 'unsnooze@latest'], { stdio: 'inherit' });
+  if (r.error || r.status !== 0) {
+    print(`unsnooze: update failed (${r.error ? r.error.message : `npm exited ${r.status}`}).`);
+    print('unsnooze: try it manually: npm install -g unsnooze@latest');
+    print('unsnooze: (permission errors usually mean your npm prefix needs sudo or a user-writable prefix)');
+    return r.status || 1;
+  }
+  let newVersion = PKG_VERSION;
+  try {
+    newVersion = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')).version;
+  } catch { /* moved install dir — the generic message below still holds */ }
+  if (newVersion === PKG_VERSION) {
+    print(`unsnooze: already up to date (${PKG_VERSION}).`);
+  } else {
+    const section = changelogSection(newVersion);
+    print(`unsnooze: updated to ${newVersion}.${section ? ` What's new:\n${section}` : ''}`);
+  }
+  // Don't repeat "what's new" on the next command.
+  writeCache({ lastRunVersion: newVersion });
   return 0;
 }

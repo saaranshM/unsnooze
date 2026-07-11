@@ -10,7 +10,7 @@ process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 
 const {
   isNewer, updateNotice, whatsNewNotice, changelogSection,
-  fetchLatest, runUpdateCheck, readCache, writeCache, PKG_VERSION,
+  fetchLatest, runUpdateCheck, runSelfUpdate, readCache, writeCache, PKG_VERSION,
 } = await import('../src/update-check.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
@@ -36,7 +36,7 @@ test('updateNotice: silent with no cache, speaks when latest is newer', () => {
   const notice = updateNotice('1.3.0');
   assert.match(notice, /1\.4\.0 is available/);
   assert.match(notice, /you have 1\.3\.0/);
-  assert.match(notice, /npm i -g unsnooze/);
+  assert.match(notice, /unsnooze update/);
   assert.equal(updateNotice('1.4.0'), null, 'no notice when up to date');
 });
 
@@ -85,4 +85,27 @@ test('runUpdateCheck: updateCheck=off never fetches', async () => {
   let fetched = false;
   await runUpdateCheck({ fetcher: async () => { fetched = true; }, notifier: () => {} });
   assert.equal(fetched, false);
+});
+
+test('runSelfUpdate: runs npm install -g and reports the new version', () => {
+  const calls = [];
+  const lines = [];
+  const code = runSelfUpdate({
+    runner: (cmd, args) => { calls.push([cmd, ...args].join(' ')); return { status: 0 }; },
+    print: l => lines.push(l),
+  });
+  assert.equal(code, 0);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /npm install -g unsnooze@latest/);
+  assert.match(lines.join('\n'), /Updated to \d+\.\d+\.\d+|already up to date/i);
+});
+
+test('runSelfUpdate: surfaces npm failure with a hint, non-zero exit', () => {
+  const lines = [];
+  const code = runSelfUpdate({
+    runner: () => ({ status: 243 }),
+    print: l => lines.push(l),
+  });
+  assert.notEqual(code, 0);
+  assert.match(lines.join('\n'), /npm install -g unsnooze/);
 });

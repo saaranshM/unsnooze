@@ -133,6 +133,7 @@ unsnooze message <id> "text"    # per-session wake message (--clear to reset)
 unsnooze config list            # settings (see below)
 unsnooze config set <k> <v>     # e.g. autoResume off
 unsnooze logs [-f]              # what unsnooze has been doing
+unsnooze update                 # update unsnooze itself
 unsnooze daemon                 # persistent GUI-session watcher (usually run
                                 # by launchd/systemd via `install --daemon`)
 unsnooze report [agent]         # capture a pane to report an undetected banner
@@ -226,7 +227,7 @@ verifies the limit actually lifted. It replaces the 4am alarm, not the limit.
 
 ### How do I update, and how do I know when to?
 
-`npm i -g unsnooze`. unsnooze checks the npm registry at most once a day and
+`unsnooze update` (or `npm i -g unsnooze`). unsnooze checks the npm registry at most once a day and
 tells you when a newer version exists (a line after CLI commands, plus one
 desktop notification per version); after updating, the next command shows a
 short "what's new" from the changelog. It's a plain registry GET with nothing

@@ -82,6 +82,10 @@ async function main() {
       const { runResumer } = await import('../src/resumer.js');
       return runResumer();
     }
+    case 'update': {
+      const { runSelfUpdate } = await import('../src/update-check.js');
+      return runSelfUpdate();
+    }
     case '_update-check': {
       const { runUpdateCheck } = await import('../src/update-check.js');
       return runUpdateCheck();
@@ -116,6 +120,7 @@ Usage:
   unsnooze cancel [id|--all]       stop tracking session(s)
   unsnooze message <id|--all> <t>  set a per-session wake message (--clear to reset)
   unsnooze logs [-f]               show (or follow) the unsnooze log
+  unsnooze update                  update unsnooze itself to the latest version
   unsnooze daemon                  persistent watcher for GUI sessions (VS Code
                                    extension, desktop apps) — no tmux needed to
                                    detect; revival still opens in tmux
