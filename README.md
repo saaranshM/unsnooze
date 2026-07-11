@@ -9,9 +9,10 @@
 [![node](https://img.shields.io/badge/node-%E2%89%A5%2020-3fb950)](package.json)
 [![license](https://img.shields.io/badge/license-MIT-8b949e)](LICENSE)
 
-**Claude Code · Codex CLI · Grok** — when they hit a usage limit, your session just… stops.<br/>
-unsnooze tracks **every** limit-stopped session across all your projects and
-**wakes each one up in tmux the moment the limit resets.**
+**Claude Code · Codex CLI · Grok** — when they hit the 5-hour or weekly usage limit
+("You've hit your usage limit"), your session just… stops.<br/>
+unsnooze auto-resumes them: it tracks **every** limit-stopped session across all
+your projects and **wakes each one up in tmux the moment the usage limit resets.**
 
 ```sh
 npm install -g unsnooze && unsnooze setup
@@ -199,6 +200,34 @@ unsnooze raises **native Windows toasts** through `powershell.exe` (no
 `notify-send` or X server needed). Native Windows (PowerShell/cmd, no WSL) is
 not supported — without tmux there is nothing to watch; unsnooze will tell you
 so and run your CLI unwatched instead of breaking it.
+
+## FAQ
+
+### What does "You've hit your usage limit" mean in Claude Code?
+
+Claude subscription plans meter usage in a rolling 5-hour window plus a weekly
+cap. When either runs out, Claude Code stops mid-task and shows the banner with
+a reset time ("resets 3pm"). Nothing is lost — the session can be resumed with
+`claude --resume <id>` once the limit resets. unsnooze does exactly that,
+automatically, for every stopped session.
+
+### What about Codex — "You've hit your usage limit. Try again at …"?
+
+Same idea: ChatGPT-plan Codex has 5-hour and weekly windows. The Codex TUI
+stays open at the composer after the banner, so unsnooze either types into the
+live pane or reopens the session with `codex resume <id>` at the reset time it
+parsed from the banner.
+
+### Does this get around the rate limit?
+
+No. unsnooze waits for the reset exactly like you would, resumes once, and
+verifies the limit actually lifted. It replaces the 4am alarm, not the limit.
+
+### Does it work if my laptop was asleep or the terminal was closed?
+
+Yes — reset times are stored as absolute timestamps and checked every 30
+seconds, so a laptop that slept through the reset resumes on the next tick,
+and dead panes are reopened by session id in a fresh tmux window.
 
 ## Development
 
