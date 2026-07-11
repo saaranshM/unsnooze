@@ -65,3 +65,36 @@ test('notifications toggle off → nothing fires', () => {
 test('spawner errors are swallowed', () => {
   assert.doesNotThrow(() => notify('x', 'y', { platform: 'linux', spawner: () => { throw new Error('boom'); } }));
 });
+
+test('zellij intentionally has no statusline notification fallback', () => {
+  const calls = [];
+  const oldTmux = process.env.TMUX;
+  const oldZellij = process.env.ZELLIJ;
+  process.env.TMUX = '/tmp/tmux';
+  process.env.ZELLIJ = '0';
+  try {
+    notify('x', 'y', { platform: 'freebsd', spawner: (cmd, args) => calls.push({ cmd, args }) });
+  } finally {
+    if (oldTmux === undefined) delete process.env.TMUX; else process.env.TMUX = oldTmux;
+    if (oldZellij === undefined) delete process.env.ZELLIJ; else process.env.ZELLIJ = oldZellij;
+  }
+  assert.deepEqual(calls, []);
+});
+
+test('managed tmux uses its fallback even with nested Zellij environment', () => {
+  const calls = [];
+  const oldTmux = process.env.TMUX;
+  const oldZellij = process.env.ZELLIJ;
+  const oldMux = process.env.UNSNOOZE_MUX;
+  process.env.TMUX = '/tmp/tmux';
+  process.env.ZELLIJ = '0';
+  process.env.UNSNOOZE_MUX = 'tmux';
+  try {
+    notify('x', 'y', { platform: 'freebsd', spawner: (cmd, args) => calls.push({ cmd, args }) });
+  } finally {
+    if (oldTmux === undefined) delete process.env.TMUX; else process.env.TMUX = oldTmux;
+    if (oldZellij === undefined) delete process.env.ZELLIJ; else process.env.ZELLIJ = oldZellij;
+    if (oldMux === undefined) delete process.env.UNSNOOZE_MUX; else process.env.UNSNOOZE_MUX = oldMux;
+  }
+  assert.equal(calls[0]?.cmd, 'tmux');
+});

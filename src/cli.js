@@ -30,6 +30,7 @@ export function cmdStatus() {
     const id = s.sessionId ? s.sessionId.slice(0, 8) : '(no id)';
     const reset = s.resetAt ? `${new Date(s.resetAt).toLocaleString()} (${fmtCountdown(s.resetAt - now)})` : '?';
     const origin = s.origin ?? (s.pane ? 'cli' : '?');
+    const pane = s.paneOwner ? `${s.paneOwner}:${s.pane ?? '-'}` : (s.pane ?? '-');
     const msg = s.resumeMessage
       ? ` · msg: "${s.resumeMessage.length > 44 ? s.resumeMessage.slice(0, 44) + '…' : s.resumeMessage}"`
       : '';
@@ -37,7 +38,7 @@ export function cmdStatus() {
       ? ` · workspace changed (${s.holdReason ?? '?'}) — resume-now to wake`
       : '';
     console.log(`  [${s.status.toUpperCase().padEnd(9)}] ${id}  ${(s.agent || 'claude').padEnd(6)} ${s.limitType?.padEnd(7) ?? 'unknown'} ${s.cwd}`);
-    console.log(`              pane ${s.pane ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}${msg}${hold}`);
+    console.log(`              mux ${s.mux ?? '-'} · pane ${pane} · session ${s.muxSession ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}${msg}${hold}`);
   }
   return 0;
 }

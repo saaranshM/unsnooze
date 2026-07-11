@@ -71,6 +71,15 @@ test('status output marks sessions with a custom message', () => {
   assert.match(out, /msg: "run the deploy checklist"/);
 });
 
+test('status output shows the backend, qualified pane, and revival session', () => {
+  seed('1', { mux: 'zellij', paneOwner: 'main', muxSession: 'unsnooze-e2e' });
+  const lines = [];
+  const orig = console.log;
+  console.log = (...a) => lines.push(a.join(' '));
+  try { cmdStatus(); } finally { console.log = orig; }
+  assert.match(lines.join('\n'), /mux zellij · pane main:1 · session unsnooze-e2e/);
+});
+
 test('held sessions: status shows the marker, resume-now clears the hold', () => {
   const rec = seed('%46', { workspaceHold: true, holdReason: 'HEAD aaaaaaa → bbbbbbb', resetAt: Date.now() - 1000 });
   const lines = [];

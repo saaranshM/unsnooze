@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Added a dual tmux/Zellij multiplexer backend. The new `multiplexer` setting
+  accepts `auto`, `tmux`, or `zellij`; status output identifies the backend,
+  qualified pane address, and revival session. Zellij revival uses structured
+  pane ownership and a reserved-session smoke test without adding a statusline
+  notification path.
+
 ## 1.7.0 — 2026-07-12
 
 - **Four new agent adapters** (all ⚠️ experimental, off by default — enable in
