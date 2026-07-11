@@ -231,7 +231,7 @@ test('UNSNOOZE_SELF overrides the reopen binary (test harness escape hatch)', as
 });
 
 test('per-session resumeMessage beats the global default (live-pane path)', async () => {
-  const rec = seed({ pane: '%23', resumeMessage: 'finish the tests then commit' });
+  const rec = seed({ pane: '%30', resumeMessage: 'finish the tests then commit' });
   const sent = [];
   const tmux = {
     paneAlive: async () => true,
@@ -244,7 +244,7 @@ test('per-session resumeMessage beats the global default (live-pane path)', asyn
 });
 
 test('per-session resumeMessage reaches the codex argv path', async () => {
-  const rec = seed({ pane: '%24', agent: 'codex', resumeMessage: 'deploy checklist next' });
+  const rec = seed({ pane: '%31', agent: 'codex', resumeMessage: 'deploy checklist next' });
   let windowCmd = null;
   const tmux = {
     paneAlive: async () => false,
@@ -259,7 +259,7 @@ test('per-session resumeMessage reaches the codex argv path', async () => {
 });
 
 test('without a per-session message the global default still applies', async () => {
-  const rec = seed({ pane: '%25' });
+  const rec = seed({ pane: '%32' });
   const sent = [];
   const tmux = {
     paneAlive: async () => true,
