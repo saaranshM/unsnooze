@@ -125,3 +125,11 @@ test('setConfigValue sets and clears per-agent messages', () => {
 test('DEFAULTS include grok disabled (experimental)', () => {
   assert.equal(DEFAULTS.agents.grok, false);
 });
+
+test('workspaceGuard: enum setting with inform default', () => {
+  assert.equal(getConfig('workspaceGuard'), 'inform');
+  setConfigValue('workspaceGuard', 'pause');
+  assert.equal(getConfig('workspaceGuard'), 'pause');
+  assert.throws(() => setConfigValue('workspaceGuard', 'banana'), /one of/i);
+  setConfigValue('workspaceGuard', 'inform');
+});

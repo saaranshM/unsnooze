@@ -18,6 +18,7 @@ export const DEFAULTS = {
   notifications: true,     // desktop notifications on detect/resume
   guiWatch: true,          // daemon watches transcripts/rollouts for GUI-session stops
   updateCheck: true,       // daily registry version check + update notices/toast
+  workspaceGuard: 'inform', // repo changed while stopped: off | inform | pause
   resumeMessage: 'Continue where you left off. The session was interrupted by a usage limit which has now reset — pick up the task you were working on and finish it.',
   resumeMessages: { claude: '', codex: '', grok: '' },  // per-agent override; '' = use resumeMessage
   agents: { claude: true, codex: true, grok: false },   // grok is experimental
@@ -30,6 +31,7 @@ const ENV_NAMES = {
   notifications: 'UNSNOOZE_NOTIFICATIONS',
   guiWatch: 'UNSNOOZE_GUI_WATCH',
   updateCheck: 'UNSNOOZE_UPDATE_CHECK',
+  workspaceGuard: 'UNSNOOZE_WORKSPACE_GUARD',
   resumeMessage: 'UNSNOOZE_RESUME_MESSAGE',
   'resumeMessages.claude': 'UNSNOOZE_RESUME_MESSAGE_CLAUDE',
   'resumeMessages.codex': 'UNSNOOZE_RESUME_MESSAGE_CODEX',
@@ -40,6 +42,11 @@ const ENV_NAMES = {
 };
 
 const KNOWN_KEYS = Object.keys(ENV_NAMES);
+
+// String settings restricted to a fixed set of values.
+const ENUMS = {
+  workspaceGuard: ['off', 'inform', 'pause'],
+};
 
 function parseBool(raw) {
   if (/^(1|true|on|yes)$/i.test(raw)) return true;
@@ -98,6 +105,9 @@ export function setConfigValue(key, rawValue) {
     value = b;
   } else {
     value = String(rawValue);
+    if (ENUMS[key] && !ENUMS[key].includes(value)) {
+      throw new Error(`unsnooze: "${key}" must be one of: ${ENUMS[key].join(', ')}`);
+    }
   }
   const config = readFileConfig();
   const parts = key.split('.');

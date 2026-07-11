@@ -9,7 +9,7 @@ const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-message-test-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
 process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 
-const { cmdMessage, cmdStatus } = await import('../src/cli.js');
+const { cmdMessage, cmdStatus, cmdResumeNow } = await import('../src/cli.js');
 const { upsertSession, readState } = await import('../src/state.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
@@ -69,4 +69,19 @@ test('status output marks sessions with a custom message', () => {
   try { cmdStatus(); } finally { console.log = orig; }
   const out = lines.join('\n');
   assert.match(out, /msg: "run the deploy checklist"/);
+});
+
+test('held sessions: status shows the marker, resume-now clears the hold', () => {
+  const rec = seed('%46', { workspaceHold: true, holdReason: 'HEAD aaaaaaa → bbbbbbb', resetAt: Date.now() - 1000 });
+  const lines = [];
+  const orig = console.log;
+  console.log = (...a) => lines.push(a.join(' '));
+  try {
+    cmdStatus();
+    assert.match(lines.join('\n'), /workspace changed .*resume-now/i);
+    cmdResumeNow(rec.key);
+  } finally { console.log = orig; }
+  const after1 = readState().sessions[rec.key];
+  assert.equal(after1.workspaceHold, undefined, 'resume-now clears the hold');
+  assert.equal(after1.manual, true);
 });

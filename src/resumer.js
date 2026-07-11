@@ -18,6 +18,7 @@ import { getAgent } from './agents/index.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { readState, updateState, setStatus, dueSessions, activeStopped } from './state.js';
 import { getConfig, resolveResumeMessage } from './settings.js';
+import { workspaceFingerprint, workspaceChanged, describeChange } from './workspace.js';
 import { notify } from './notify.js';
 import { UNSNOOZE_BIN } from './spawn.js';
 import { makeLogger } from './logger.js';
@@ -51,7 +52,8 @@ export function releaseSingleton() {
 // it's off. Stops stay tracked either way.
 export function dueForDispatch(now = Date.now()) {
   const auto = getConfig('autoResume');
-  return dueSessions(now).filter(s => auto || s.manual);
+  // workspaceHold: guarded sessions wait for an explicit resume-now (manual).
+  return dueSessions(now).filter(s => (auto || s.manual) && (!s.workspaceHold || s.manual));
 }
 
 function shellQuote(arg) {
@@ -69,13 +71,31 @@ function selfCommand() {
 
 // Decide how to act on one due record. Pure-ish; tmux injectable.
 // Returns: 'sent' | 'reopened' | 'deferred' | 'skip' | 'failed'
-export async function dispatchOne(rec, { tmux = realTmux, resumeMessage, selfCmd = selfCommand() } = {}) {
+export async function dispatchOne(rec, { tmux = realTmux, resumeMessage, selfCmd = selfCommand(), fingerprint = workspaceFingerprint, notifier = notify } = {}) {
   const key = rec.key;
   const agent = getAgent(rec.agent);
   // Wake-message precedence: per-session (`unsnooze message <id> "..."`) →
   // explicit option → per-agent (`resumeMessages.<id>`) → global. Applies to
   // both the live-pane sendText and the argv reopen path.
   resumeMessage = rec.resumeMessage ?? resumeMessage ?? resolveResumeMessage(agent.id);
+
+  // Stale-workspace guard: another session (or a human) may have moved the
+  // repo while this one slept. Manual resumes (resume-now) always proceed.
+  const guardMode = getConfig('workspaceGuard');
+  if (rec.workspace && guardMode !== 'off' && !rec.manual) {
+    const change = workspaceChanged(rec, fingerprint(rec.cwd));
+    if (change) {
+      const desc = describeChange(change);
+      if (guardMode === 'pause') {
+        setStatus(key, 'stopped', { workspaceHold: true, holdReason: desc });
+        notifier('unsnooze: session held', `${rec.cwd}: workspace changed while stopped (${desc}) — run: unsnooze resume-now`);
+        log(`${key}: workspace changed (${desc}) — held (workspaceGuard=pause)`);
+        return 'held';
+      }
+      resumeMessage += `\n\nHeads up: this workspace changed while the session was stopped (${desc}). Re-read the current state of the repo before continuing.`;
+      log(`${key}: workspace changed (${desc}) — informing agent in the wake message`);
+    }
+  }
 
   // Live-pane path: only if the pane still exists AND the agent CLI is its
   // foreground command (pane ids get recycled — never inject into a random

@@ -155,6 +155,7 @@ unsnooze help                   # full command list (also -h / --help)
 | `resumeMessage` | *"Continue where you left off…"* | The message sent to wake a session. Override it for a single session with `unsnooze message <id> "…"` — visible in `unsnooze status`. |
 | `resumeMessages.claude` / `.codex` / `.grok` | `""` | Per-agent override of `resumeMessage`. Empty = use the global message; clear one with `unsnooze config set resumeMessages.claude ""`. |
 | `agents.claude` / `agents.codex` / `agents.grok` | `true` / `true` / `false` | Which CLIs are guarded. |
+| `workspaceGuard` | `inform` | Repo changed while a session slept? `inform` wakes it with a heads-up in the message; `pause` holds it (desktop notification, diff shown on `resume-now`); `off` disables. |
 | `updateCheck` | `true` | Daily new-version check (a plain GET to the npm registry, nothing identifying is sent). Notices after commands + one desktop toast per version. |
 
 Every setting also has a `UNSNOOZE_*` env override (see `src/settings.js`), and
@@ -178,6 +179,11 @@ all timings/paths are tunable via `UNSNOOZE_*` env vars (see `src/config.js`).
   block the CLI).
 - **Overload ≠ limit**: 5xx/529/429 transient errors take a seconds-scale
   backoff path ([30,60,120,240,300]s ± jitter) and never enter the ledger.
+- **Stale-workspace guard**: the repo's HEAD + dirty state are fingerprinted
+  when a session stops. If another session (or you) changed the repo before
+  the wake, the resumed agent is told to re-read before acting — or, with
+  `workspaceGuard=pause`, the session is held and `unsnooze resume-now`
+  shows the diff first.
 
 ## Requirements
 
@@ -232,6 +238,15 @@ tells you when a newer version exists (a line after CLI commands, plus one
 desktop notification per version); after updating, the next command shows a
 short "what's new" from the changelog. It's a plain registry GET with nothing
 identifying — turn it off with `unsnooze config set updateCheck off`.
+
+### What if another session changed the repo while one was stopped?
+
+unsnooze fingerprints the workspace (HEAD + uncommitted state) at stop time
+and re-checks at wake. By default the session still resumes, but the wake
+message includes what changed ("HEAD abc1234 → def5678 — re-read before
+continuing"). Set `workspaceGuard` to `pause` to hold such sessions for a
+manual `unsnooze resume-now` (which prints the diff stat), or `off` to
+disable the check.
 
 ### Does it work if my laptop was asleep or the terminal was closed?
 

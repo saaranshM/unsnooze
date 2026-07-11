@@ -122,3 +122,33 @@ test('10 parallel writers do not lose updates', async () => {
   const written = Object.keys(state.sessions).filter(k => k.startsWith('w')).length;
   assert.equal(written, N * 5);
 });
+
+test('upsert fingerprints git workspaces; dedupe merge keeps the original', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { mkdirSync } = await import('node:fs');
+  const repo = join(DIR, 'ws-repo');
+  const g = (...a) => execFileSync('git', ['-C', repo, ...a], { stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });
+  mkdirSync(repo, { recursive: true });
+  g('init', '-q');
+  writeFileSync(join(repo, 'f.txt'), 'x\n');
+  g('add', '.');
+  g('commit', '-qm', 'init');
+
+  const t = Date.now();
+  const s1 = upsertSession(record({ pane: '%90', cwd: repo, detectedAt: t }));
+  const rec1 = Object.values(s1.sessions).find(r => r.pane === '%90');
+  assert.ok(rec1.workspace && rec1.workspace.head, 'fingerprint captured at stop time');
+
+  // repo moves on; a duplicate detection within the window must keep the
+  // ORIGINAL stop-time fingerprint (that is the baseline for the guard)
+  writeFileSync(join(repo, 'f.txt'), 'y\n');
+  g('commit', '-aqm', 'moved');
+  const s2 = upsertSession(record({ pane: '%90', cwd: repo, detectedAt: t + 2000 }));
+  const rec2 = Object.values(s2.sessions).find(r => r.pane === '%90');
+  assert.equal(rec2.workspace.head, rec1.workspace.head, 'merge must not refresh the baseline');
+
+  // non-git cwd → no fingerprint, no crash
+  const s3 = upsertSession(record({ pane: '%91', cwd: '/tmp', detectedAt: t }));
+  const rec3 = Object.values(s3.sessions).find(r => r.pane === '%91');
+  assert.equal(rec3.workspace, null);
+});

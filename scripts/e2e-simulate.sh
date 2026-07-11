@@ -480,6 +480,67 @@ else
   echo "SKIP [S15 claude desktop sandbox] — macOS only"
 fi
 
+# ============================================================
+CURRENT="S16 workspaceGuard: inform note on wake, pause holds"
+S="$WORK/s16"; mkdir -p "$S"
+REPO="$S/repo"; mkdir -p "$REPO"
+git -C "$REPO" init -q
+echo one > "$REPO/f.txt"
+git -C "$REPO" add . && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t git -C "$REPO" commit -qm init
+
+# live pane playing the agent; stop record carries the pre-change fingerprint
+arm_fake "$S/reopen-args.txt" "$S/received.txt" "❯"
+PANE=$(new_pane e2e-s16 node "$WORK/echo-stub.js" "❯" "$S/inform-received.txt")
+wait_pane "$PANE" "❯" || fail "stub never ready"
+node --input-type=module -e "
+  process.env.UNSNOOZE_STATE_DIR = '$S';
+  const { upsertSession } = await import('$ROOT/src/state.js');
+  upsertSession({
+    sessionId: null, cwd: '$REPO', pane: '$PANE', agent: 'claude',
+    tmuxSession: 'unsnooze-e2e', status: 'stopped', limitType: '5h',
+    detectedVia: 'scrape', detectedAt: Date.now() - 60000,
+    resetAt: Date.now() - 1000, resetSource: 'absolute',
+    attempts: 0, lastAttemptAt: null, lastError: null,
+  });
+"
+grep -q '"head"' "$S/state.json" || fail "stop record has no workspace fingerprint"
+
+# the repo moves on while the session sleeps
+echo two > "$REPO/f.txt"
+GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t git -C "$REPO" commit -aqm moved
+
+# inform (default): wake proceeds, message carries the heads-up
+run_resumer_until "$S" '"status": "resumed"' || fail "inform mode never resumed: $(cat "$S/state.json")"
+grep -q "RECEIVED: Continue where you left off" "$S/inform-received.txt" || fail "wake message missing"
+grep -q "workspace changed while the session was stopped" "$S/inform-received.txt" || fail "inform note missing: $(cat "$S/inform-received.txt")"
+scenario_end
+
+# pause: fresh record, repo moves again → held, nothing typed
+S2="$WORK/s16b"; mkdir -p "$S2"
+PANE2=$(new_pane e2e-s16b node "$WORK/echo-stub.js" "❯" "$S2/pause-received.txt")
+wait_pane "$PANE2" "❯" || fail "second stub never ready"
+node --input-type=module -e "
+  process.env.UNSNOOZE_STATE_DIR = '$S2';
+  const { upsertSession } = await import('$ROOT/src/state.js');
+  upsertSession({
+    sessionId: null, cwd: '$REPO', pane: '$PANE2', agent: 'claude',
+    tmuxSession: 'unsnooze-e2e', status: 'stopped', limitType: '5h',
+    detectedVia: 'scrape', detectedAt: Date.now() - 60000,
+    resetAt: Date.now() - 1000, resetSource: 'absolute',
+    attempts: 0, lastAttemptAt: null, lastError: null,
+  });
+"
+echo three > "$REPO/f.txt"
+GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t git -C "$REPO" commit -aqm moved-again
+UNSNOOZE_WORKSPACE_GUARD=pause UNSNOOZE_SELF="$FAKEBIN/unsnooze" UNSNOOZE_STATE_DIR="$S2" node "$BIN" _resumer > "$S2/resumer.log" 2>&1 &
+RPID=$!; PIDS+=("$RPID")
+wait_state "$S2/state.json" '"workspaceHold": true' || fail "pause mode never held: $(cat "$S2/state.json")"
+kill "$RPID" 2>/dev/null || true; wait "$RPID" 2>/dev/null || true
+[ -s "$S2/pause-received.txt" ] && fail "pause mode typed into the pane anyway: $(cat "$S2/pause-received.txt")"
+grep -q '"holdReason"' "$S2/state.json" || fail "hold reason missing"
+scenario_end
+pass
+
 # no leaked dispatch may have reached the fake unsnooze outside its scenario
 [ -f "$WORK/unexpected-reopen.txt" ] && fail "a stray resumer dispatched outside its scenario: $(cat "$WORK/unexpected-reopen.txt")"
 

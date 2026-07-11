@@ -302,3 +302,71 @@ test('verifyOne: clean pane → resumed', async () => {
   await verifyOne(rec.key, { tmux: { capturePane: async () => '⏺ continuing the task…\n' } });
   assert.equal(readState().sessions[rec.key].status, 'resumed');
 });
+
+const WS_BEFORE = { head: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', dirtyHash: 'd1' };
+const WS_AFTER  = { head: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', dirtyHash: 'd1' };
+
+function liveTmux(sent) {
+  return {
+    paneAlive: async () => true,
+    paneCurrentCommand: async () => 'claude',
+    capturePane: async () => '\u276f \n',
+    sendText: async (pane, text) => sent.push(text),
+  };
+}
+
+test('workspaceGuard inform (default): changed repo → wake message carries the heads-up', async () => {
+  const rec = seed({ pane: '%33', workspace: WS_BEFORE });
+  const sent = [];
+  await dispatchOne(rec, { tmux: liveTmux(sent), fingerprint: () => WS_AFTER });
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /workspace changed while the session was stopped/i);
+  assert.match(sent[0], /aaaaaaa → bbbbbbb/);
+});
+
+test('workspaceGuard inform: unchanged repo → clean message', async () => {
+  const rec = seed({ pane: '%34', workspace: WS_BEFORE });
+  const sent = [];
+  await dispatchOne(rec, { tmux: liveTmux(sent), fingerprint: () => ({ ...WS_BEFORE }) });
+  assert.ok(!/workspace changed/i.test(sent[0]));
+});
+
+test('workspaceGuard pause: changed repo → held, nothing sent, notified once', async () => {
+  process.env.UNSNOOZE_WORKSPACE_GUARD = 'pause';
+  try {
+    const rec = seed({ pane: '%35', workspace: WS_BEFORE });
+    const sent = [];
+    const toasts = [];
+    const result = await dispatchOne(rec, {
+      tmux: liveTmux(sent), fingerprint: () => WS_AFTER, notifier: (t, m) => toasts.push(m),
+    });
+    assert.equal(result, 'held');
+    assert.equal(sent.length, 0);
+    const after1 = readState().sessions[rec.key];
+    assert.equal(after1.workspaceHold, true);
+    assert.match(after1.holdReason, /HEAD/);
+    assert.equal(toasts.length, 1);
+    const { dueForDispatch } = await import('../src/resumer.js');
+    assert.ok(!dueForDispatch().some(s => s.key === rec.key), 'held records are not dispatchable');
+    // resume-now marks manual → bypasses the guard entirely
+    const again = await dispatchOne({ ...readState().sessions[rec.key], manual: true }, {
+      tmux: liveTmux(sent), fingerprint: () => WS_AFTER, notifier: () => {},
+    });
+    assert.equal(again, 'sent');
+  } finally {
+    delete process.env.UNSNOOZE_WORKSPACE_GUARD;
+  }
+});
+
+test('workspaceGuard off: changed repo ignored', async () => {
+  process.env.UNSNOOZE_WORKSPACE_GUARD = 'off';
+  try {
+    const rec = seed({ pane: '%36', workspace: WS_BEFORE });
+    const sent = [];
+    await dispatchOne(rec, { tmux: liveTmux(sent), fingerprint: () => WS_AFTER });
+    assert.equal(sent.length, 1);
+    assert.ok(!/workspace changed/i.test(sent[0]));
+  } finally {
+    delete process.env.UNSNOOZE_WORKSPACE_GUARD;
+  }
+});

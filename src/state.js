@@ -13,6 +13,7 @@ import {
   STATE_DIR, STATE_FILE, LOCK_DIR, STALE_LOCK_MS, PRUNE_AFTER_MS,
   DEDUPE_WINDOW_MS,
 } from './config.js';
+import { workspaceFingerprint } from './workspace.js';
 import { makeLogger } from './logger.js';
 
 const log = makeLogger('state');
@@ -104,6 +105,11 @@ export function upsertSession(record) {
       state.sessions[existingKey] = merged;
       log(`merged duplicate detection for pane ${record.pane} into ${existingKey}`);
       return state;
+    }
+    // Baseline for the stale-workspace guard, captured once at stop time.
+    // (Merged duplicates above keep the ORIGINAL baseline — spread semantics.)
+    if (record.status === 'stopped' && record.workspace === undefined) {
+      record.workspace = workspaceFingerprint(record.cwd);
     }
     const key = record.sessionId || `pane:${record.pane}:${record.detectedAt}`;
     state.sessions[key] = { ...record, key };

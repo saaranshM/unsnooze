@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.0 — 2026-07-12
+
+- **Stale-workspace guard** (`workspaceGuard`: `off` | `inform` | `pause`,
+  default `inform`): the repo's HEAD + dirty state are fingerprinted when a
+  session stops and re-checked at wake. `inform` resumes with a "workspace
+  changed while you slept — re-read before acting" note in the wake message;
+  `pause` holds the session (desktop notification, `workspace changed` marker
+  in status) until `unsnooze resume-now`, which prints the diff stat first.
+  Non-git directories are unaffected. Suggested by r/codex feedback.
+
 ## 1.5.0 — 2026-07-12
 
 - **`unsnooze update`**: one command to update unsnooze itself — runs

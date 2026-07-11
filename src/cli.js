@@ -33,8 +33,11 @@ export function cmdStatus() {
     const msg = s.resumeMessage
       ? ` · msg: "${s.resumeMessage.length > 44 ? s.resumeMessage.slice(0, 44) + '…' : s.resumeMessage}"`
       : '';
+    const hold = s.workspaceHold
+      ? ` · workspace changed (${s.holdReason ?? '?'}) — resume-now to wake`
+      : '';
     console.log(`  [${s.status.toUpperCase().padEnd(9)}] ${id}  ${(s.agent || 'claude').padEnd(6)} ${s.limitType?.padEnd(7) ?? 'unknown'} ${s.cwd}`);
-    console.log(`              pane ${s.pane ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}${msg}`);
+    console.log(`              pane ${s.pane ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}${msg}${hold}`);
   }
   return 0;
 }
@@ -46,15 +49,30 @@ function selectKeys(state, idOrAll, statuses = ['stopped']) {
   return match.map(s => s.key);
 }
 
-export function cmdResumeNow(idOrAll) {
+export async function cmdResumeNow(idOrAll) {
   const state = readState();
   const keys = selectKeys(state, idOrAll);
   if (keys.length === 0) { console.log('unsnooze: no matching stopped sessions.'); return 1; }
+  // The commenter's "show me the diff": held records print what moved since
+  // the stop-time baseline before we wake them. Best-effort, never blocking.
+  for (const key of keys) {
+    const rec = state.sessions[key];
+    if (rec?.workspaceHold && rec.workspace?.head && rec.cwd) {
+      try {
+        const { execFileSync } = await import('node:child_process');
+        const stat = execFileSync('git', ['-C', rec.cwd, 'diff', '--stat', `${rec.workspace.head}..HEAD`],
+          { stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000 }).toString().trim();
+        if (stat) console.log(`unsnooze: workspace changes since ${key.slice(0, 12)} stopped:\n${stat}`);
+      } catch { /* repo gone or git unhappy — proceed anyway */ }
+    }
+  }
   updateState(s => {
     for (const key of keys) {
       if (s.sessions[key]) {
         s.sessions[key].resetAt = Date.now();
-        s.sessions[key].manual = true;   // explicit user action beats autoResume=off
+        s.sessions[key].manual = true;   // explicit user action beats autoResume=off + workspaceGuard
+        delete s.sessions[key].workspaceHold;
+        delete s.sessions[key].holdReason;
       }
     }
   });
