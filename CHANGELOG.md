@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Notification channels** (`notifyChannel`: `auto` | `native` | `osc` |
+  `bell`, env `UNSNOOZE_NOTIFY_CHANNEL`): terminal-branded alerts via OSC 9
+  (iTerm2, kitty, WezTerm, Ghostty, Warp) or OSC 777 (rxvt), plus BEL on the
+  pane tty. `auto` sends OSC+BEL when tmux can reach client/pane ttys and
+  falls back to the OS toast only if OSC delivered nothing; denylisted
+  terminals (Apple Terminal, VS Code, Alacritty, Zed) skip OSC in auto.
+  OSC/BEL require tmux — Zellij and GUI-watcher stops use native. Existing
+  `notifications` remains the master off-switch.
 - **Unified ChatGPT desktop app support** (July 2026: the Codex app became the
   ChatGPT app). Verified against a real install: the app's bundled
   `codex app-server` still writes rollouts to `~/.codex/sessions/` in the same

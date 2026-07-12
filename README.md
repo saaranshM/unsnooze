@@ -192,7 +192,8 @@ unsnooze help                   # full command list (also -h / --help)
 | `multiplexer` | `auto` | Backend to use: `auto`, `tmux`, or `zellij`. `auto` prefers the current multiplexer, then the only installed backend, with tmux as the tie-breaker. |
 | `autoResume` | `true` | Master switch. Off = stops are still tracked, but nothing is resumed until you run `unsnooze resume-now` or turn it back on. |
 | `menuAutoAnswer` | `true` | May unsnooze answer Claude's limit menu (send keys in your pane)? Off = watch-only. |
-| `notifications` | `true` | Desktop notification on limit detected / session resumed / gave up. |
+| `notifications` | `true` | Master switch for all notifications (limit detected / session resumed / gave up). Off = silence every channel. |
+| `notifyChannel` | `auto` | How to deliver: `auto`, `native`, `osc`, or `bell` (see [Notification channels](#notification-channels)). Env: `UNSNOOZE_NOTIFY_CHANNEL`. |
 | `guiWatch` | `true` | May the daemon watch session files for GUI-surface stops (VS Code extension, desktop apps)? Needs the daemon running (`unsnooze install --daemon`). |
 | `resumeMessage` | *"Continue where you left off…"* | The message sent to wake a session. Override it for a single session with `unsnooze message <id> "…"` — visible in `unsnooze status`. |
 | `resumeMessages.claude` / `.codex` / `.grok` / `.qwen` / `.kimi` / `.opencode` / `.agy` | `""` | Per-agent override of `resumeMessage`. Empty = use the global message; clear one with `unsnooze config set resumeMessages.claude ""`. |
@@ -203,6 +204,36 @@ unsnooze help                   # full command list (also -h / --help)
 
 Every setting also has a `UNSNOOZE_*` env override (see `src/settings.js`), and
 all timings/paths are tunable via `UNSNOOZE_*` env vars (see `src/config.js`).
+
+### Notification channels
+
+When a limit is hit, a session resumes, or unsnooze gives up, it can alert you
+via an OS toast, a terminal OSC sequence, a BEL, or a mix — controlled by
+`notifyChannel` (default `auto`). `notifications=false` (or
+`UNSNOOZE_NOTIFICATIONS=off`) turns every channel off.
+
+| channel | what it does |
+|---|---|
+| `auto` | OSC (when the terminal supports it) **plus** BEL on the pane tty; falls back to native only if OSC delivered nothing (avoids double banners). No pane / non-tmux mux → native. |
+| `native` | OS toast only (macOS `osascript`, Linux `notify-send`, WSL/Windows PowerShell toast; tmux `display-message` as a last-resort statusline fallback). |
+| `osc` | Force OSC to attached client ttys; native if zero deliveries. |
+| `bell` | BEL to the pane tty; native if undeliverable. |
+
+**Terminal support (OSC)** — detection uses `TERM_PROGRAM` / termname / known
+env markers:
+
+| terminals | sequence |
+|---|---|
+| iTerm2, kitty, WezTerm, Ghostty, Warp | OSC 9 (`\x1b]9;title: body\x07`) |
+| rxvt / urxvt | OSC 777 (`\x1b]777;notify;title;body\x07`) |
+| Apple Terminal, VS Code, Alacritty, Zed | denylisted — skipped in `auto` (use `native` or force `osc`) |
+| unknown | skipped in `auto`; OSC 9 when `notifyChannel=osc` |
+
+**tmux only for OSC/BEL.** Those paths write to the client's tty (OSC) or the
+pane's tty (BEL), which requires tmux's client/pane tty APIs. **Zellij has no
+equivalent**, so OSC/BEL are not attempted under Zellij — notifications fall
+back to native (and Zellij has no statusline-inject equivalent either). GUI
+watcher stops (no pane context) always use native.
 
 ## Safety properties
 

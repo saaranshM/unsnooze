@@ -125,7 +125,8 @@ Usage:
                                    extension, desktop apps) — no live pane needed
                                    to detect; revival opens in tmux or Zellij
   unsnooze config [list|get|set]   view or change settings (toggles, global +
-                                   per-agent resume messages, updateCheck)
+                                   per-agent resume messages, notifyChannel
+                                   auto|native|osc|bell, updateCheck)
   unsnooze setup                   interactive setup wizard (agents + toggles)
   unsnooze install [--yes]         wire up shell wrappers + hooks (non-interactive)
   unsnooze uninstall [--purge]     remove wrappers + hooks (and state with --purge)
