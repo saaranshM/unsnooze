@@ -35,6 +35,7 @@ export function createMonitor({
   agent = getAgent('claude'), mux = getMultiplexer(muxName, { owner: paneOwner }),
   scrapeInterval = SCRAPE_INTERVAL_MS, notifier = notify,
 }) {
+  const notifyCtx = { mux: muxName, pane, paneOwner };
   let trackedKey = null;      // state key of the record we created
   let overloadAttempt = 0;
   let terminalNotified = false;   // one notification per terminal-error appearance
@@ -74,7 +75,7 @@ export function createMonitor({
         && ['stopped', 'resuming', 'resumed'].includes(s.status))?.key
       || null;
     log(`pane ${pane}: limit recorded (${limitType}, via ${via}), resets ${new Date(at).toISOString()}`);
-    notify(`${agent.name} hit a usage limit`, `${cwd} — auto-resume at ${new Date(at).toLocaleTimeString()}`);
+    notifier(`${agent.name} hit a usage limit`, `${cwd} — auto-resume at ${new Date(at).toLocaleTimeString()}`, { context: notifyCtx });
     spawnResumerIfNeeded();
   }
 
@@ -172,7 +173,7 @@ export function createMonitor({
     if (term) {
       if (!terminalNotified) {
         terminalNotified = true;
-        notifier(`${agent.name} needs attention ⚠️`, `${cwd} — ${term.line}`);
+        notifier(`${agent.name} needs attention ⚠️`, `${cwd} — ${term.line}`, { context: notifyCtx });
         log(`pane ${pane}: terminal error (no auto-resume): ${term.line}`);
       }
     } else {

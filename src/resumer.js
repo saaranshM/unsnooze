@@ -27,6 +27,7 @@ import { createLeaseId, leaseMatches } from './lease.js';
 const log = makeLogger('resumer');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const MAX_VERIFY_RETRIES = 3;
+const ctxOf = rec => ({ mux: rec.mux, pane: rec.pane, paneOwner: rec.paneOwner });
 
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -108,7 +109,7 @@ export async function dispatchOne(rec, {
       const desc = describeChange(change);
       if (guardMode === 'pause') {
         setStatus(key, 'stopped', { workspaceHold: true, holdReason: desc });
-        notifier('unsnooze: session held', `${rec.cwd}: workspace changed while stopped (${desc}) — run: unsnooze resume-now`);
+        notifier('unsnooze: session held', `${rec.cwd}: workspace changed while stopped (${desc}) — run: unsnooze resume-now`, { context: ctxOf(rec) });
         log(`${key}: workspace changed (${desc}) — held (workspaceGuard=pause)`);
         return 'held';
       }
@@ -264,7 +265,7 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
   setStatus(key, 'resumed', { lastError: null, verifyRetries: 0 });
   log(`${key}: verified resumed`);
   const fromGui = rec.origin && rec.origin !== 'cli';
-  notify('unsnoozed ✅', `${rec.cwd} is running again${fromGui ? ` (was in ${rec.origin} — revived in ${rec.mux})` : ''}`);
+  notify('unsnoozed ✅', `${rec.cwd} is running again${fromGui ? ` (was in ${rec.origin} — revived in ${rec.mux})` : ''}`, { context: ctxOf(rec) });
   return 'resumed';
 }
 
@@ -337,7 +338,7 @@ export async function runResumer({
         if ((s.attempts || 0) >= MAX_RESUME_ATTEMPTS) {
           setStatus(s.key, 'failed', { lastError: 'max resume attempts exceeded', verifyRetries: 0 });
           log(`${s.key}: giving up after ${s.attempts} attempts`);
-          notify('unsnooze gave up ⚠️', `${s.cwd}: ${s.attempts} resume attempts failed — check \`unsnooze status\``);
+          notify('unsnooze gave up ⚠️', `${s.cwd}: ${s.attempts} resume attempts failed — check \`unsnooze status\``, { context: ctxOf(s) });
         }
       }
 

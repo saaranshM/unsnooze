@@ -34,8 +34,12 @@ const BANNER = [
 ].join('\n');
 
 test('monitor tick records a limit stop from a live banner', async () => {
+  const notes = [];
   const tmux = fakeTmux({ text: BANNER });
-  const monitor = createMonitor({ pane: '%50', cwd: '/tmp/proj-a', mux: tmux });
+  const monitor = createMonitor({
+    pane: '%50', cwd: '/tmp/proj-a', mux: tmux,
+    notifier: (t, m, opts) => notes.push({ t, m, opts }),
+  });
   await monitor._tick();
   const recs = Object.values(readState().sessions).filter(s => s.pane === '%50');
   assert.equal(recs.length, 1);
@@ -43,6 +47,9 @@ test('monitor tick records a limit stop from a live banner', async () => {
   assert.equal(recs[0].limitType, '5h');
   assert.equal(recs[0].resetSource, 'absolute');
   assert.ok(recs[0].resetAt > Date.now());
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].t, /hit a usage limit/);
+  assert.deepEqual(notes[0].opts?.context, { mux: 'tmux', pane: '%50', paneOwner: null });
 });
 
 test('repeat ticks do not duplicate the record', async () => {
@@ -138,7 +145,10 @@ test('terminal pattern notifies once and records nothing', async () => {
     isForegroundCommand: () => true,
   };
   const tmux = fakeTmux({ text: 'Membership expired, please renew your plan\n> \n' });
-  const monitor = createMonitor({ pane: '%60', cwd: '/tmp/proj-t', mux: tmux, agent, notifier: (t, m) => notes.push({ t, m }) });
+  const monitor = createMonitor({
+    pane: '%60', cwd: '/tmp/proj-t', mux: tmux, agent,
+    notifier: (t, m, opts) => notes.push({ t, m, opts }),
+  });
   await monitor._tick();
   await monitor._tick();
   await monitor._tick();
@@ -146,6 +156,7 @@ test('terminal pattern notifies once and records nothing', async () => {
   assert.equal(recs.length, 0, 'terminal errors must not create ledger records');
   assert.equal(notes.length, 1, 'exactly one notification across repeat ticks');
   assert.match(notes[0].m, /Membership expired/);
+  assert.deepEqual(notes[0].opts?.context, { mux: 'tmux', pane: '%60', paneOwner: null });
 });
 
 test('terminal notification re-arms after the banner clears', async () => {
@@ -166,13 +177,19 @@ test('terminal notification re-arms after the banner clears', async () => {
   };
   const script = { text: 'Membership expired, please renew your plan\n> \n' };
   const tmux = fakeTmux(script);
-  const monitor = createMonitor({ pane: '%61', cwd: '/tmp/proj-u', mux: tmux, agent, notifier: (t, m) => notes.push({ t, m }) });
+  const monitor = createMonitor({
+    pane: '%61', cwd: '/tmp/proj-u', mux: tmux, agent,
+    notifier: (t, m, opts) => notes.push({ t, m, opts }),
+  });
   await monitor._tick();
   script.text = 'all good\n> \n';
   await monitor._tick();
   script.text = 'Membership expired, please renew your plan\n> \n';
   await monitor._tick();
   assert.equal(notes.length, 2, 'clears then re-notifies on a fresh terminal error');
+  for (const n of notes) {
+    assert.deepEqual(n.opts?.context, { mux: 'tmux', pane: '%61', paneOwner: null });
+  }
 });
 
 test('resumed record ignores stale banner until this monitor observes it clear', async () => {

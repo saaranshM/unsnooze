@@ -421,7 +421,8 @@ test('workspaceGuard pause: changed repo → held, nothing sent, notified once',
     const sent = [];
     const toasts = [];
     const result = await dispatchOne(rec, {
-      mux: liveTmux(sent), fingerprint: () => WS_AFTER, notifier: (t, m) => toasts.push(m),
+      mux: liveTmux(sent), fingerprint: () => WS_AFTER,
+      notifier: (t, m, opts) => toasts.push({ t, m, opts }),
     });
     assert.equal(result, 'held');
     assert.equal(sent.length, 0);
@@ -429,6 +430,8 @@ test('workspaceGuard pause: changed repo → held, nothing sent, notified once',
     assert.equal(after1.workspaceHold, true);
     assert.match(after1.holdReason, /HEAD/);
     assert.equal(toasts.length, 1);
+    assert.match(toasts[0].t, /session held/);
+    assert.deepEqual(toasts[0].opts?.context, { mux: 'tmux', pane: '%35', paneOwner: null });
     const { dueForDispatch } = await import('../src/resumer.js');
     assert.ok(!dueForDispatch().some(s => s.key === rec.key), 'held records are not dispatchable');
     // resume-now marks manual → bypasses the guard entirely
