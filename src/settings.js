@@ -17,6 +17,7 @@ export const DEFAULTS = {
   autoResume: true,        // master switch: dispatch resumes when limits reset
   menuAutoAnswer: true,    // may unsnooze drive Claude's limit menu (send keys)?
   notifications: true,     // desktop notifications on detect/resume
+  notifyChannel: 'auto',   // auto | native | osc | bell
   guiWatch: true,          // daemon watches transcripts/rollouts for GUI-session stops
   updateCheck: true,       // daily registry version check + update notices/toast
   workspaceGuard: 'inform', // repo changed while stopped: off | inform | pause
@@ -31,6 +32,7 @@ const ENV_NAMES = {
   autoResume: 'UNSNOOZE_AUTO_RESUME',
   menuAutoAnswer: 'UNSNOOZE_MENU_AUTO_ANSWER',
   notifications: 'UNSNOOZE_NOTIFICATIONS',
+  notifyChannel: 'UNSNOOZE_NOTIFY_CHANNEL',
   guiWatch: 'UNSNOOZE_GUI_WATCH',
   updateCheck: 'UNSNOOZE_UPDATE_CHECK',
   workspaceGuard: 'UNSNOOZE_WORKSPACE_GUARD',
@@ -57,6 +59,7 @@ const KNOWN_KEYS = Object.keys(ENV_NAMES);
 const ENUMS = {
   multiplexer: ['auto', 'tmux', 'zellij'],
   workspaceGuard: ['off', 'inform', 'pause'],
+  notifyChannel: ['auto', 'native', 'osc', 'bell'],
 };
 
 function parseBool(raw) {

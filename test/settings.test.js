@@ -15,6 +15,7 @@ test('defaults apply when no config file exists', () => {
   assert.equal(getConfig('autoResume'), true);
   assert.equal(getConfig('menuAutoAnswer'), true);
   assert.equal(getConfig('notifications'), true);
+  assert.equal(getConfig('notifyChannel'), 'auto');
   assert.equal(getConfig('agents.claude'), true);
   assert.equal(getConfig('agents.grok'), false);
   assert.equal(typeof getConfig('resumeMessage'), 'string');
@@ -57,7 +58,7 @@ test('setConfigValue rejects unknown keys and bad types', () => {
 
 test('listConfig returns every known key with its effective value', () => {
   const listed = listConfig();
-  for (const key of ['autoResume', 'menuAutoAnswer', 'notifications', 'resumeMessage', 'agents.claude', 'agents.codex', 'agents.grok', 'resumeMessages.claude', 'resumeMessages.codex', 'resumeMessages.grok']) {
+  for (const key of ['autoResume', 'menuAutoAnswer', 'notifications', 'notifyChannel', 'resumeMessage', 'agents.claude', 'agents.codex', 'agents.grok', 'resumeMessages.claude', 'resumeMessages.codex', 'resumeMessages.grok']) {
     assert.ok(key in listed, `${key} missing from listConfig`);
   }
 });
@@ -132,4 +133,15 @@ test('workspaceGuard: enum setting with inform default', () => {
   assert.equal(getConfig('workspaceGuard'), 'pause');
   assert.throws(() => setConfigValue('workspaceGuard', 'banana'), /one of/i);
   setConfigValue('workspaceGuard', 'inform');
+});
+
+test('notifyChannel: default auto, env override, enum rejection', () => {
+  assert.equal(getConfig('notifyChannel'), 'auto');
+  process.env.UNSNOOZE_NOTIFY_CHANNEL = 'osc';
+  assert.equal(getConfig('notifyChannel'), 'osc');
+  delete process.env.UNSNOOZE_NOTIFY_CHANNEL;
+  setConfigValue('notifyChannel', 'native');
+  assert.equal(getConfig('notifyChannel'), 'native');
+  assert.throws(() => setConfigValue('notifyChannel', 'bogus'), /one of/i);
+  setConfigValue('notifyChannel', 'auto');
 });
