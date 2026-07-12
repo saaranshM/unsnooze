@@ -255,3 +255,14 @@ test('backend probes retain their public surfaces', () => {
   assert.equal(createZellij({ spawner: zellijSpawner, env: { ZELLIJ: '0' } }).available(), true);
   assert.equal(createZellij({ spawner: zellijSpawner, env: { ZELLIJ: '0' } }).inside(), true);
 });
+
+test('tmux paneAlive requires the target to echo its pane id back (3.7b exits 0 for missing panes)', async () => {
+  // tmux 3.7b prints a blank line and exits 0 for a nonexistent -t target, so
+  // the exit code alone is not evidence of liveness.
+  const blank = createTmux({ spawner: fakeSpawner(() => '\n'), env: {} });
+  assert.equal(await blank.paneAlive('%999'), false);
+  const real = createTmux({ spawner: fakeSpawner(() => '%42\n'), env: {} });
+  assert.equal(await real.paneAlive('%42'), true);
+  const erroring = createTmux({ spawner: fakeSpawner(() => { throw new Error('no server'); }), env: {} });
+  assert.equal(await erroring.paneAlive('%1'), false);
+});

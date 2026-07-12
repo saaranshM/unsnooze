@@ -69,8 +69,11 @@ export function createTmux({ spawner = defaultSpawner, env = process.env } = {})
 
     async paneAlive(pane) {
       try {
-        await run('display-message', '-t', pane, '-p', '#{pane_id}');
-        return true;
+        // tmux 3.7b prints a blank line and exits 0 for a nonexistent target,
+        // so the exit code alone is not evidence — the output must echo the
+        // pane id back.
+        const out = await run('display-message', '-t', pane, '-p', '#{pane_id}');
+        return out.trim() === pane;
       } catch {
         return false;
       }
