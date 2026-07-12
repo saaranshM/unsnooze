@@ -278,6 +278,24 @@ describe('sendOsc', () => {
     assert.equal(calls[0].data, buildOsc9('T', 'B'));
   });
 
+  test('force: server+caller both denylisted still blocks', async () => {
+    // classifyClient stops at server layer; force must still honor caller denylist.
+    const { calls, writeTty } = recorderWriteTty();
+    const mux = {
+      clientTtys: async () => [
+        { tty: '/dev/ttys001', termname: 'xterm-256color' },
+      ],
+      globalEnv: async () => ({ TERM_PROGRAM: 'Apple_Terminal' }),
+    };
+    const n = await sendOsc('T', 'B', {
+      mux, pane: '%1', writeTty,
+      env: { TERM_PROGRAM: 'Apple_Terminal' },
+      force: true,
+    });
+    assert.equal(n, 0);
+    assert.equal(calls.length, 0);
+  });
+
   test('auto: globalEnv denylist still skips (force-only escape)', async () => {
     const { calls, writeTty } = recorderWriteTty();
     const mux = {

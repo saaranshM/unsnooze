@@ -7,10 +7,11 @@
 //   unknown (null) — skip in auto; OSC 9 when force
 //
 // force (notifyChannel=osc): unknown always gets OSC 9. Denylist from
-// per-client evidence (termname / caller env) still blocks; denylist from
-// globalEnv alone does not block force (stale show-environment -g after the
-// user reattaches from a different terminal). Auto is unchanged: any
-// unsupported source is skipped.
+// per-client evidence (termname / caller env) always blocks under force —
+// including when globalEnv is *also* denylisted (server layer would otherwise
+// shadow caller). Denylist from globalEnv alone does not block force (stale
+// show-environment -g after reattach). Auto is unchanged: any unsupported
+// source is skipped.
 //
 // One-write rule: open O_WRONLY|O_NOCTTY|O_NONBLOCK, exactly one write of the
 // whole sequence (<1 KB), no retry on short write (fail fast under O_NONBLOCK
@@ -200,16 +201,24 @@ function classifyClient(termname, serverEnv, callerEnv) {
 /**
  * Resolve OSC dialect for a classified client.
  * force (notifyChannel=osc): null → osc9; unsupported from globalEnv alone →
- * osc9 (stale server env); unsupported from termname/caller still blocks.
+ * osc9 (stale server env) *unless* per-client evidence (termname / caller env)
+ * independently denylists; unsupported from termname/caller still blocks.
  * Auto: unsupported from any source stays skipped.
  */
-function dialectForClient(brand, source, force) {
+function dialectForClient(brand, source, force, { termname, callerEnv } = {}) {
   const dialect = dialectFor(brand);
   if (dialect) return dialect;
   if (!force) return null;
   if (brand == null) return 'osc9';
-  // Stale show-environment -g denylist must not defeat forced OSC.
-  if (brand === 'unsupported' && source === 'server') return 'osc9';
+  // Stale show-environment -g denylist must not defeat forced OSC — but only
+  // when the caller/process env and termname are not themselves denylisted.
+  // classifyClient stops at the first non-null layer, so re-check per-client
+  // evidence here before upgrading server unsupported → OSC 9.
+  if (brand === 'unsupported' && source === 'server') {
+    const perClient = classifyTerminal({ termname, env: callerEnv || {} });
+    if (perClient === 'unsupported') return null;
+    return 'osc9';
+  }
   return null;
 }
 
@@ -252,7 +261,10 @@ export async function sendOsc(title, body, {
       seen.add(tty);
 
       const { brand, source } = classifyClient(client.termname, serverEnv, env);
-      const dialect = dialectForClient(brand, source, force);
+      const dialect = dialectForClient(brand, source, force, {
+        termname: client.termname,
+        callerEnv: env,
+      });
       if (!dialect) continue;
 
       const seq = sequenceFor(dialect, title, body);
