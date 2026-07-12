@@ -92,6 +92,7 @@ describe('classifyTerminal', () => {
     assert.equal(classifyTerminal({ env: { TERM_PROGRAM: 'iTerm.app' } }), 'iterm2');
     assert.equal(classifyTerminal({ env: { LC_TERMINAL: 'iTerm2' } }), 'iterm2');
     assert.equal(classifyTerminal({ env: { TERM_PROGRAM: 'WarpTerminal' } }), 'warp');
+    assert.equal(classifyTerminal({ env: { LC_TERMINAL: 'WarpTerminal' } }), 'warp');
     assert.equal(classifyTerminal({ env: { KITTY_WINDOW_ID: '1' } }), 'kitty');
     assert.equal(classifyTerminal({ env: { WEZTERM_EXECUTABLE: '/usr/bin/wezterm' } }), 'wezterm');
     assert.equal(classifyTerminal({ env: { GHOSTTY_RESOURCES_DIR: '/opt/ghostty' } }), 'ghostty');
@@ -105,6 +106,7 @@ describe('classifyTerminal', () => {
     assert.equal(classifyTerminal({ env: { TERM: 'alacritty' } }), 'unsupported');
     assert.equal(classifyTerminal({ env: { TERM_PROGRAM: 'zed' } }), 'unsupported');
     assert.equal(classifyTerminal({ termname: 'alacritty' }), 'unsupported');
+    assert.equal(classifyTerminal({ termname: 'Apple_Terminal' }), 'unsupported');
   });
 
   test('unknown → null', () => {
@@ -185,6 +187,22 @@ describe('writeToTty', () => {
     assert.equal(writes[0].toString(), 'abc');
     assert.equal(closed, true);
   });
+
+  test('short write returns false (no retry)', async () => {
+    let closed = false;
+    const fakeFs = {
+      constants: nodeFs.constants,
+      promises: {
+        open: async () => ({
+          write: async (buf) => ({ bytesWritten: Math.max(0, buf.length - 1), buffer: buf }),
+          close: async () => { closed = true; },
+        }),
+      },
+    };
+    const ok = await writeToTty('/dev/ttys001', 'abcdef', { fs: fakeFs });
+    assert.equal(ok, false);
+    assert.equal(closed, true);
+  });
 });
 
 // ── sendOsc ────────────────────────────────────────────────────────────────
@@ -246,13 +264,57 @@ describe('sendOsc', () => {
     assert.equal(calls[0].data, buildOsc9('T', 'B'));
   });
 
-  test('unsupported never sent even with force', async () => {
+  test('force: stale globalEnv denylist alone still sends OSC 9', async () => {
+    // notifyChannel=osc escape hatch — server env may be stale after reattach.
     const { calls, writeTty } = recorderWriteTty();
     const mux = {
       clientTtys: async () => [
         { tty: '/dev/ttys001', termname: 'xterm-256color' },
       ],
       globalEnv: async () => ({ TERM_PROGRAM: 'Apple_Terminal' }),
+    };
+    const n = await sendOsc('T', 'B', { mux, pane: '%1', writeTty, env: {}, force: true });
+    assert.equal(n, 1);
+    assert.equal(calls[0].data, buildOsc9('T', 'B'));
+  });
+
+  test('auto: globalEnv denylist still skips (force-only escape)', async () => {
+    const { calls, writeTty } = recorderWriteTty();
+    const mux = {
+      clientTtys: async () => [
+        { tty: '/dev/ttys001', termname: 'xterm-256color' },
+      ],
+      globalEnv: async () => ({ TERM_PROGRAM: 'Apple_Terminal' }),
+    };
+    const n = await sendOsc('T', 'B', { mux, pane: '%1', writeTty, env: {}, force: false });
+    assert.equal(n, 0);
+    assert.equal(calls.length, 0);
+  });
+
+  test('force: per-client denylist (caller env) still blocks', async () => {
+    const { calls, writeTty } = recorderWriteTty();
+    const mux = {
+      clientTtys: async () => [
+        { tty: '/dev/ttys001', termname: 'xterm-256color' },
+      ],
+      globalEnv: async () => ({}),
+    };
+    const n = await sendOsc('T', 'B', {
+      mux, pane: '%1', writeTty,
+      env: { TERM_PROGRAM: 'Apple_Terminal' },
+      force: true,
+    });
+    assert.equal(n, 0);
+    assert.equal(calls.length, 0);
+  });
+
+  test('force: per-client denylist (termname) still blocks', async () => {
+    const { calls, writeTty } = recorderWriteTty();
+    const mux = {
+      clientTtys: async () => [
+        { tty: '/dev/ttys001', termname: 'alacritty' },
+      ],
+      globalEnv: async () => ({}),
     };
     const n = await sendOsc('T', 'B', { mux, pane: '%1', writeTty, env: {}, force: true });
     assert.equal(n, 0);

@@ -3,13 +3,19 @@
 // Dialect support matrix:
 //   OSC 9  (\x1b]9;title: body\x07)  — iterm2, kitty, wezterm, ghostty, warp
 //   OSC 777 (\x1b]777;notify;title;body\x07) — rxvt only
-//   unsupported (Apple_Terminal, vscode, alacritty, zed) — skip
+//   unsupported (Apple_Terminal, vscode, alacritty, zed) — skip in auto
 //   unknown (null) — skip in auto; OSC 9 when force
 //
+// force (notifyChannel=osc): unknown always gets OSC 9. Denylist from
+// per-client evidence (termname / caller env) still blocks; denylist from
+// globalEnv alone does not block force (stale show-environment -g after the
+// user reattaches from a different terminal). Auto is unchanged: any
+// unsupported source is skipped.
+//
 // One-write rule: open O_WRONLY|O_NOCTTY|O_NONBLOCK, exactly one write of the
-// whole sequence (<1 KB), close. Never acquire a controlling terminal; a
-// frozen client fails EAGAIN instead of hanging. All errors swallowed.
-// All deps injectable — never touch a real tty from tests.
+// whole sequence (<1 KB), no retry on short write (fail fast under O_NONBLOCK
+// / frozen clients). Never acquire a controlling terminal. All errors
+// swallowed. All deps injectable — never touch a real tty from tests.
 
 import nodeFs from 'node:fs';
 
@@ -31,7 +37,8 @@ const CONTROL_RE = /[\u0000-\u001f\u007f]/g;
 
 /**
  * Strip C0/DEL/ESC/BEL, collapse newlines to spaces, truncate to max.
- * When stripSemicolons is set (OSC 777 titles), also remove `;` field separators.
+ * When stripSemicolons is set (OSC 777 title and body), also remove `;`
+ * field separators.
  */
 export function sanitizeOscText(s, max = TITLE_MAX, { stripSemicolons = false } = {}) {
   let t = String(s ?? '');
@@ -52,7 +59,7 @@ export function buildOsc9(title, body) {
   return `\x1b]9;${t}: ${b}\x07`;
 }
 
-/** OSC 777 (rxvt notify): `\x1b]777;notify;title;body\x07` — `;` stripped from title. */
+/** OSC 777 (rxvt notify): `\x1b]777;notify;title;body\x07` — `;` stripped from title and body. */
 export function buildOsc777(title, body) {
   const t = sanitizeOscText(title, TITLE_MAX, { stripSemicolons: true });
   const b = sanitizeOscText(body, BODY_MAX, { stripSemicolons: true });
@@ -78,7 +85,7 @@ function envBrand(env = {}) {
 
   // Known good brands (env presence / TERM_PROGRAM / LC_TERMINAL).
   if (/^iterm/i.test(termProgram) || /^iterm/i.test(lcTerminal)) return 'iterm2';
-  if (/^warp/i.test(termProgram)) return 'warp';
+  if (/^warp/i.test(termProgram) || /^warp/i.test(lcTerminal)) return 'warp';
   if (env.KITTY_WINDOW_ID) return 'kitty';
   if (env.WEZTERM_EXECUTABLE) return 'wezterm';
   if (env.GHOSTTY_RESOURCES_DIR) return 'ghostty';
@@ -94,6 +101,7 @@ const DENY_TERM_PROGRAM = new Set([
 function isDenied({ termname, env = {} }) {
   const termProgram = String(env.TERM_PROGRAM || '').toLowerCase();
   if (DENY_TERM_PROGRAM.has(termProgram)) return true;
+  if (termProgram.includes('apple_terminal')) return true;
 
   const term = String(env.TERM || '').toLowerCase();
   const name = String(termname || '').toLowerCase();
@@ -101,7 +109,8 @@ function isDenied({ termname, env = {} }) {
   if (term.includes('alacritty') || name.includes('alacritty')) return true;
   if (name === 'vscode' || name.includes('vscode')) return true;
   if (name === 'zed' || name.startsWith('zed')) return true;
-  if (termProgram.includes('apple_terminal')) return true;
+  // Symmetry with TERM_PROGRAM denylist (rarely seen as termname, but cheap).
+  if (name.includes('apple_terminal')) return true;
   return false;
 }
 
@@ -142,7 +151,9 @@ export function dialectFor(terminal) {
 
 /**
  * Write data to a tty path: one open, one write, close. Never throws.
- * @returns {Promise<boolean>} true on success
+ * Single attempt only — short writes (bytesWritten < length) under O_NONBLOCK
+ * count as failure; no retry loop so frozen clients fail fast.
+ * @returns {Promise<boolean>} true only when the full buffer was written
  */
 export async function writeToTty(ttyPath, data, { fs: fsMod = nodeFs } = {}) {
   let fh;
@@ -152,9 +163,10 @@ export async function writeToTty(ttyPath, data, { fs: fsMod = nodeFs } = {}) {
     const open = fsMod.promises?.open?.bind(fsMod.promises) || nodeFs.promises.open;
     fh = await open(ttyPath, flags);
     const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
-    // Exactly one write of the whole sequence.
-    await fh.write(buf, 0, buf.length, null);
-    return true;
+    // Exactly one write of the whole sequence; partial write → false.
+    const result = await fh.write(buf, 0, buf.length, null);
+    const written = result?.bytesWritten ?? 0;
+    return written === buf.length;
   } catch {
     return false;
   } finally {
@@ -173,13 +185,32 @@ function sequenceFor(dialect, title, body) {
 /**
  * Classify a client using layered detection:
  * termname → server env (mux.globalEnv) → caller env.
+ * @returns {{ brand: string|null, source: 'termname'|'server'|'caller'|null }}
  */
 function classifyClient(termname, serverEnv, callerEnv) {
   let brand = classifyTerminal({ termname, env: {} });
-  if (brand != null) return brand;
+  if (brand != null) return { brand, source: 'termname' };
   brand = classifyTerminal({ termname, env: serverEnv || {} });
-  if (brand != null) return brand;
-  return classifyTerminal({ termname, env: callerEnv || {} });
+  if (brand != null) return { brand, source: 'server' };
+  brand = classifyTerminal({ termname, env: callerEnv || {} });
+  if (brand != null) return { brand, source: 'caller' };
+  return { brand: null, source: null };
+}
+
+/**
+ * Resolve OSC dialect for a classified client.
+ * force (notifyChannel=osc): null → osc9; unsupported from globalEnv alone →
+ * osc9 (stale server env); unsupported from termname/caller still blocks.
+ * Auto: unsupported from any source stays skipped.
+ */
+function dialectForClient(brand, source, force) {
+  const dialect = dialectFor(brand);
+  if (dialect) return dialect;
+  if (!force) return null;
+  if (brand == null) return 'osc9';
+  // Stale show-environment -g denylist must not defeat forced OSC.
+  if (brand === 'unsupported' && source === 'server') return 'osc9';
+  return null;
 }
 
 /**
@@ -220,11 +251,8 @@ export async function sendOsc(title, body, {
       if (!tty || seen.has(tty)) continue;
       seen.add(tty);
 
-      const brand = classifyClient(client.termname, serverEnv, env);
-      let dialect = dialectFor(brand);
-
-      // force: unknown (null) still gets OSC 9; unsupported stays skipped.
-      if (!dialect && force && brand == null) dialect = 'osc9';
+      const { brand, source } = classifyClient(client.termname, serverEnv, env);
+      const dialect = dialectForClient(brand, source, force);
       if (!dialect) continue;
 
       const seq = sequenceFor(dialect, title, body);
