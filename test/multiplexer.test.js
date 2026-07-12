@@ -266,3 +266,70 @@ test('tmux paneAlive requires the target to echo its pane id back (3.7b exits 0 
   const erroring = createTmux({ spawner: fakeSpawner(() => { throw new Error('no server'); }), env: {} });
   assert.equal(await erroring.paneAlive('%1'), false);
 });
+
+test('tmux clientTtys parses list-clients rows and returns [] on error or detach', async () => {
+  const spawner = fakeSpawner(() => '/dev/ttys001\txterm-256color\n/dev/ttys002\tscreen-256color\n');
+  const mux = createTmux({ spawner, env: {} });
+  assert.deepEqual(await mux.clientTtys('%1'), [
+    { tty: '/dev/ttys001', termname: 'xterm-256color' },
+    { tty: '/dev/ttys002', termname: 'screen-256color' },
+  ]);
+  assert.deepEqual(spawner.calls[0].args,
+    ['list-clients', '-t', '%1', '-F', '#{client_tty}\t#{client_termname}']);
+
+  const empty = createTmux({ spawner: fakeSpawner(() => ''), env: {} });
+  assert.deepEqual(await empty.clientTtys('%1'), []);
+
+  const erroring = createTmux({
+    spawner: fakeSpawner(() => { throw new Error('no clients'); }),
+    env: {},
+  });
+  assert.deepEqual(await erroring.clientTtys('%1'), []);
+});
+
+test('tmux paneTty returns the path or null on empty/error', async () => {
+  const spawner = fakeSpawner(() => '/dev/ttys003\n');
+  const mux = createTmux({ spawner, env: {} });
+  assert.equal(await mux.paneTty('%7'), '/dev/ttys003');
+  assert.deepEqual(spawner.calls[0].args,
+    ['display-message', '-t', '%7', '-p', '#{pane_tty}']);
+
+  const blank = createTmux({ spawner: fakeSpawner(() => '\n'), env: {} });
+  assert.equal(await blank.paneTty('%7'), null);
+
+  const erroring = createTmux({
+    spawner: fakeSpawner(() => { throw new Error('no server'); }),
+    env: {},
+  });
+  assert.equal(await erroring.paneTty('%7'), null);
+});
+
+test('tmux globalEnv filters names, skips -REMOVED, and returns {} on error', async () => {
+  const envOut = [
+    'DISPLAY=:0',
+    'SSH_AUTH_SOCK=/tmp/agent.sock',
+    'TERM -REMOVED',
+    'COLORTERM=truecolor',
+    'GONE -REMOVED',
+  ].join('\n') + '\n';
+  const spawner = fakeSpawner(() => envOut);
+  const mux = createTmux({ spawner, env: {} });
+  assert.deepEqual(await mux.globalEnv(['DISPLAY', 'TERM', 'COLORTERM', 'MISSING']), {
+    DISPLAY: ':0',
+    COLORTERM: 'truecolor',
+  });
+  assert.deepEqual(spawner.calls[0].args, ['show-environment', '-g']);
+
+  const erroring = createTmux({
+    spawner: fakeSpawner(() => { throw new Error('no server'); }),
+    env: {},
+  });
+  assert.deepEqual(await erroring.globalEnv(['DISPLAY']), {});
+});
+
+test('zellij backend does not expose tmux tty discovery methods', () => {
+  const mux = createZellij({ spawner: fakeSpawner(), env: {} });
+  assert.equal(typeof mux.clientTtys, 'undefined');
+  assert.equal(typeof mux.paneTty, 'undefined');
+  assert.equal(typeof mux.globalEnv, 'undefined');
+});

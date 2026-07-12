@@ -79,6 +79,56 @@ export function createTmux({ spawner = defaultSpawner, env = process.env } = {})
       }
     },
 
+    // Clients attached to the session that owns `pane`. Detached / missing
+    // targets return [] so callers can feature-detect without try/catch.
+    async clientTtys(pane) {
+      try {
+        const out = await run('list-clients', '-t', pane, '-F', '#{client_tty}\t#{client_termname}');
+        return out.split('\n')
+          .map(line => line.trimEnd())
+          .filter(Boolean)
+          .map(line => {
+            const [tty, termname = ''] = line.split('\t');
+            return { tty, termname };
+          })
+          .filter(entry => entry.tty);
+      } catch {
+        return [];
+      }
+    },
+
+    async paneTty(pane) {
+      try {
+        const out = (await run('display-message', '-t', pane, '-p', '#{pane_tty}')).trim();
+        return out || null;
+      } catch {
+        return null;
+      }
+    },
+
+    // Global session env from `show-environment -g`. `-REMOVED` markers are
+    // skipped; only keys listed in `names` are returned. Errors → {}.
+    async globalEnv(names) {
+      try {
+        const out = await run('show-environment', '-g');
+        const wanted = new Set(names);
+        const result = {};
+        for (const line of out.split('\n')) {
+          const trimmed = line.trimEnd();
+          // tmux prints "NAME=value" or "NAME -REMOVED"
+          if (!trimmed || trimmed.includes(' -REMOVED')) continue;
+          const eq = trimmed.indexOf('=');
+          if (eq <= 0) continue;
+          const key = trimmed.slice(0, eq);
+          if (!wanted.has(key)) continue;
+          result[key] = trimmed.slice(eq + 1);
+        }
+        return result;
+      } catch {
+        return {};
+      }
+    },
+
     async paneCurrentCommand(pane) {
       try {
         return (await run('display-message', '-t', pane, '-p', '#{pane_current_command}')).trim();
