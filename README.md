@@ -29,7 +29,7 @@ existing tool solves only a slice of it:
 
 | | **unsnooze** | claude-auto-retry | autoclaude | hydra |
 |---|:---:|:---:|:---:|:---:|
-| Multi-CLI (Claude Code + Codex + Grok) | ✅ | ❌ Claude only | ❌ Claude only | ✅ |
+| Multi-CLI (Claude · Codex · Grok · Qwen · Kimi · OpenCode · Antigravity) | ✅ | ❌ Claude only | ❌ Claude only | partial |
 | GUI sessions (VS Code ext, desktop apps) | ✅ watcher daemon | ❌ | ❌ | ❌ |
 | Waits for reset & resumes the **same** session | ✅ | ✅ | ✅ | ❌ switches provider |
 | All sessions at once (shared ledger + one daemon) | ✅ | ❌ one pane | ✅ | ✅ |
