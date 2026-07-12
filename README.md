@@ -102,7 +102,12 @@ the session files those surfaces already write:
   shared by the CLI and the VS Code extension.
 - **Codex** writes a `rate_limits` snapshot (usage %, **exact epoch reset
   time**) into every rollout under `~/.codex/sessions/` — shared by the CLI,
-  IDE extension, and desktop app.
+  IDE extension, and the **unified ChatGPT desktop app** (July 2026: the Codex
+  app became the ChatGPT app; its bundled `codex app-server` writes the same
+  rollouts to the same store — verified against a real install). On machines
+  where Codex lives only inside ChatGPT.app (no `codex` on PATH), unsnooze
+  automatically resumes through the app-bundled binary
+  (`/Applications/ChatGPT.app/Contents/Resources/codex`).
 - **Claude desktop (cowork) sessions** *(experimental, macOS)* run in
   sandboxes under `~/Library/Application Support/Claude`; unsnooze watches
   those too and revives with the session's isolated `CLAUDE_CONFIG_DIR`

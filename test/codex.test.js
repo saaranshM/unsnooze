@@ -94,3 +94,17 @@ test('parses multi-unit "Try again in 4 days 20 hours 9 minutes."', () => {
 test('"Try again later." yields no parse (fallback path)', () => {
   assert.equal(parseResetTime("You've hit your usage limit. Try again later."), null);
 });
+
+// --- unified ChatGPT desktop app (2026): codex binary ships inside the app ---
+
+test('codex bin resolution falls back to the ChatGPT app bundle', async () => {
+  const { resolveCodexBin, CHATGPT_CODEX_BIN } = await import('../src/agents/codex.js');
+  // env override always wins
+  assert.equal(resolveCodexBin({ env: { UNSNOOZE_CODEX_BIN: '/x/codex' }, onPath: () => true, exists: () => true }), '/x/codex');
+  // codex on PATH → plain name (standalone CLI installs)
+  assert.equal(resolveCodexBin({ env: {}, onPath: () => true, exists: () => false }), 'codex');
+  // not on PATH but the unified ChatGPT app is installed → bundled binary
+  assert.equal(resolveCodexBin({ env: {}, onPath: () => false, exists: p => p === CHATGPT_CODEX_BIN }), CHATGPT_CODEX_BIN);
+  // neither → plain name so the launcher can degrade gracefully
+  assert.equal(resolveCodexBin({ env: {}, onPath: () => false, exists: () => false }), 'codex');
+});

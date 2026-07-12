@@ -10,9 +10,29 @@
 // Transient errors render "stream error: … retrying 4/5 in 1.4s" and must take
 // the overload path, never the ledger.
 
-import { openSync, readSync, closeSync, readdirSync, statSync } from 'node:fs';
+import { openSync, readSync, closeSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { CODEX_DIR } from '../config.js';
+
+// Since the 2026 unified ChatGPT desktop app absorbed the Codex app, the codex
+// binary ships INSIDE the app bundle and many machines have no standalone
+// `codex` on PATH at all — yet ~/.codex/sessions rollouts (and the resume
+// command) work identically through the bundled binary (verified live against
+// codex-cli 0.144 from ChatGPT.app).
+export const CHATGPT_CODEX_BIN = '/Applications/ChatGPT.app/Contents/Resources/codex';
+
+function codexOnPath(env = process.env) {
+  return (env.PATH || '').split(':').some(dir => {
+    try { return dir && existsSync(join(dir, 'codex')); } catch { return false; }
+  });
+}
+
+export function resolveCodexBin({ env = process.env, onPath = () => codexOnPath(env), exists = existsSync } = {}) {
+  if (env.UNSNOOZE_CODEX_BIN) return env.UNSNOOZE_CODEX_BIN;
+  if (onPath()) return 'codex';
+  if (exists(CHATGPT_CODEX_BIN)) return CHATGPT_CODEX_BIN;
+  return 'codex';   // neither — the launcher degrades gracefully on spawn error
+}
 
 const LIMIT_ANCHORS = [
   /You've hit your usage limit/i,
@@ -91,7 +111,7 @@ export function latestSessionId(cwd, aroundTs = null, sessionsRoot = join(CODEX_
 export default {
   id: 'codex',
   name: 'OpenAI Codex CLI',
-  bin: process.env.UNSNOOZE_CODEX_BIN || 'codex',
+  bin: resolveCodexBin(),
   experimental: false,
   patterns,
   menu: null,                      // no interactive limit menu

@@ -112,3 +112,79 @@ test('rolloutMeta falls back to the filename uuid when the head is unreadable', 
   assert.equal(info.sessionId, id);
   assert.equal(info.cwd, null);
 });
+
+// --- unified ChatGPT app rollout format (codex-cli 0.144, verified live) ---
+// New additive fields: limit_id, limit_name, credits, individual_limit,
+// plan_type; secondary can be null. Wrapper structure is unchanged.
+
+const UNIFIED_OK = JSON.stringify({
+  timestamp: '2026-07-12T15:42:31.000Z', type: 'event_msg',
+  payload: { type: 'token_count', rate_limits: {
+    limit_id: 'codex', limit_name: null,
+    primary: { used_percent: 5.0, window_minutes: 43200, resets_at: 1786462931 },
+    secondary: null,
+    credits: { has_credits: false, unlimited: false, balance: null },
+    individual_limit: null, plan_type: 'go', rate_limit_reached_type: null,
+  } },
+});
+
+const UNIFIED_EXHAUSTED = JSON.stringify({
+  timestamp: '2026-07-12T15:42:31.000Z', type: 'event_msg',
+  payload: { type: 'token_count', rate_limits: {
+    limit_id: 'codex', limit_name: null,
+    primary: { used_percent: 100, window_minutes: 43200, resets_at: 1786462931 },
+    secondary: null,
+    credits: { has_credits: false, unlimited: false, balance: null },
+    individual_limit: null, plan_type: 'go', rate_limit_reached_type: 'primary',
+  } },
+});
+
+test('unified-app snapshot below the limit is not a candidate', () => {
+  assert.equal(parseRolloutLine(UNIFIED_OK), null);
+});
+
+test('unified-app exhausted window parses with epoch reset and long-window type', () => {
+  const c = parseRolloutLine(UNIFIED_EXHAUSTED);
+  assert.ok(c);
+  assert.equal(c.resetAt, 1786462931 * 1000);
+  assert.equal(c.limitType, 'weekly');   // 30-day window classifies as weekly-scale
+});
+
+test('unified-app session_meta head still yields id/cwd/originator', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'unsnooze-unified-meta-'));
+  const p = join(dir, 'rollout-2026-07-12T21-12-08-019f56fe-3508-7f10-8bb2-5e1db403916f.jsonl');
+  writeFileSync(p, JSON.stringify({
+    timestamp: '2026-07-12T15:42:08.174Z', type: 'session_meta',
+    payload: {
+      session_id: '019f56fe-3508-7f10-8bb2-5e1db403916f', id: '019f56fe-3508-7f10-8bb2-5e1db403916f',
+      cwd: '/tmp/probe', originator: 'codex_exec', cli_version: '0.144.0-alpha.4',
+      source: 'exec', thread_source: 'user', model_provider: 'openai',
+    },
+  }) + '\n');
+  const meta = rolloutMeta(p);
+  assert.equal(meta.sessionId, '019f56fe-3508-7f10-8bb2-5e1db403916f');
+  assert.equal(meta.cwd, '/tmp/probe');
+  assert.equal(meta.originator, 'codex_exec');
+});
+
+test('non-window reached_type strings (workspace credit/limit variants) still bind the latest reset', () => {
+  // Since the unified app, rate_limit_reached_type carries reason strings
+  // (rate_limit_reached, workspace_owner_usage_limit_reached, …), not window
+  // names — the parser must fall back to the latest-resetting window.
+  const line = JSON.stringify({
+    timestamp: '2026-07-12T15:42:31.000Z', type: 'event_msg',
+    payload: { type: 'token_count', rate_limits: {
+      limit_id: 'codex',
+      primary: { used_percent: 97, window_minutes: 300, resets_at: 1786400000 },
+      secondary: { used_percent: 99, window_minutes: 10080, resets_at: 1786462931 },
+      plan_type: 'business', rate_limit_reached_type: 'workspace_owner_usage_limit_reached',
+    } },
+  });
+  const c = parseRolloutLine(line);
+  assert.ok(c, 'reached_type must bind even when no window shows 100%');
+  assert.equal(c.resetAt, 1786462931 * 1000, 'latest reset governs');
+  assert.equal(c.reachedType, 'workspace_owner_usage_limit_reached');
+});

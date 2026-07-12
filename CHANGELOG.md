@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Unified ChatGPT desktop app support** (July 2026: the Codex app became the
+  ChatGPT app). Verified against a real install: the app's bundled
+  `codex app-server` still writes rollouts to `~/.codex/sessions/` in the same
+  format (now with additive `limit_id`/`credits`/`plan_type` fields and
+  reason-string `rate_limit_reached_type` values — both handled), and
+  `codex resume <uuid>` works for app-originated sessions. New: when `codex`
+  is not on PATH but ChatGPT.app is installed, unsnooze resolves the
+  app-bundled binary (`ChatGPT.app/Contents/Resources/codex`) for wrappers,
+  wizard detection, and revival. Rollouts older than 7 days are now
+  zstd-compressed by codex; irrelevant for detection (freshness window is
+  minutes) but noted for `unsnooze report` archaeology.
 - Added a dual tmux/Zellij multiplexer backend. The new `multiplexer` setting
   accepts `auto`, `tmux`, or `zellij`; status output identifies the backend,
   qualified pane address, and revival session. Zellij revival uses structured
