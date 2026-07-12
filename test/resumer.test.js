@@ -42,6 +42,40 @@ test('pane-less record with env → reopened with structured environment', async
   assert.equal(windows[0].command.env.CLAUDE_CONFIG_DIR, '/tmp/sandbox/.claude');
 });
 
+test('reopen environment contains only record env and unsnooze control vars', async () => {
+  process.env.SECRET_API_KEY = 'must-not-leak';
+  process.env.UNRELATED_DAEMON_SETTING = 'must-not-leak-either';
+  try {
+    const rec = seed({
+      pane: null,
+      agent: 'codex',
+      env: {
+        CLAUDE_CONFIG_DIR: '/tmp/sandbox/.claude',
+        CLAUDE_SECURESTORAGE_CONFIG_DIR: '',
+      },
+    });
+    let launchSpec;
+    const mux = {
+      newWindow: async (_session, _cwd, spec) => {
+        launchSpec = spec;
+        return { pane: '%177', paneOwner: null };
+      },
+    };
+
+    assert.equal(await dispatchOne(rec, { mux }), 'reopen');
+    assert.deepEqual(launchSpec.env, {
+      CLAUDE_CONFIG_DIR: '/tmp/sandbox/.claude',
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: '',
+      UNSNOOZE_MUX: 'tmux',
+      UNSNOOZE_PANE_OWNER: 'unsnooze-test',
+      UNSNOOZE_LEASE_ID: launchSpec.env.UNSNOOZE_LEASE_ID,
+    });
+  } finally {
+    delete process.env.SECRET_API_KEY;
+    delete process.env.UNRELATED_DAEMON_SETTING;
+  }
+});
+
 test('record with cwd null → reopened in the home dir, not a newWindow crash', async () => {
   const rec = seed({ pane: null, agent: 'codex', cwd: null });
   const windows = [];
@@ -82,6 +116,23 @@ test('live but busy pane → deferred, nothing sent', async () => {
   };
   assert.equal(await dispatchOne(rec, { mux: tmux }), 'busy');
   assert.equal(sent.length, 0);
+});
+
+test('alive foreground agent with unrecognized content defers instead of reopening', async () => {
+  const rec = seed({ pane: '%111' });
+  let opened = false;
+  const mux = {
+    paneAlive: async () => true,
+    paneCurrentCommand: async () => 'claude',
+    capturePane: async () => '',
+    newWindow: async () => {
+      opened = true;
+      throw new Error('must not reopen an owned live pane');
+    },
+  };
+
+  assert.equal(await dispatchOne(rec, { mux, matchesLease: async () => false }), 'busy');
+  assert.equal(opened, false);
 });
 
 test('dead pane → reopened via new tmux window with --resume <id>', async () => {
@@ -304,6 +355,37 @@ test('verifyOne: clean pane → resumed', async () => {
   assert.equal(readState().sessions[rec.key].status, 'resumed');
 });
 
+test('verifyOne: pane-less resuming record returns to stopped after three persisted retries', async () => {
+  const rec = seed({ pane: null, attempts: 1, lastError: 'reopen interrupted' });
+  setStatus(rec.key, 'resuming');
+
+  assert.equal(await verifyOne(rec.key), 'retry');
+  assert.equal(readState().sessions[rec.key].verifyRetries, 1);
+  assert.equal(await verifyOne(rec.key), 'retry');
+  assert.equal(readState().sessions[rec.key].verifyRetries, 2);
+  assert.equal(await verifyOne(rec.key), 'retry');
+
+  const saved = readState().sessions[rec.key];
+  assert.equal(saved.status, 'stopped');
+  assert.equal(saved.attempts, 2);
+  assert.equal(saved.verifyRetries, 0);
+  assert.equal(saved.lastError, 'verify: pane unavailable');
+});
+
+test('verifyOne: successful verification resets the persisted retry counter', async () => {
+  const rec = seed({ pane: '%115' });
+  setStatus(rec.key, 'resuming', { verifyRetries: 2, lastError: 'verify capture: transient' });
+
+  assert.equal(await verifyOne(rec.key, {
+    resolveMux: () => ({ capturePane: async () => 'working normally' }),
+  }), 'resumed');
+
+  const saved = readState().sessions[rec.key];
+  assert.equal(saved.status, 'resumed');
+  assert.equal(saved.verifyRetries, 0);
+  assert.equal(saved.lastError, null);
+});
+
 const WS_BEFORE = { head: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', dirtyHash: 'd1' };
 const WS_AFTER  = { head: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', dirtyHash: 'd1' };
 
@@ -391,7 +473,7 @@ test('ordered injection: capture failure retries before any command or injection
   assert.equal(commandLookups, 0);
 });
 
-test('ordered injection: authorized menu drives only menu keys and retries', async () => {
+test('ordered injection: successful menu drive makes progress without consuming an attempt', async () => {
   const rec = seed({ pane: '%41' });
   const sent = [];
   const result = await dispatchOne(rec, {
@@ -403,8 +485,12 @@ test('ordered injection: authorized menu drives only menu keys and retries', asy
     },
     matchesLease: async () => false,
   });
-  assert.equal(result, 'retry');
+  assert.equal(result, 'progress');
   assert.deepEqual(sent, ['Down', 'Enter']);
+  routeDispatchOutcome(result, rec, new Map());
+  const saved = readState().sessions[rec.key];
+  assert.equal(saved.status, 'stopped');
+  assert.equal(saved.attempts, 0);
 });
 
 test('ordered injection: authorized menu with toggle off is held', async () => {

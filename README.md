@@ -225,7 +225,7 @@ all timings/paths are tunable via `UNSNOOZE_*` env vars (see `src/config.js`).
 
 ## Requirements
 
-- Node ≥ 20 and tmux **or** Zellij
+- Node ≥ 20 and tmux ≥ 3.2 **or** Zellij
 - macOS, Linux, or **Windows via WSL** (see below)
 - zsh or bash (the wrappers are installed into `~/.zshrc` / `~/.bashrc`)
 

@@ -26,6 +26,7 @@ import { createLeaseId, leaseMatches } from './lease.js';
 
 const log = makeLogger('resumer');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const MAX_VERIFY_RETRIES = 3;
 
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -68,10 +69,7 @@ export function resolveRecordMux(rec) {
 }
 
 function reopenEnv(rec, leaseId) {
-  const env = Object.fromEntries(Object.entries({ ...process.env, ...(rec.env || {}) })
-    .filter(([key]) => !key.startsWith('UNSNOOZE_PANE')
-      && key !== 'UNSNOOZE_MUX' && key !== 'UNSNOOZE_LEASE_ID'
-      && key !== 'UNSNOOZE_ACTIVE'));
+  const env = { ...(rec.env || {}) };
   env.UNSNOOZE_MUX = rec.mux;
   if (rec.muxSession) env.UNSNOOZE_PANE_OWNER = rec.muxSession;
   env.UNSNOOZE_LEASE_ID = leaseId;
@@ -87,7 +85,7 @@ async function driveMenu(mux, pane, agent, text) {
   return true;
 }
 
-// Ordered safety decision. Returns: busy | retry | held | injected | reopen.
+// Ordered safety decision. Returns: busy | retry | progress | held | injected | reopen.
 export async function dispatchOne(rec, {
   mux = resolveRecordMux(rec), resolveMux = null,
   resumeMessage, selfCmd = selfCommand(), fingerprint = workspaceFingerprint,
@@ -137,20 +135,27 @@ export async function dispatchOne(rec, {
     catch (err) { log(`${key}: pane command lookup failed: ${err.message}`); }
     const contentOwned = menu || d.hit || agent.patterns.idleRegex.test(text);
     const leased = await matchesLease(rec, { mux });
-    const authorized = leased || (agent.isForegroundCommand(cmd) && contentOwned);
+    const owned = leased || agent.isForegroundCommand(cmd);
+    const authorized = owned && contentOwned;
 
     if (menu) {
       if (!authorized) return reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd });
       if (!getConfig('menuAutoAnswer')) return 'held';
-      await driveMenu(mux, rec.pane, agent, text);
+      try {
+        if (await driveMenu(mux, rec.pane, agent, text)) return 'progress';
+        setStatus(key, 'stopped', { lastError: 'menu drive: wait option unavailable' });
+      } catch (err) {
+        setStatus(key, 'stopped', { lastError: `menu drive: ${err.message}` });
+      }
       return 'retry';
     }
     if (authorized) {
-      setStatus(key, 'resuming', { lastAttemptAt: Date.now(), lastError: null });
+      setStatus(key, 'resuming', { lastAttemptAt: Date.now(), lastError: null, verifyRetries: 0 });
       await mux.sendText(rec.pane, resumeMessage);
       log(`${key}: sent continue via ${rec.mux} ${rec.paneOwner ?? '-'}:${rec.pane}`);
       return 'injected';
     }
+    if (owned) return 'busy';
   }
 
   return reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd });
@@ -164,13 +169,17 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd }) {
     file: selfCmd[0], args: [...selfCmd.slice(1), '_run', agent.id, ...resume.args],
     env: reopenEnv(rec, leaseId),
   };
-  setStatus(key, 'resuming', { lastAttemptAt: Date.now() });
+  setStatus(key, 'resuming', { lastAttemptAt: Date.now(), verifyRetries: 0 });
   let address;
   try {
     address = await mux.newWindow(rec.muxSession ?? rec.tmuxSession ?? MUX_SESSION_NAME,
       rec.cwd || homedir(), launchSpec);
   } catch (err) {
-    setStatus(key, 'stopped', { attempts: (rec.attempts || 0) + 1, lastError: `new-window: ${err.message}` });
+    setStatus(key, 'stopped', {
+      attempts: (rec.attempts || 0) + 1,
+      lastError: `new-window: ${err.message}`,
+      verifyRetries: 0,
+    });
     return 'retry';
   }
   updateState(state => {
@@ -203,7 +212,25 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd }) {
       return 'reopen';
     }
   }
-  setStatus(key, 'stopped', { attempts: (rec.attempts || 0) + 1, lastError: 'ready timeout' });
+  setStatus(key, 'stopped', {
+    attempts: (rec.attempts || 0) + 1,
+    lastError: 'ready timeout',
+    verifyRetries: 0,
+  });
+  return 'retry';
+}
+
+function recordVerifyRetry(rec, lastError) {
+  const verifyRetries = (rec.verifyRetries || 0) + 1;
+  if (verifyRetries >= MAX_VERIFY_RETRIES) {
+    setStatus(rec.key, 'stopped', {
+      attempts: (rec.attempts || 0) + 1,
+      lastError,
+      verifyRetries: 0,
+    });
+  } else {
+    setStatus(rec.key, 'resuming', { lastError, verifyRetries });
+  }
   return 'retry';
 }
 
@@ -213,15 +240,13 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
   if (!rec || rec.status !== 'resuming') return;
   const agent = getAgent(rec.agent);
   if (!rec.pane) {
-    setStatus(key, 'resuming', { lastError: 'verify: pane unavailable' });
-    return 'retry';
+    return recordVerifyRetry(rec, 'verify: pane unavailable');
   }
   const mux = resolveMux(rec);
   let text;
   try { text = await mux.capturePane(rec.pane, CAPTURE_LINES); }
   catch (err) {
-    setStatus(key, 'resuming', { lastError: `verify capture: ${err.message}` });
-    return 'retry';
+    return recordVerifyRetry(rec, `verify capture: ${err.message}`);
   }
   const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
   if (d.hit || (agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES))) {
@@ -231,12 +256,12 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
     });
     setStatus(key, 'stopped', {
       attempts: (rec.attempts || 0) + 1, resetAt: at, resetSource: source,
-      lastError: 'limit still active at resume time',
+      lastError: 'limit still active at resume time', verifyRetries: 0,
     });
     log(`${key}: limit still active, rescheduled to ${new Date(at).toISOString()}`);
     return;
   }
-  setStatus(key, 'resumed');
+  setStatus(key, 'resumed', { lastError: null, verifyRetries: 0 });
   log(`${key}: verified resumed`);
   const fromGui = rec.origin && rec.origin !== 'cli';
   notify('unsnoozed ✅', `${rec.cwd} is running again${fromGui ? ` (was in ${rec.origin} — revived in ${rec.mux})` : ''}`);
@@ -248,7 +273,7 @@ export function routeDispatchOutcome(result, rec, deferCounts, { maxBusyDefers =
     const n = (deferCounts.get(rec.key) || 0) + 1;
     deferCounts.set(rec.key, n);
     if (n > maxBusyDefers) {
-      setStatus(rec.key, 'resumed', { lastError: null });
+      setStatus(rec.key, 'resumed', { lastError: null, verifyRetries: 0 });
       return { verify: false, waitBusy: false };
     }
     return { verify: false, waitBusy: true };
@@ -256,8 +281,13 @@ export function routeDispatchOutcome(result, rec, deferCounts, { maxBusyDefers =
   if (result === 'retry') {
     setStatus(rec.key, 'stopped', {
       attempts: (rec.attempts || 0) + 1,
-      lastError: readState().sessions[rec.key]?.lastError || 'retry requested',
+      lastError: readState().sessions[rec.key]?.lastError,
+      verifyRetries: 0,
     });
+    return { verify: false, waitBusy: false };
+  }
+  if (result === 'progress') {
+    setStatus(rec.key, 'stopped', { lastError: null, verifyRetries: 0 });
     return { verify: false, waitBusy: false };
   }
   if (result === 'held') return { verify: false, waitBusy: false };
@@ -305,7 +335,7 @@ export async function runResumer({
       // Anything over the attempts cap is dead — mark failed so we can exit.
       for (const s of dueForDispatch()) {
         if ((s.attempts || 0) >= MAX_RESUME_ATTEMPTS) {
-          setStatus(s.key, 'failed', { lastError: 'max resume attempts exceeded' });
+          setStatus(s.key, 'failed', { lastError: 'max resume attempts exceeded', verifyRetries: 0 });
           log(`${s.key}: giving up after ${s.attempts} attempts`);
           notify('unsnooze gave up ⚠️', `${s.cwd}: ${s.attempts} resume attempts failed — check \`unsnooze status\``);
         }

@@ -85,7 +85,10 @@ export function createZellij({ spawner = defaultSpawner, env = process.env } = {
         return env.ZELLIJ_PANE_ID || null;
       },
 
-      async capturePane(pane) {
+      // v1 limitation: dump-screen is viewport-only, so `lines` is ignored;
+      // unlike tmux, a banner/menu that scrolls away between polls is missed.
+      // `dump-screen --full` may provide a future scrollback-capable option.
+      async capturePane(pane, _lines = 200) {
         return owned('action', 'dump-screen', '--pane-id', String(pane));
       },
 

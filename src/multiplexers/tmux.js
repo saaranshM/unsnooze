@@ -94,6 +94,8 @@ export function createTmux({ spawner = defaultSpawner, env = process.env } = {})
     },
 
     async newWindow(sessionName, cwd, launchSpec) {
+      // Environment flags require tmux >= 3.0 for new-window and >= 3.2 for
+      // new-session. Older tmux fails revival with an "unknown flag -e" error.
       const launch = [...envArgs(launchSpec.env), launchSpec.file, ...(launchSpec.args || [])];
       let pane;
       if (!(await backend.sessionExists(sessionName))) {
@@ -109,6 +111,8 @@ export function createTmux({ spawner = defaultSpawner, env = process.env } = {})
     launchWrapped(launchSpec) {
       // A foreground, single-pane session disappears with the agent. Keeping
       // tmux in the foreground also gives Ctrl-C to the active pane directly.
+      // Its -e environment flags require tmux >= 3.2; older versions fail
+      // revival with an "unknown flag -e" error.
       const args = ['new-session', '-s', wrappedSessionName(env),
         ...envArgs(launchSpec.env), launchSpec.file, ...(launchSpec.args || [])];
       const result = spawner('tmux', args, { sync: true, stdio: 'inherit', env });
