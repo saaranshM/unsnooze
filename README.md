@@ -12,7 +12,7 @@
 **Claude Code · Codex CLI · Grok · Qwen · Kimi · OpenCode · Antigravity** — when they hit the 5-hour or weekly usage limit
 ("You've hit your usage limit"), your session just… stops.<br/>
 unsnooze auto-resumes them: it tracks **every** limit-stopped session across all
-your projects and **wakes each one up in tmux the moment the usage limit resets.**
+your projects and **wakes each one up in tmux or Zellij the moment the usage limit resets.**
 
 ```sh
 npm install -g unsnooze && unsnooze setup
@@ -40,7 +40,7 @@ existing tool solves only a slice of it:
 ## Supported CLIs
 
 - **Claude Code** — dual-channel detection: the `StopFailure` hook (authoritative,
-  carries `session_id`) plus tmux pane scraping for banners and the interactive
+  carries `session_id`) plus multiplexer pane scraping for banners and the interactive
   limit menu (always answered with *"Stop and wait for limit to reset"*, never a
   blind Enter). Dead sessions revive via `claude --resume <id>`.
 - **OpenAI Codex CLI** — scrape-based (Codex fires no event on limits). Detects
@@ -92,7 +92,7 @@ surfaced as a notification — there's no reset to wait for, only a top-up.
 
 ## GUI surfaces (VS Code extension, desktop apps)
 
-Terminal sessions are watched through the shell wrapper + tmux. Sessions in
+Terminal sessions are watched through the shell wrapper + tmux or Zellij. Sessions in
 **Claude Code's VS Code extension / desktop app** and **Codex's IDE
 extension / desktop app** have no pane to scrape — so `unsnooze daemon` tails
 the session files those surfaces already write:
@@ -109,7 +109,7 @@ the session files those surfaces already write:
   (plus the keychain-scope override that keeps auth working — verified
   against a real desktop session).
 
-When the limit resets, the session is revived **in a tmux window** with
+When the limit resets, the session is revived **in a multiplexer pane** with
 `claude --resume <id>` / `codex resume <id>` — it's the same session file, so
 the continued conversation stays visible in the GUI's own history. (Resuming
 *inside* the GUI panel isn't possible today: no extension/app exposes an
@@ -129,7 +129,7 @@ anytime with `unsnooze config set guiWatch off`.
 <summary>text version</summary>
 
 ```
-claude / codex / grok (shell wrapper) ──► unsnooze _run <agent> ──► CLI in tmux pane
+claude / codex / grok (shell wrapper) ──► unsnooze _run <agent> ──► CLI in mux pane
                                               │
                                               ├─ per-pane monitor (scrapes for limit
                                               │  banners, drives Claude's limit menu,
@@ -146,7 +146,7 @@ StopFailure hook (claude, grok) ──────────────┤
                                               │
                           ┌───────────────────┴────────────────────┐
                  pane still alive?                          pane gone?
-                 send resume message into it                tmux new-window,
+                 send resume message into it                new multiplexer pane,
                  (only if the CLI is foreground             `unsnooze _run <agent>
                  and not mid-stream)                        --resume <id>`, verify
 ```
@@ -184,6 +184,7 @@ unsnooze help                   # full command list (also -h / --help)
 
 | key | default | meaning |
 |---|---|---|
+| `multiplexer` | `auto` | Backend to use: `auto`, `tmux`, or `zellij`. `auto` prefers the current multiplexer, then the only installed backend, with tmux as the tie-breaker. |
 | `autoResume` | `true` | Master switch. Off = stops are still tracked, but nothing is resumed until you run `unsnooze resume-now` or turn it back on. |
 | `menuAutoAnswer` | `true` | May unsnooze answer Claude's limit menu (send keys in your pane)? Off = watch-only. |
 | `notifications` | `true` | Desktop notification on limit detected / session resumed / gave up. |
@@ -224,26 +225,31 @@ all timings/paths are tunable via `UNSNOOZE_*` env vars (see `src/config.js`).
 
 ## Requirements
 
-- Node ≥ 20 and tmux
+- Node ≥ 20 and tmux ≥ 3.2 **or** Zellij
 - macOS, Linux, or **Windows via WSL** (see below)
 - zsh or bash (the wrappers are installed into `~/.zshrc` / `~/.bashrc`)
 
 ### Windows / WSL
 
-unsnooze is built on tmux, so on Windows it runs inside
+tmux and Zellij are Unix tools, so on Windows unsnooze runs inside
 [WSL](https://learn.microsoft.com/windows/wsl/install) — which is where the
 agent CLIs live on Windows anyway:
 
 ```sh
 # inside your WSL distro (Ubuntu etc.)
-sudo apt install tmux
+sudo apt install tmux             # or install Zellij: https://zellij.dev/documentation/installation
 npm install -g unsnooze && unsnooze setup
 ```
+
+On macOS, install either backend with `brew install tmux` or
+`brew install zellij`. In `auto` mode unsnooze uses the multiplexer you are
+currently inside; choose one explicitly with
+`unsnooze config set multiplexer tmux` or `zellij`.
 
 Everything works as on Linux, including desktop notifications: inside WSL,
 unsnooze raises **native Windows toasts** through `powershell.exe` (no
 `notify-send` or X server needed). Native Windows (PowerShell/cmd, no WSL) is
-not supported — without tmux there is nothing to watch; unsnooze will tell you
+not supported — without tmux or Zellij there is no terminal pane to watch; unsnooze will tell you
 so and run your CLI unwatched instead of breaking it.
 
 ## FAQ
@@ -289,7 +295,7 @@ disable the check.
 
 Yes — reset times are stored as absolute timestamps and checked every 30
 seconds, so a laptop that slept through the reset resumes on the next tick,
-and dead panes are reopened by session id in a fresh tmux window.
+and dead panes are reopened by session id in a fresh multiplexer pane.
 
 ## Development
 
@@ -297,6 +303,7 @@ and dead panes are reopened by session id in a fresh tmux window.
 npm test                     # unit tests (node:test)
 ./scripts/e2e-simulate.sh    # full detect → wait → re-open cycle in a
                              # scratch tmux session (no real limits needed)
+bash -n scripts/e2e-zellij.sh # syntax-check the reserved-session Zellij smoke test
 ```
 
 ## License

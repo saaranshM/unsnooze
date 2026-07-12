@@ -208,7 +208,7 @@ export function installDaemonAutostart({ platform = process.platform, dir = null
     activate('systemctl', ['--user', 'enable', '--now', 'unsnooze.service']);
     return target;
   }
-  return null;   // native Windows: no tmux to revive into — daemon unsupported
+  return null;   // native Windows: no supported multiplexer to revive into
 }
 
 export function uninstallDaemonAutostart({ platform = process.platform, dir = null, activate = defaultActivate } = {}) {

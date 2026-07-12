@@ -6,15 +6,16 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { EVENTS_DIR, FALLBACK_RESET_MS, RESET_MARGIN_MS, CAPTURE_LINES, PANE_SCAN_LINES, TMUX_SESSION_NAME } from './config.js';
+import { EVENTS_DIR, FALLBACK_RESET_MS, RESET_MARGIN_MS, CAPTURE_LINES, PANE_SCAN_LINES, MUX_SESSION_NAME } from './config.js';
 import { detectLimit } from './patterns.js';
 import { getAgent } from './agents/index.js';
 import { getConfig } from './settings.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { upsertSession } from './state.js';
-import { capturePane } from './tmux.js';
+import { getMultiplexer } from './multiplexer.js';
 import { spawnResumerIfNeeded } from './spawn.js';
 import { makeLogger } from './logger.js';
+import { addressHash } from './lease.js';
 
 const log = makeLogger('hook');
 
@@ -44,7 +45,16 @@ export async function runHook(rest = []) {
     let payload = {};
     try { payload = JSON.parse(raw); } catch { /* tolerate non-JSON */ }
 
-    const pane = process.env.TMUX_PANE || payload.tmux_pane || null;
+    const managedMux = process.env.UNSNOOZE_MUX;
+    const muxName = managedMux || (process.env.ZELLIJ_PANE_ID ? 'zellij' : 'tmux');
+    const pane = managedMux
+      ? (process.env.UNSNOOZE_PANE || null)
+      : (muxName === 'zellij' ? process.env.ZELLIJ_PANE_ID : process.env.TMUX_PANE || payload.tmux_pane) || null;
+    const paneOwner = muxName === 'zellij'
+      ? (managedMux ? process.env.UNSNOOZE_PANE_OWNER : process.env.ZELLIJ_SESSION_NAME) || null
+      : null;
+    const leaseId = process.env.UNSNOOZE_LEASE_ID || null;
+    const mux = getMultiplexer(muxName, { owner: paneOwner });
     const kind = classify(payload, raw);
     log(`StopFailure: kind=${kind} pane=${pane} session=${payload.session_id || '?'}`);
 
@@ -53,8 +63,8 @@ export async function runHook(rest = []) {
       // record in state.json.
       if (pane) {
         mkdirSync(EVENTS_DIR, { recursive: true });
-        writeFileSync(join(EVENTS_DIR, `${pane.replace(/[^%\w]/g, '_')}.json`),
-          JSON.stringify({ pane, kind, at: Date.now(), payload: { error: payload.error ?? null } }));
+        writeFileSync(join(EVENTS_DIR, `${addressHash({ mux: muxName, paneOwner, pane })}.json`),
+          JSON.stringify({ mux: muxName, paneOwner, pane, kind, at: Date.now(), payload: { error: payload.error ?? null } }));
       }
       return 0;
     }
@@ -66,7 +76,7 @@ export async function runHook(rest = []) {
     let limitType = 'unknown';
     if (pane) {
       try {
-        const text = await capturePane(pane, CAPTURE_LINES);
+        const text = await mux.capturePane(pane, CAPTURE_LINES);
         const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
         if (d.hit) { resetLine = d.resetLine; limitType = d.limitType; }
       } catch { /* pane not capturable (no tmux) — fall back below */ }
@@ -83,9 +93,12 @@ export async function runHook(rest = []) {
       sessionId: sessionId || null,
       cwd,
       pane,
+      mux: muxName,
+      paneOwner,
+      leaseId,
       agent: agent.id,
       origin: 'cli',   // the hook only fires for CLI launches we can see
-      tmuxSession: TMUX_SESSION_NAME,
+      muxSession: MUX_SESSION_NAME,
       status: 'stopped',
       limitType,
       detectedVia: 'hook',

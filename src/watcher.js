@@ -18,8 +18,9 @@ import { join, sep, basename, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import {
   CLAUDE_DIR, CODEX_DIR, WATCH_OFFSETS_FILE, WATCH_FRESHNESS_MS,
-  RESET_MARGIN_MS, FALLBACK_RESET_MS, TMUX_SESSION_NAME,
+  RESET_MARGIN_MS, FALLBACK_RESET_MS, MUX_SESSION_NAME,
 } from './config.js';
+import { getMultiplexer } from './multiplexer.js';
 import { parseTranscriptLine } from './watchers/claude.js';
 import { parseRolloutLine, rolloutMeta } from './watchers/codex.js';
 import { ROLLOUT_RE } from './agents/codex.js';
@@ -177,7 +178,8 @@ export function dispatchCandidate(c) {
     cwd: c.cwd || null,
     agent: c.agent,
     origin: c.origin || null,
-    tmuxSession: TMUX_SESSION_NAME,
+    mux: getMultiplexer().name, paneOwner: null, leaseId: null,
+    muxSession: MUX_SESSION_NAME,
     status: 'stopped',
     limitType: c.limitType || 'unknown',
     detectedVia: 'transcript',

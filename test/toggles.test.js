@@ -41,7 +41,7 @@ function fakeTmux(script) {
 
 function seedStopped(pane, extra = {}) {
   const state = upsertSession({
-    sessionId: null, cwd: '/tmp/x', pane, tmuxSession: 'unsnooze-test',
+    sessionId: null, cwd: '/tmp/x', pane, mux: 'tmux', paneOwner: null, muxSession: 'unsnooze-test',
     status: 'stopped', limitType: '5h', detectedVia: 'scrape',
     detectedAt: Date.now() - 3_600_000, resetAt: Date.now() - 1000,
     resetSource: 'absolute', attempts: 0, lastAttemptAt: null, lastError: null,
@@ -53,7 +53,7 @@ function seedStopped(pane, extra = {}) {
 test('menuAutoAnswer off → menu NOT driven, stop still recorded', async () => {
   process.env.UNSNOOZE_MENU_AUTO_ANSWER = 'off';
   const tmux = fakeTmux({ text: MENU });
-  const monitor = createMonitor({ pane: '%70', cwd: '/tmp/proj-menu', tmux });
+  const monitor = createMonitor({ pane: '%70', cwd: '/tmp/proj-menu', mux: tmux });
   await monitor._tick();
   assert.equal(tmux.sent.length, 0, 'no keys may be sent when the toggle is off');
   const recs = Object.values(readState().sessions).filter(s => s.pane === '%70');
@@ -63,7 +63,7 @@ test('menuAutoAnswer off → menu NOT driven, stop still recorded', async () => 
 
 test('menuAutoAnswer on (default) → menu driven as before', async () => {
   const tmux = fakeTmux({ text: MENU });
-  const monitor = createMonitor({ pane: '%71', cwd: '/tmp/proj-menu2', tmux });
+  const monitor = createMonitor({ pane: '%71', cwd: '/tmp/proj-menu2', mux: tmux });
   await monitor._tick();
   assert.deepEqual(tmux.sent.map(s => s.key), ['Down', 'Enter']);
 });

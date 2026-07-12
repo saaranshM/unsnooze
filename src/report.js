@@ -3,7 +3,7 @@
 // Build users can contribute real limit-banner text (the patterns for grok
 // are generic until someone shows us the actual banner).
 
-import { capturePane, currentPaneId } from './tmux.js';
+import { getMultiplexer } from './multiplexer.js';
 import { stripAnsi } from './patterns.js';
 
 export const REPO_URL = 'https://github.com/saaranshM/unsnooze';
@@ -25,14 +25,21 @@ export function buildIssueUrl(agentId, captureText) {
 
 export async function cmdReport(rest) {
   const [agentId = 'grok', paneArg] = rest;
-  const pane = paneArg || currentPaneId();
+  const selected = getMultiplexer();
+  let paneOwner = selected.name === 'zellij'
+    ? (process.env.UNSNOOZE_PANE_OWNER || process.env.ZELLIJ_SESSION_NAME || null) : null;
+  let pane = paneArg || selected.currentPaneId();
+  if (paneArg && selected.name === 'zellij' && paneArg.includes(':')) {
+    [paneOwner, pane] = paneArg.split(/:(.*)/s, 2);
+  }
   if (!pane) {
-    console.error('unsnooze report: no pane (run inside tmux or pass a pane id, e.g. %3)');
+    console.error('unsnooze report: no pane (run inside a multiplexer or pass %3 / owner:3)');
     return 2;
   }
+  const mux = getMultiplexer(selected.name, { owner: paneOwner });
   let text;
   try {
-    text = stripAnsi(await capturePane(pane, 200));
+    text = stripAnsi(await mux.capturePane(pane, 200));
   } catch (err) {
     console.error(`unsnooze report: cannot capture pane ${pane}: ${err.message}`);
     return 1;

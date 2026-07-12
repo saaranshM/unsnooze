@@ -69,9 +69,9 @@ async function main() {
       return runHook(rest);
     }
     case '_monitor': {
-      if (!rest[0]) { console.error('unsnooze _monitor: pane id required'); return 2; }
+      if (!rest[0] || !rest[2]) { console.error('unsnooze _monitor: mux owner pane required'); return 2; }
       const { runMonitor } = await import('../src/monitor.js');
-      return runMonitor(rest[0], rest[1]);
+      return runMonitor(rest[0], rest[1], rest[2], rest[3], rest[4]);
     }
     case '_run': {
       if (!rest[0]) { console.error('unsnooze _run: agent id required'); return 2; }
@@ -93,7 +93,7 @@ async function main() {
     case 'daemon': {
       // Persistent resumer + transcript watcher: detects and revives limit
       // stops from GUI surfaces (VS Code extension, desktop apps) where no
-      // shell wrapper or tmux pane exists. Run via launchd/systemd or a shell.
+      // shell wrapper or multiplexer pane exists. Run via launchd/systemd or a shell.
       const { runResumer } = await import('../src/resumer.js');
       const { createWatcher } = await import('../src/watcher.js');
       const controller = new AbortController();
@@ -122,8 +122,8 @@ Usage:
   unsnooze logs [-f]               show (or follow) the unsnooze log
   unsnooze update                  update unsnooze itself to the latest version
   unsnooze daemon                  persistent watcher for GUI sessions (VS Code
-                                   extension, desktop apps) — no tmux needed to
-                                   detect; revival still opens in tmux
+                                   extension, desktop apps) — no live pane needed
+                                   to detect; revival opens in tmux or Zellij
   unsnooze config [list|get|set]   view or change settings (toggles, global +
                                    per-agent resume messages, updateCheck)
   unsnooze setup                   interactive setup wizard (agents + toggles)

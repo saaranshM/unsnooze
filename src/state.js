@@ -15,6 +15,7 @@ import {
 } from './config.js';
 import { workspaceFingerprint } from './workspace.js';
 import { makeLogger } from './logger.js';
+import { addressHash } from './lease.js';
 
 const log = makeLogger('state');
 
@@ -53,7 +54,7 @@ function releaseLock() {
 
 export function readState() {
   try {
-    return JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
+    return normalizeState(JSON.parse(readFileSync(STATE_FILE, 'utf-8')));
   } catch (err) {
     if (err.code === 'ENOENT') return EMPTY();
     // Corrupt file: quarantine loudly, start fresh — never crash the hook path.
@@ -64,6 +65,20 @@ export function readState() {
     } catch { /* someone else quarantined it first */ }
     return EMPTY();
   }
+}
+
+function normalizeState(state) {
+  if (!state || typeof state !== 'object') return EMPTY();
+  state.sessions ||= {};
+  for (const rec of Object.values(state.sessions)) normalizeRecord(rec);
+  return state;
+}
+
+function normalizeRecord(rec) {
+  if (!rec.mux) rec.mux = 'tmux';
+  if (!rec.muxSession && rec.tmuxSession) rec.muxSession = rec.tmuxSession;
+  if (rec.mux === 'tmux' && rec.paneOwner === undefined) rec.paneOwner = null;
+  return rec;
 }
 
 // Locked read-modify-write. mutator receives the state object and mutates it
@@ -87,11 +102,14 @@ export function updateState(mutator) {
 // if a record for the same pane was created within DEDUPE_WINDOW_MS, merge into
 // it (a record WITH a sessionId wins over one without).
 export function upsertSession(record) {
+  record = normalizeRecord({ ...record });
   return updateState(state => {
     prune(state);
     const existingKey = findDuplicate(state, record);
     if (existingKey) {
       const existing = state.sessions[existingKey];
+      const staleBanner = existing.status === 'resumed' && !existing.bannerCleared
+        && record.status === 'stopped';
       const merged = {
         ...existing,
         ...record,
@@ -99,7 +117,11 @@ export function upsertSession(record) {
         sessionId: record.sessionId || existing.sessionId,
         // A detection that races an in-flight resume must not flip the record
         // back to 'stopped' — the post-resume verify pass owns that outcome.
-        status: existing.status === 'resuming' ? existing.status : record.status,
+        status: existing.status === 'resuming'
+          || staleBanner
+          ? existing.status : record.status,
+        attempts: staleBanner ? existing.attempts : record.attempts,
+        lastAttemptAt: staleBanner ? existing.lastAttemptAt : record.lastAttemptAt,
         key: existingKey,
       };
       state.sessions[existingKey] = merged;
@@ -111,7 +133,7 @@ export function upsertSession(record) {
     if (record.status === 'stopped' && record.workspace === undefined) {
       record.workspace = workspaceFingerprint(record.cwd);
     }
-    const key = record.sessionId || `pane:${record.pane}:${record.detectedAt}`;
+    const key = record.sessionId || `pane:${addressHash(record)}:${record.detectedAt}`;
     state.sessions[key] = { ...record, key };
     return state;
   });
@@ -126,8 +148,9 @@ function findDuplicate(state, record) {
     // 'resuming' counts too: while the resumer types into a pane, a scrape can
     // still see the banner for a few hundred ms — that must not fork a second
     // record (it would double-resume the session).
-    if (s.pane && s.pane === record.pane
-      && (s.status === 'stopped' || s.status === 'resuming')
+    if (s.pane && record.pane && addressHash(s) === addressHash(record)
+      && (s.status === 'stopped' || s.status === 'resuming'
+        || (s.status === 'resumed' && !s.bannerCleared))
       && Math.abs((s.detectedAt || 0) - record.detectedAt) < DEDUPE_WINDOW_MS) {
       return key;
     }
@@ -138,7 +161,7 @@ function findDuplicate(state, record) {
     // writes the very transcript the watcher reads, so same-cwd evidence is
     // almost always the same session, and the alternative (two records) would
     // double-resume it.
-    if (record.sessionId && !s.sessionId
+    if (record.sessionId && !s.sessionId && (!record.pane || !s.pane)
       && s.agent === record.agent && s.cwd && s.cwd === record.cwd
       && s.status === 'stopped'
       && Math.abs((s.detectedAt || 0) - record.detectedAt) < DEDUPE_WINDOW_MS) {

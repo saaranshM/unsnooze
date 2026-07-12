@@ -17,7 +17,7 @@ after(() => rmSync(DIR, { recursive: true, force: true }));
 function seed(pane, extra = {}) {
   const state = upsertSession({
     sessionId: extra.sessionId ?? null, cwd: '/tmp/proj', pane,
-    agent: 'claude', tmuxSession: 'unsnooze-test', status: 'stopped',
+    agent: 'claude', mux: 'tmux', paneOwner: null, muxSession: 'unsnooze-test', status: 'stopped',
     limitType: '5h', detectedVia: 'scrape', detectedAt: Date.now() - 60_000,
     resetAt: Date.now() + 3_600_000, resetSource: 'absolute',
     attempts: 0, lastAttemptAt: null, lastError: null,
@@ -69,6 +69,15 @@ test('status output marks sessions with a custom message', () => {
   try { cmdStatus(); } finally { console.log = orig; }
   const out = lines.join('\n');
   assert.match(out, /msg: "run the deploy checklist"/);
+});
+
+test('status output shows the backend, qualified pane, and revival session', () => {
+  seed('1', { mux: 'zellij', paneOwner: 'main', muxSession: 'unsnooze-e2e' });
+  const lines = [];
+  const orig = console.log;
+  console.log = (...a) => lines.push(a.join(' '));
+  try { cmdStatus(); } finally { console.log = orig; }
+  assert.match(lines.join('\n'), /mux zellij · pane main:1 · session unsnooze-e2e/);
 });
 
 test('held sessions: status shows the marker, resume-now clears the hold', () => {

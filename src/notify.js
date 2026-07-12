@@ -49,6 +49,8 @@ export function notify(title, message, {
 } = {}) {
   try {
     if (!getConfig('notifications')) return;
+    const mux = process.env.UNSNOOZE_MUX
+      || (process.env.ZELLIJ ? 'zellij' : (process.env.TMUX ? 'tmux' : null));
     if (platform === 'darwin') {
       spawner('osascript', ['-e',
         `display notification ${appleScriptString(message)} with title ${appleScriptString(title)}`]);
@@ -56,7 +58,8 @@ export function notify(title, message, {
       powershellToast(spawner, title, message);
     } else if (platform === 'linux') {
       spawner('notify-send', ['-a', 'unsnooze', title, message]);
-    } else if (process.env.TMUX) {
+    // Zellij has no statusline-inject equivalent, so its fallback is intentionally a no-op.
+    } else if (mux === 'tmux' && process.env.TMUX) {
       spawner('tmux', ['display-message', `${title}: ${message}`]);
     }
   } catch { /* never let a notification break the caller */ }

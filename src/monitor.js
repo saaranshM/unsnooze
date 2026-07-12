@@ -10,11 +10,11 @@
 
 import { readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import * as realTmux from './tmux.js';
+import { getMultiplexer } from './multiplexer.js';
 import {
   SCRAPE_INTERVAL_MS, PANE_SCAN_LINES, CAPTURE_LINES, EVENTS_DIR,
   EVENT_MARKER_TTL_MS, OVERLOAD_BACKOFF_S, OVERLOAD_JITTER,
-  FALLBACK_RESET_MS, RESET_MARGIN_MS, TMUX_SESSION_NAME,
+  FALLBACK_RESET_MS, RESET_MARGIN_MS, MUX_SESSION_NAME,
 } from './config.js';
 import { detectLimit, isBusy, overloadMatch } from './patterns.js';
 import { getAgent } from './agents/index.js';
@@ -24,19 +24,24 @@ import { parseResetTime, resetAtMs } from './time-parser.js';
 import { upsertSession, setStatus, readState } from './state.js';
 import { spawnResumerIfNeeded } from './spawn.js';
 import { makeLogger } from './logger.js';
+import { addressHash } from './lease.js';
 
 const log = makeLogger('monitor');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = realTmux, scrapeInterval = SCRAPE_INTERVAL_MS, notifier = notify }) {
+export function createMonitor({
+  muxName = 'tmux', paneOwner = null, pane, leaseId = null, cwd,
+  agent = getAgent('claude'), mux = getMultiplexer(muxName, { owner: paneOwner }),
+  scrapeInterval = SCRAPE_INTERVAL_MS, notifier = notify,
+}) {
   let trackedKey = null;      // state key of the record we created
   let overloadAttempt = 0;
   let terminalNotified = false;   // one notification per terminal-error appearance
   let running = true;
 
   function markerPath() {
-    return join(EVENTS_DIR, `${pane.replace(/[^%\w]/g, '_')}.json`);
+    return join(EVENTS_DIR, `${addressHash({ mux: muxName, paneOwner, pane })}.json`);
   }
 
   function consumeMarker() {
@@ -57,13 +62,16 @@ export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = re
     });
     const sessionId = agent.latestSessionId(cwd, detectedAt);
     const state = upsertSession({
-      sessionId, cwd, pane, agent: agent.id, tmuxSession: TMUX_SESSION_NAME,
+      sessionId, cwd, pane, mux: muxName, paneOwner, leaseId,
+      agent: agent.id, muxSession: MUX_SESSION_NAME,
       status: 'stopped', limitType, detectedVia: via, detectedAt,
       resetAt: at, resetSource: source,
       attempts: 0, lastAttemptAt: null, lastError: null,
     });
     trackedKey = sessionId
-      || Object.values(state.sessions).find(s => s.pane === pane && s.status === 'stopped')?.key
+      || Object.values(state.sessions).find(s => s.mux === muxName
+        && s.paneOwner === paneOwner && s.pane === pane
+        && ['stopped', 'resuming', 'resumed'].includes(s.status))?.key
       || null;
     log(`pane ${pane}: limit recorded (${limitType}, via ${via}), resets ${new Date(at).toISOString()}`);
     notify(`${agent.name} hit a usage limit`, `${cwd} — auto-resume at ${new Date(at).toLocaleTimeString()}`);
@@ -78,10 +86,10 @@ export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = re
     }
     const key = steps > 0 ? 'Down' : 'Up';
     for (let i = 0; i < Math.abs(steps); i++) {
-      await tmux.sendKey(pane, key);
+      await mux.sendKey(pane, key);
       await sleep(120);
     }
-    await tmux.sendKey(pane, 'Enter');
+    await mux.sendKey(pane, 'Enter');
     log(`pane ${pane}: selected "Stop and wait for limit to reset" (${steps} steps)`);
     await sleep(1000);
     // After selection the TUI prints the limit banner — next scrape records it.
@@ -101,16 +109,16 @@ export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = re
     log(`pane ${pane}: overload — retry ${overloadAttempt}/${OVERLOAD_BACKOFF_S.length} in ${Math.round(wait / 1000)}s`);
     await sleep(wait);
     if (!running) return;
-    const text = await tmux.capturePane(pane, CAPTURE_LINES).catch(() => null);
+    const text = await mux.capturePane(pane, CAPTURE_LINES).catch(() => null);
     if (text === null) return;
     if (isBusy(text, agent.patterns.busyPatterns)) { log(`pane ${pane}: busy after overload wait — skip inject`); return; }
     if (!overloadMatch(text, agent.patterns.overloadPatterns)) { overloadAttempt = 0; return; }   // recovered on its own
-    await tmux.sendText(pane, 'Continue where you left off. The previous attempt failed with a transient API error.');
+    await mux.sendText(pane, 'Continue where you left off. The previous attempt failed with a transient API error.');
     log(`pane ${pane}: overload retry message sent`);
   }
 
   async function tick() {
-    if (!(await tmux.paneAlive(pane))) {
+    if (!(await mux.paneAlive(pane))) {
       log(`pane ${pane}: gone — monitor exiting (record persists for resumer)`);
       running = false;
       return;
@@ -119,7 +127,7 @@ export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = re
     const marker = consumeMarker();
     let text;
     try {
-      text = await tmux.capturePane(pane, CAPTURE_LINES);
+      text = await mux.capturePane(pane, CAPTURE_LINES);
     } catch {
       return;   // transient capture failure
     }
@@ -127,8 +135,8 @@ export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = re
     // Interactive menu takes priority — it blocks the session until answered.
     // Checked against the VISIBLE screen only: a menu in scrollback history
     // was already answered, and re-driving it would inject stray keys.
-    const visible = tmux.capturePaneVisible
-      ? await tmux.capturePaneVisible(pane).catch(() => '')
+    const visible = mux.capturePaneVisible
+      ? await mux.capturePaneVisible(pane).catch(() => '')
       : text;
     if (agent.menu && agent.menu.isPrompt(visible, PANE_SCAN_LINES)) {
       if (!getConfig('menuAutoAnswer')) {
@@ -177,10 +185,14 @@ export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = re
       const state = readState();
       const rec = state.sessions[trackedKey];
       if (rec && rec.status === 'stopped') {
-        setStatus(trackedKey, 'resumed', { lastAttemptAt: Date.now() });
+        setStatus(trackedKey, 'resumed', { lastAttemptAt: Date.now(), bannerCleared: true });
         log(`pane ${pane}: banner cleared, ${trackedKey} marked resumed`);
+        trackedKey = null;
       }
-      if (rec && rec.status !== 'stopped') trackedKey = null;
+      if (rec && rec.status === 'resumed') {
+        setStatus(trackedKey, 'resumed', { bannerCleared: true });
+        trackedKey = null;
+      } else if (rec && rec.status !== 'stopped') trackedKey = null;
     }
 
     // Overload marker (banner-less path).
@@ -206,9 +218,9 @@ export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = re
   };
 }
 
-export async function runMonitor(pane, agentId) {
+export async function runMonitor(muxName, paneOwner, pane, agentId, leaseId) {
   const cwd = process.env.UNSNOOZE_CWD || process.cwd();
-  const monitor = createMonitor({ pane, cwd, agent: getAgent(agentId) });
+  const monitor = createMonitor({ muxName, paneOwner: paneOwner || null, pane, leaseId, cwd, agent: getAgent(agentId) });
   await monitor.run();
   return 0;
 }

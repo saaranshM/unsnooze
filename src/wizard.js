@@ -24,11 +24,12 @@ function defaultWhich(bin) {
 export async function runWizard() {
   p.intro('unsnooze — wake every limit-stopped AI coding session automatically');
 
-  const { tmuxAvailable } = await import('./tmux.js');
-  if (!tmuxAvailable()) {
+  const { getMultiplexer } = await import('./multiplexer.js');
+  const mux = getMultiplexer();
+  if (!mux.available()) {
     p.log.warn(process.platform === 'win32'
-      ? 'tmux not found — unsnooze does not support native Windows.\nRun it inside WSL (https://learn.microsoft.com/windows/wsl/install), where tmux and the wrappers work normally.'
-      : 'tmux not found — unsnooze needs tmux to watch and revive sessions.\nInstall it first (brew install tmux / apt install tmux), then re-run `unsnooze setup`.');
+      ? 'No supported multiplexer found — unsnooze does not support native Windows.\nRun it inside WSL.'
+      : `${mux.name} not found — install it, then re-run \`unsnooze setup\`.`);
   }
 
   const detected = detectInstalledAgents();
@@ -75,7 +76,7 @@ export async function runWizard() {
     const answer = await p.confirm({
       message: 'Also guard GUI sessions (Claude Code in VS Code/desktop, Codex app/IDE)?\n'
         + '  Installs a small background daemon (launchd/systemd) that watches session\n'
-        + '  files for limit stops; revived sessions open in tmux and stay visible in\n'
+        + '  files for limit stops; revived sessions open in the configured multiplexer and stay visible in\n'
         + '  the GUI\'s own history.',
       initialValue: DEFAULTS.guiWatch,
     });
