@@ -215,7 +215,7 @@ via an OS toast, a terminal OSC sequence, a BEL, or a mix — controlled by
 | channel | what it does |
 |---|---|
 | `auto` | OSC (when the terminal supports it) **plus** BEL on the pane tty; falls back to native only if OSC delivered nothing (avoids double banners). No pane / non-tmux mux → native. |
-| `native` | OS toast only (macOS `osascript`, Linux `notify-send`, WSL/Windows PowerShell toast; tmux `display-message` as a last-resort statusline fallback). |
+| `native` | OS toast (macOS `osascript`, Linux `notify-send`, WSL/Windows PowerShell toast); tmux `display-message` as a last-resort statusline fallback on other platforms. |
 | `osc` | Force OSC to attached client ttys; native if zero deliveries. |
 | `bell` | BEL to the pane tty; native if undeliverable. |
 
@@ -226,7 +226,7 @@ env markers:
 |---|---|
 | iTerm2, kitty, WezTerm, Ghostty, Warp | OSC 9 (`\x1b]9;title: body\x07`) |
 | rxvt / urxvt | OSC 777 (`\x1b]777;notify;title;body\x07`) |
-| Apple Terminal, VS Code, Alacritty, Zed | denylisted — skipped in `auto` (use `native` or force `osc`) |
+| Apple Terminal, VS Code, Alacritty, Zed | denylisted — OSC skipped (prefer `native`; force `osc` does not unlock these) |
 | unknown | skipped in `auto`; OSC 9 when `notifyChannel=osc` |
 
 **tmux only for OSC/BEL.** Those paths write to the client's tty (OSC) or the
