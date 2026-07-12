@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.8.1 — 2026-07-13
+
+- **Discovery / SEO**: package description and keywords expanded so npm and
+  GitHub surface Qwen Code, Kimi CLI, OpenCode, Antigravity, OpenRouter, and
+  Zellij alongside Claude/Codex/Grok. README comparison table updated to match.
+
 ## 1.8.0 — 2026-07-13
 
 - **Notification channels** (`notifyChannel`: `auto` | `native` | `osc` |
