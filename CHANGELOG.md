@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.8.0 — 2026-07-13
+
 - **Notification channels** (`notifyChannel`: `auto` | `native` | `osc` |
   `bell`, env `UNSNOOZE_NOTIFY_CHANNEL`): terminal-branded alerts via OSC 9
   (iTerm2, kitty, WezTerm, Ghostty, Warp) or OSC 777 (rxvt), plus BEL on the
