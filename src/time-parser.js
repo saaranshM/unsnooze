@@ -19,7 +19,32 @@ const RESET_DATE_REGEX = /resets?\s+(?:on\s+)?(jan|feb|mar|apr|may|jun|jul|aug|s
 //   older:     "Try again in 4 days 20 hours 9 minutes."
 const TRY_AT_TIME_REGEX = /try again at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i;
 const TRY_AT_DATE_REGEX = /try again at\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*(am|pm)/i;
-const MULTI_RELATIVE_REGEX = /try again in\s+(?:(\d+)\s*days?\s*)?(?:(\d+)\s*hours?\s*)?(?:(\d+)\s*min(?:ute)?s?)?/i;
+// Multi-unit relative, verb-generalized across CLIs: codex "Try again in 4 days
+// 20 hours 9 minutes", agy "Refreshes in 6 days and 18 hours", opencode "It
+// will reset in 2 hours 5 minutes" / "Retry in 45 minutes".
+const MULTI_RELATIVE_REGEX = /(?:try again|resets?|refreshes|retry|wait)\s+in\s+(?:(\d+)\s*days?\b(?:\s+and)?\s*)?(?:(\d+)\s*hours?\b(?:\s+and)?\s*)?(?:(\d+)\s*min(?:ute)?s?\b)?/i;
+// opencode status line: "Rate Limited [retrying in 2h5m attempt #4]" — the
+// duration is Go-style ("2h5m", "2m 5s", "~2 days").
+const RETRY_BANNER_REGEX = /retrying in\s+([^\]\n]*?)\s*attempt\s*#?\d+/i;
+// (?![a-z]) instead of \b: compact Go durations pack units against the next
+// digit ("2h5m"), where h→5 is not a word boundary.
+const DURATION_TOKEN_REGEX = /~?\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|seconds?|secs?|s|min(?:ute)?s?|m|hours?|hrs?|h|days?|d|weeks?|w)(?![a-z])/gi;
+const DURATION_UNIT_MS = {
+  ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000,
+  millisecond: 1, second: 1000, sec: 1000, min: 60_000, minute: 60_000,
+  hour: 3_600_000, hr: 3_600_000, day: 86_400_000, week: 604_800_000,
+};
+
+function parseGoDuration(text) {
+  let total = 0;
+  for (const m of text.matchAll(DURATION_TOKEN_REGEX)) {
+    const raw = m[2].toLowerCase();
+    // Exact form first ("ms" must not singular-strip to "m"), then singular.
+    const perUnit = DURATION_UNIT_MS[raw] ?? DURATION_UNIT_MS[raw.replace(/s$/, '')];
+    if (perUnit) total += parseFloat(m[1]) * perUnit;
+  }
+  return total;
+}
 const MONTH_INDEX = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
 function to24h(hour, ampm) {
@@ -31,6 +56,14 @@ function to24h(hour, ampm) {
 
 export function parseResetTime(text) {
   if (!text) return null;
+
+  // Self-retry countdown banner first (opencode) — the bracketed duration is
+  // the live countdown and beats any older prose in the same line.
+  const retryMatch = text.match(RETRY_BANNER_REGEX);
+  if (retryMatch) {
+    const waitMs = parseGoDuration(retryMatch[1]);
+    if (waitMs > 0) return { relative: true, waitMs };
+  }
 
   // Full-date form first — its trailing "9:01 PM" would otherwise be eaten by
   // the same-day "try again at" regex.
@@ -89,22 +122,25 @@ export function parseResetTime(text) {
     };
   }
 
-  const relMatch = text.match(RELATIVE_TIME_REGEX);
-  if (relMatch) {
-    const amount = parseInt(relMatch[1], 10);
-    const unit = relMatch[2].toLowerCase();
-    const isMinutes = unit.startsWith('m');
-    return { relative: true, waitMs: amount * (isMinutes ? 60_000 : 3_600_000) };
-  }
-
-  // Multi-unit relative ("in 4 days 20 hours 9 minutes") — checked after the
-  // single-unit form, which already covers "in 2 hours" / "in 5 minutes".
+  // Multi-unit relative ("in 4 days 20 hours 9 minutes", "in 6 days and 18
+  // hours", "reset in 2 hours 5 minutes") — checked BEFORE the single-unit
+  // form, which would truncate "2 hours 5 minutes" to just "2 hours".
   const multiMatch = text.match(MULTI_RELATIVE_REGEX);
   if (multiMatch && (multiMatch[1] || multiMatch[2] || multiMatch[3])) {
     const days = parseInt(multiMatch[1] || '0', 10);
     const hours = parseInt(multiMatch[2] || '0', 10);
     const minutes = parseInt(multiMatch[3] || '0', 10);
     return { relative: true, waitMs: ((days * 24 + hours) * 60 + minutes) * 60_000 };
+  }
+
+  // Single-unit fallback covers colon/verb forms the multi regex doesn't
+  // ("resets in: 3 hours", "wait 5 minutes").
+  const relMatch = text.match(RELATIVE_TIME_REGEX);
+  if (relMatch) {
+    const amount = parseInt(relMatch[1], 10);
+    const unit = relMatch[2].toLowerCase();
+    const isMinutes = unit.startsWith('m');
+    return { relative: true, waitMs: amount * (isMinutes ? 60_000 : 3_600_000) };
   }
 
   // Day-only weekly banner ("resets Tuesday") with no time — midnight-ish target,

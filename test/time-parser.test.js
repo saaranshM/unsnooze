@@ -122,3 +122,53 @@ test('invalid timezone falls back', () => {
   assert.equal(source, 'fallback');
   assert.equal(at, now.getTime() + 5 * H + MARGIN);
 });
+
+// --- multi-unit relative forms from the 2026 adapters (agy / opencode) ---
+
+test('parses agy "Refreshes in 6 days and 18 hours"', () => {
+  const p = parseResetTime('Model quota limit exceeded. Refreshes in 6 days and 18 hours');
+  assert.equal(p.relative, true);
+  assert.equal(p.waitMs, (6 * 24 + 18) * H);
+});
+
+test('parses opencode "It will reset in 2 hours 5 minutes"', () => {
+  const p = parseResetTime('5 hour usage limit reached. It will reset in 2 hours 5 minutes.');
+  assert.equal(p.relative, true);
+  assert.equal(p.waitMs, 2 * H + 5 * 60_000);
+});
+
+test('parses opencode Zen "Retry in 45 minutes."', () => {
+  const p = parseResetTime('Subscription quota exceeded. Retry in 45 minutes.');
+  assert.equal(p.relative, true);
+  assert.equal(p.waitMs, 45 * 60_000);
+});
+
+test('single-unit and colon forms still parse (regression)', () => {
+  assert.equal(parseResetTime('resets in: 3 hours').waitMs, 3 * H);
+  assert.equal(parseResetTime('try again in 5 minutes').waitMs, 5 * 60_000);
+  assert.equal(parseResetTime('Try again in 4 days 20 hours 9 minutes.').waitMs, ((4 * 24 + 20) * 60 + 9) * 60_000);
+});
+
+// --- opencode status-line Go-durations: "[retrying in 2h5m attempt #4]" ---
+
+test('parses compact Go-duration "[retrying in 2h5m attempt #4]"', () => {
+  const p = parseResetTime('Rate Limited [retrying in 2h5m attempt #4]');
+  assert.equal(p.relative, true);
+  assert.equal(p.waitMs, 2 * H + 5 * 60_000);
+});
+
+test('parses spaced Go-duration "[retrying in 2m 5s attempt #2]"', () => {
+  const p = parseResetTime('Too Many Requests [retrying in 2m 5s attempt #2]');
+  assert.equal(p.relative, true);
+  assert.equal(p.waitMs, 2 * 60_000 + 5_000);
+});
+
+test('parses approx Go-duration "[retrying in ~2 days attempt #9]"', () => {
+  const p = parseResetTime('weekly usage limit reached [retrying in ~2 days attempt #9]');
+  assert.equal(p.relative, true);
+  assert.equal(p.waitMs, 2 * 86_400_000);
+});
+
+test('bare "[retrying attempt #3]" (no duration) yields no parse', () => {
+  assert.equal(parseResetTime('Rate Limited [retrying attempt #3]'), null);
+});

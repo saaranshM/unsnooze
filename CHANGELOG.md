@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.7.0 — 2026-07-12
+
+- **Four new agent adapters** (all ⚠️ experimental, off by default — enable in
+  `unsnooze setup`):
+  - **Qwen Code** (`qwen`): Claude-shaped `StopFailure` hook installed into
+    `~/.qwen/settings.json` + verbatim quota-banner scraping (legacy OAuth,
+    Coding Plan `Allocated quota exceeded` → 5h window, OpenRouter
+    passthroughs). Resumes via `qwen --resume <id>`, ids from qwen's
+    `*.runtime.json` sidecars.
+  - **Kimi CLI** (`kimi`): detects the terminal red
+    `Error code: 429 … rate_limit_reached_error` line; resumes via
+    `kimi -r <id> -p "<msg>"` with an on-disk id check (kimi silently starts a
+    NEW session for unknown ids). `Membership expired` is notify-only.
+  - **OpenCode** (`opencode`): OpenCode self-retries limits forever (sleeping
+    until reset), so unsnooze records the stop, never touches a live
+    self-retrying pane, and revives dead panes mid-wait via
+    `opencode -s <ses_id>` — reset time parsed from the
+    `[retrying in 2h5m attempt #N]` countdown.
+  - **Antigravity CLI** (`agy`, Google's Gemini-CLI successor): scrapes
+    `Model quota limit exceeded` / `Refreshes in 6 days and 18 hours`
+    (multi-day refresh = weekly cap); `503 MODEL_CAPACITY_EXHAUSTED` is treated
+    as transient overload. Resumes via `agy --conversation=<id>`.
+- **OpenRouter awareness**: 429 bodies (`Rate limit exceeded: limit_…`,
+  free-models-per-day) are detected inside OpenCode/Qwen sessions; credit
+  exhaustion (402) notifies instead of snoozing.
+- **Terminal-error channel**: non-resetting errors (credits exhausted,
+  membership expired, discontinued tiers) now raise a single desktop
+  notification instead of being retried against a reset that will never come.
+- **time-parser**: understands `Refreshes in 6 days and 18 hours`,
+  `It will reset in 2 hours 5 minutes`, `Retry in 45 minutes`, and Go-style
+  countdowns (`2h5m`, `2m 5s`, `~2 days`).
+
 ## 1.6.0 — 2026-07-12
 
 - **Stale-workspace guard** (`workspaceGuard`: `off` | `inform` | `pause`,

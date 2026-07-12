@@ -174,3 +174,28 @@ test('re-installing with a different agent set replaces the block', () => {
   assert.match(second, /claude\(\) \{/);
   assert.equal(second.split('# >>> unsnooze >>>').length, 2);
 });
+
+// --- generalized hook merge (qwen: Claude-shaped hooks in ~/.qwen/settings.json) ---
+
+test('merge with agent/matcher options writes an agent-tagged hook', () => {
+  const out = JSON.parse(mergeHookIntoSettings('{}', { agent: 'qwen', matcher: 'rate_limit|unknown' }));
+  assert.equal(out.hooks.StopFailure.length, 1);
+  assert.equal(out.hooks.StopFailure[0].matcher, 'rate_limit|unknown');
+  const cmd = out.hooks.StopFailure[0].hooks[0].command;
+  assert.match(cmd, /unsnooze\.js"? _hook-stopfailure --agent qwen/);
+});
+
+test('agent-tagged merge is idempotent and removable', () => {
+  const once = mergeHookIntoSettings('{"foo":1}', { agent: 'qwen', matcher: 'rate_limit|unknown' });
+  const twice = mergeHookIntoSettings(once, { agent: 'qwen', matcher: 'rate_limit|unknown' });
+  assert.equal(JSON.parse(twice).hooks.StopFailure.length, 1);
+  const removed = JSON.parse(removeHookFromSettings(twice));
+  assert.equal(removed.hooks, undefined);
+  assert.equal(removed.foo, 1);
+});
+
+test('default merge is unchanged by the generalization (claude, no --agent)', () => {
+  const out = JSON.parse(mergeHookIntoSettings('{}'));
+  assert.equal(out.hooks.StopFailure[0].matcher, 'overloaded|server_error|rate_limit');
+  assert.ok(!out.hooks.StopFailure[0].hooks[0].command.includes('--agent'));
+});

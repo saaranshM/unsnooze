@@ -20,8 +20,8 @@ export const DEFAULTS = {
   updateCheck: true,       // daily registry version check + update notices/toast
   workspaceGuard: 'inform', // repo changed while stopped: off | inform | pause
   resumeMessage: 'Continue where you left off. The session was interrupted by a usage limit which has now reset — pick up the task you were working on and finish it.',
-  resumeMessages: { claude: '', codex: '', grok: '' },  // per-agent override; '' = use resumeMessage
-  agents: { claude: true, codex: true, grok: false },   // grok is experimental
+  resumeMessages: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '' },  // per-agent override; '' = use resumeMessage
+  agents: { claude: true, codex: true, grok: false, qwen: false, kimi: false, opencode: false, agy: false },   // experimental agents default off
 };
 
 // Env override per key. Booleans accept 1/0, true/false, on/off, yes/no.
@@ -36,9 +36,17 @@ const ENV_NAMES = {
   'resumeMessages.claude': 'UNSNOOZE_RESUME_MESSAGE_CLAUDE',
   'resumeMessages.codex': 'UNSNOOZE_RESUME_MESSAGE_CODEX',
   'resumeMessages.grok': 'UNSNOOZE_RESUME_MESSAGE_GROK',
+  'resumeMessages.qwen': 'UNSNOOZE_RESUME_MESSAGE_QWEN',
+  'resumeMessages.kimi': 'UNSNOOZE_RESUME_MESSAGE_KIMI',
+  'resumeMessages.opencode': 'UNSNOOZE_RESUME_MESSAGE_OPENCODE',
+  'resumeMessages.agy': 'UNSNOOZE_RESUME_MESSAGE_AGY',
   'agents.claude': 'UNSNOOZE_AGENT_CLAUDE',
   'agents.codex': 'UNSNOOZE_AGENT_CODEX',
   'agents.grok': 'UNSNOOZE_AGENT_GROK',
+  'agents.qwen': 'UNSNOOZE_AGENT_QWEN',
+  'agents.kimi': 'UNSNOOZE_AGENT_KIMI',
+  'agents.opencode': 'UNSNOOZE_AGENT_OPENCODE',
+  'agents.agy': 'UNSNOOZE_AGENT_AGY',
 };
 
 const KNOWN_KEYS = Object.keys(ENV_NAMES);

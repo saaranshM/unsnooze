@@ -9,7 +9,7 @@
 [![node](https://img.shields.io/badge/node-%E2%89%A5%2020-3fb950)](package.json)
 [![license](https://img.shields.io/badge/license-MIT-8b949e)](LICENSE)
 
-**Claude Code · Codex CLI · Grok** — when they hit the 5-hour or weekly usage limit
+**Claude Code · Codex CLI · Grok · Qwen · Kimi · OpenCode · Antigravity** — when they hit the 5-hour or weekly usage limit
 ("You've hit your usage limit"), your session just… stops.<br/>
 unsnooze auto-resumes them: it tracks **every** limit-stopped session across all
 your projects and **wakes each one up in tmux the moment the usage limit resets.**
@@ -53,6 +53,42 @@ existing tool solves only a slice of it:
   not publicly documented, so detection uses generic patterns with a safe
   fallback. Hit a banner unsnooze missed? Run `unsnooze report` and paste the
   capture into an issue — that's how this adapter gets good.
+- **Qwen Code** — ⚠️ *experimental*. Dual-channel: a Claude-shaped `StopFailure`
+  hook installed into `~/.qwen/settings.json` (fires with `error: rate_limit`)
+  plus scraping for the verbatim quota renders (`Qwen OAuth quota exceeded`,
+  Coding Plan `Allocated quota exceeded`, and OpenRouter `Rate limit exceeded:
+  limit_…` passthroughs). Qwen never shows a reset time, so waits use the
+  5-hour fallback and self-correct on verify. Dead sessions revive via
+  `qwen --resume <id>` (session ids come from the `*.runtime.json` sidecars
+  qwen writes for exactly this purpose).
+- **Kimi CLI (Moonshot)** — ⚠️ *experimental*. Scrape-based: kimi retries a 429
+  three times within seconds, then stops with a red `LLM provider error: Error
+  code: 429 … rate_limit_reached_error` line — that's the detection anchor.
+  The 429 body carries no reset time (5h fallback + verify). Dead sessions
+  revive via `kimi -r <id> -p "<message>"` — with a guard: kimi silently starts
+  a *new* session for unknown ids, so the id is verified on disk first
+  (`--continue` otherwise). `Membership expired` (402) is notify-only.
+- **OpenCode** — ⚠️ *experimental*, and a different shape: OpenCode *retries
+  rate limits itself, forever*, honoring `retry-after` (it will sleep hours
+  until the reset, showing `Rate Limited [retrying in 2h5m attempt #4]`). So
+  unsnooze records the stop but never touches a live self-retrying pane; its
+  job is reviving sessions whose process died mid-wait (laptop slept, tmux
+  gone) via `opencode -s <ses_id>`, with the reset time parsed straight from
+  the banner countdown. Zen plan banners (`5 hour/weekly/monthly usage limit
+  reached…`) and OpenRouter passthroughs are detected too; `insufficient
+  credits` (402) is notify-only.
+- **Antigravity CLI (Google, `agy`)** — ⚠️ *experimental*. The Gemini-CLI
+  successor. Scrapes the forum-reported quota strings (`Model quota limit
+  exceeded`, `Refreshes in 6 days and 18 hours` — parsed, multi-day refresh =
+  the weekly cap) and treats `503 MODEL_CAPACITY_EXHAUSTED` as a transient
+  overload, not a limit. Dead sessions revive via `agy --conversation=<id>`
+  (ids from `~/.gemini/antigravity-cli/history.jsonl`). Like Grok: closed
+  source, so `unsnooze report` captures make this adapter better.
+
+**OpenRouter** (the API gateway) isn't a separate agent: its 429 bodies
+(`Rate limit exceeded: limit_rpd/…`, free-models-per-day) are detected inside
+the CLIs that use it (OpenCode, Qwen Code), and credit exhaustion (402) is
+surfaced as a notification — there's no reset to wait for, only a top-up.
 
 ## GUI surfaces (VS Code extension, desktop apps)
 
@@ -153,8 +189,9 @@ unsnooze help                   # full command list (also -h / --help)
 | `notifications` | `true` | Desktop notification on limit detected / session resumed / gave up. |
 | `guiWatch` | `true` | May the daemon watch session files for GUI-surface stops (VS Code extension, desktop apps)? Needs the daemon running (`unsnooze install --daemon`). |
 | `resumeMessage` | *"Continue where you left off…"* | The message sent to wake a session. Override it for a single session with `unsnooze message <id> "…"` — visible in `unsnooze status`. |
-| `resumeMessages.claude` / `.codex` / `.grok` | `""` | Per-agent override of `resumeMessage`. Empty = use the global message; clear one with `unsnooze config set resumeMessages.claude ""`. |
-| `agents.claude` / `agents.codex` / `agents.grok` | `true` / `true` / `false` | Which CLIs are guarded. |
+| `resumeMessages.claude` / `.codex` / `.grok` / `.qwen` / `.kimi` / `.opencode` / `.agy` | `""` | Per-agent override of `resumeMessage`. Empty = use the global message; clear one with `unsnooze config set resumeMessages.claude ""`. |
+| `agents.claude` / `agents.codex` | `true` | Which CLIs are guarded. |
+| `agents.grok` / `agents.qwen` / `agents.kimi` / `agents.opencode` / `agents.agy` | `false` | Experimental adapters — off by default; enable in `unsnooze setup` or `unsnooze config set agents.qwen on`. |
 | `workspaceGuard` | `inform` | Repo changed while a session slept? `inform` wakes it with a heads-up in the message; `pause` holds it (desktop notification, diff shown on `resume-now`); `off` disables. |
 | `updateCheck` | `true` | Daily new-version check (a plain GET to the npm registry, nothing identifying is sent). Notices after commands + one desktop toast per version. |
 

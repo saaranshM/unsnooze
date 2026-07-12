@@ -118,3 +118,59 @@ test('banner cleared + tracked → record flips to resumed', async () => {
   const recs = Object.values(readState().sessions).filter(s => s.pane === '%54');
   assert.equal(recs[0].status, 'resumed');
 });
+
+// --- terminalPatterns: non-resetting errors notify once, never touch the ledger ---
+
+test('terminal pattern notifies once and records nothing', async () => {
+  const notes = [];
+  const agent = {
+    id: 'kimi', name: 'Kimi CLI',
+    patterns: {
+      limitPatterns: [/rate_limit_reached_error/i],
+      resetPatterns: [/rate_limit_reached_error/i],
+      weeklyPatterns: [], fiveHourPatterns: [],
+      busyPatterns: [], idleRegex: />/,
+      overloadPatterns: [],
+      terminalPatterns: [/Membership expired/i],
+    },
+    menu: null,
+    latestSessionId: () => null,
+    isForegroundCommand: () => true,
+  };
+  const tmux = fakeTmux({ text: 'Membership expired, please renew your plan\n> \n' });
+  const monitor = createMonitor({ pane: '%60', cwd: '/tmp/proj-t', tmux, agent, notifier: (t, m) => notes.push({ t, m }) });
+  await monitor._tick();
+  await monitor._tick();
+  await monitor._tick();
+  const recs = Object.values(readState().sessions).filter(s => s.pane === '%60');
+  assert.equal(recs.length, 0, 'terminal errors must not create ledger records');
+  assert.equal(notes.length, 1, 'exactly one notification across repeat ticks');
+  assert.match(notes[0].m, /Membership expired/);
+});
+
+test('terminal notification re-arms after the banner clears', async () => {
+  const notes = [];
+  const agent = {
+    id: 'kimi', name: 'Kimi CLI',
+    patterns: {
+      limitPatterns: [/rate_limit_reached_error/i],
+      resetPatterns: [/rate_limit_reached_error/i],
+      weeklyPatterns: [], fiveHourPatterns: [],
+      busyPatterns: [], idleRegex: />/,
+      overloadPatterns: [],
+      terminalPatterns: [/Membership expired/i],
+    },
+    menu: null,
+    latestSessionId: () => null,
+    isForegroundCommand: () => true,
+  };
+  const script = { text: 'Membership expired, please renew your plan\n> \n' };
+  const tmux = fakeTmux(script);
+  const monitor = createMonitor({ pane: '%61', cwd: '/tmp/proj-u', tmux, agent, notifier: (t, m) => notes.push({ t, m }) });
+  await monitor._tick();
+  script.text = 'all good\n> \n';
+  await monitor._tick();
+  script.text = 'Membership expired, please renew your plan\n> \n';
+  await monitor._tick();
+  assert.equal(notes.length, 2, 'clears then re-notifies on a fresh terminal error');
+});

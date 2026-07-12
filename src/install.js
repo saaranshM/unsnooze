@@ -56,15 +56,18 @@ function isLegacy(entry) {
   return (entry.hooks || []).some(h => /claude-auto-retry|csg\.js _hook-stopfailure/.test(h.command || ''));
 }
 
-export function mergeHookIntoSettings(settingsJson) {
+// agent/matcher options cover CLIs with Claude-shaped hook config in their own
+// settings.json (qwen); the default stays byte-identical for claude.
+export function mergeHookIntoSettings(settingsJson, { agent = null, matcher = 'overloaded|server_error|rate_limit' } = {}) {
   const settings = JSON.parse(settingsJson);
   settings.hooks = settings.hooks || {};
   const list = (settings.hooks.StopFailure || []).filter(e => !isLegacy(e) && !isOurs(e));
+  const agentFlag = agent ? ` --agent ${agent}` : '';
   list.push({
-    matcher: 'overloaded|server_error|rate_limit',
+    matcher,
     // Guarded like the shell wrapper: a vanished entry point must exit 0, not
     // spray MODULE_NOT_FOUND errors into every Claude Code turn.
-    hooks: [{ type: 'command', command: `test -f "${UNSNOOZE_BIN}" && node "${UNSNOOZE_BIN}" _hook-stopfailure || exit 0`, timeout: 5 }],
+    hooks: [{ type: 'command', command: `test -f "${UNSNOOZE_BIN}" && node "${UNSNOOZE_BIN}" _hook-stopfailure${agentFlag} || exit 0`, timeout: 5 }],
   });
   settings.hooks.StopFailure = list;
   return JSON.stringify(settings, null, 2) + '\n';
@@ -229,7 +232,36 @@ export function uninstallDaemonAutostart({ platform = process.platform, dir = nu
 // --- commands ---
 
 export function enabledAgents() {
-  return ['claude', 'codex', 'grok'].filter(id => getConfig(`agents.${id}`));
+  return ['claude', 'codex', 'grok', 'qwen', 'kimi', 'opencode', 'agy'].filter(id => getConfig(`agents.${id}`));
+}
+
+// Qwen keeps Claude-shaped hooks in its own settings.json — reuse the same
+// merge/remove machinery against ~/.qwen/settings.json. Matcher matches qwen's
+// StopFailure `error` class; `unknown` is included because the discontinued
+// free-tier message classifies as unknown, and hook.js's banner gate keeps
+// unknowns without visible limit banners out of the ledger anyway.
+const QWEN_HOOK_OPTS = { agent: 'qwen', matcher: 'rate_limit|unknown' };
+
+function qwenSettingsPath() {
+  return join(process.env.UNSNOOZE_QWEN_DIR || join(homedir(), '.qwen'), 'settings.json');
+}
+
+export function installQwenHooks() {
+  const path = qwenSettingsPath();
+  if (existsSync(path)) {
+    copyFileSync(path, `${path}.unsnooze-bak`);
+    atomicWrite(path, mergeHookIntoSettings(readFileSync(path, 'utf-8'), QWEN_HOOK_OPTS));
+  } else {
+    atomicWrite(path, mergeHookIntoSettings('{}', QWEN_HOOK_OPTS));
+  }
+  return path;
+}
+
+export function uninstallQwenHooks() {
+  const path = qwenSettingsPath();
+  if (!existsSync(path)) return null;
+  atomicWrite(path, removeHookFromSettings(readFileSync(path, 'utf-8')));
+  return path;
 }
 
 // rc files to touch: the explicit --zshrc target, or every rc file that exists
@@ -271,6 +303,12 @@ export function cmdInstall(rest, { agents = enabledAgents() } = {}) {
     console.log(`unsnooze: Grok StopFailure hook installed at ${file}`);
   }
 
+  // 2b. Qwen Code hook (Claude-shaped hooks in ~/.qwen/settings.json).
+  if (agents.includes('qwen')) {
+    const file = installQwenHooks();
+    console.log(`unsnooze: Qwen StopFailure hook installed in ${file}`);
+  }
+
   // 3. Shell wrappers (zsh + bash).
   for (const rc of rcTargets(opts, explicitRc)) {
     const rcContent = existsSync(rc) ? readFileSync(rc, 'utf-8') : '';
@@ -310,6 +348,8 @@ export function cmdUninstall(rest) {
   }
 
   uninstallGrokHooks();
+  const qwenFile = uninstallQwenHooks();
+  if (qwenFile) console.log(`unsnooze: StopFailure hook removed from ${qwenFile}`);
 
   for (const rc of rcTargets(opts, explicitRc)) {
     if (!existsSync(rc)) continue;

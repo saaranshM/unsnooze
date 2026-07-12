@@ -142,7 +142,7 @@ export async function runWizard() {
   s.stop(code === 0 ? 'Wrappers and hooks installed' : 'Install hit a problem — see output above');
 
   p.outro(code === 0
-    ? 'Done. Reload your shell (`exec $SHELL`) and use claude/codex/grok as usual.\nCheck `unsnooze status` anytime; change settings with `unsnooze config`.'
+    ? 'Done. Reload your shell (`exec $SHELL`) and use your AI CLIs as usual.\nCheck `unsnooze status` anytime; change settings with `unsnooze config`.'
     : 'Setup incomplete — fix the issue above and re-run `unsnooze setup`.');
   return code;
 }

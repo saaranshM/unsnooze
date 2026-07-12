@@ -29,9 +29,10 @@ const log = makeLogger('monitor');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = realTmux, scrapeInterval = SCRAPE_INTERVAL_MS }) {
+export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = realTmux, scrapeInterval = SCRAPE_INTERVAL_MS, notifier = notify }) {
   let trackedKey = null;      // state key of the record we created
   let overloadAttempt = 0;
+  let terminalNotified = false;   // one notification per terminal-error appearance
   let running = true;
 
   function markerPath() {
@@ -154,6 +155,20 @@ export function createMonitor({ pane, cwd, agent = getAgent('claude'), tmux = re
         await recordLimit(d.resetLine, d.limitType, marker ? 'hook' : 'scrape');
       }
       return;
+    }
+
+    // Non-resetting terminal errors (credits exhausted, membership expired,
+    // discontinued tiers): notify once per appearance, never touch the ledger —
+    // there is no reset to wait for. Re-arms when the error clears.
+    const term = overloadMatch(text, agent.patterns.terminalPatterns || []);
+    if (term) {
+      if (!terminalNotified) {
+        terminalNotified = true;
+        notifier(`${agent.name} needs attention ⚠️`, `${cwd} — ${term.line}`);
+        log(`pane ${pane}: terminal error (no auto-resume): ${term.line}`);
+      }
+    } else {
+      terminalNotified = false;
     }
 
     // No banner. If we were tracking a stopped record and claude is active
