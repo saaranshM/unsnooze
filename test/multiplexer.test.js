@@ -277,6 +277,12 @@ test('tmux clientTtys parses list-clients rows and returns [] on error or detach
   assert.deepEqual(spawner.calls[0].args,
     ['list-clients', '-t', '%1', '-F', '#{client_tty}\t#{client_termname}']);
 
+  // Tty-only row (no tab / empty termname) still yields a client entry.
+  const ttyOnly = createTmux({ spawner: fakeSpawner(() => '/dev/ttys009\n'), env: {} });
+  assert.deepEqual(await ttyOnly.clientTtys('%1'), [
+    { tty: '/dev/ttys009', termname: '' },
+  ]);
+
   const empty = createTmux({ spawner: fakeSpawner(() => ''), env: {} });
   assert.deepEqual(await empty.clientTtys('%1'), []);
 
@@ -311,14 +317,22 @@ test('tmux globalEnv filters names, skips -REMOVED, and returns {} on error', as
     'TERM -REMOVED',
     'COLORTERM=truecolor',
     'GONE -REMOVED',
+    'FOO=bar=baz',
   ].join('\n') + '\n';
   const spawner = fakeSpawner(() => envOut);
   const mux = createTmux({ spawner, env: {} });
-  assert.deepEqual(await mux.globalEnv(['DISPLAY', 'TERM', 'COLORTERM', 'MISSING']), {
+  assert.deepEqual(await mux.globalEnv(['DISPLAY', 'TERM', 'COLORTERM', 'MISSING', 'FOO']), {
     DISPLAY: ':0',
     COLORTERM: 'truecolor',
+    FOO: 'bar=baz',
   });
   assert.deepEqual(spawner.calls[0].args, ['show-environment', '-g']);
+
+  // Empty name list is a no-op — no show-environment spawn.
+  const idle = fakeSpawner(() => 'SHOULD_NOT_RUN=1\n');
+  assert.deepEqual(await createTmux({ spawner: idle, env: {} }).globalEnv(), {});
+  assert.deepEqual(await createTmux({ spawner: idle, env: {} }).globalEnv([]), {});
+  assert.equal(idle.calls.length, 0);
 
   const erroring = createTmux({
     spawner: fakeSpawner(() => { throw new Error('no server'); }),

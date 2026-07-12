@@ -108,7 +108,8 @@ export function createTmux({ spawner = defaultSpawner, env = process.env } = {})
 
     // Global session env from `show-environment -g`. `-REMOVED` markers are
     // skipped; only keys listed in `names` are returned. Errors → {}.
-    async globalEnv(names) {
+    async globalEnv(names = []) {
+      if (!names.length) return {};
       try {
         const out = await run('show-environment', '-g');
         const wanted = new Set(names);
@@ -116,7 +117,7 @@ export function createTmux({ spawner = defaultSpawner, env = process.env } = {})
         for (const line of out.split('\n')) {
           const trimmed = line.trimEnd();
           // tmux prints "NAME=value" or "NAME -REMOVED"
-          if (!trimmed || trimmed.includes(' -REMOVED')) continue;
+          if (!trimmed || trimmed.endsWith(' -REMOVED')) continue;
           const eq = trimmed.indexOf('=');
           if (eq <= 0) continue;
           const key = trimmed.slice(0, eq);
