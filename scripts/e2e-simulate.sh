@@ -49,20 +49,48 @@ export UNSNOOZE_CODEX_DIR="$WORK/codex-home"
 export UNSNOOZE_GROK_DIR="$WORK/grok-home"
 export UNSNOOZE_LAUNCH_AGENTS_DIR="$WORK/launch-agents"   # never touch the real
 export UNSNOOZE_SYSTEMD_USER_DIR="$WORK/systemd-user"     # daemon autostart
+WAIT_TRIES="${UNSNOOZE_E2E_WAIT_TRIES:-75}"               # 30s at 0.4s/poll
 
 SESSIONS=()
 PIDS=()
 
+stop_matching() {  # $1 pgrep -f pattern
+  local pattern="$1" pids remaining
+  pids="$(pgrep -f "$pattern" 2>/dev/null || true)"
+  [ -z "$pids" ] && return 0
+  kill $pids 2>/dev/null || true
+  for _ in $(seq 1 100); do
+    remaining="$(pgrep -f "$pattern" 2>/dev/null || true)"
+    [ -z "$remaining" ] && return 0
+    sleep 0.05
+  done
+  kill -KILL $remaining 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    remaining="$(pgrep -f "$pattern" 2>/dev/null || true)"
+    [ -z "$remaining" ] && return 0
+    sleep 0.05
+  done
+  return 1
+}
+
+stop_suite_processes() {
+  # Stop producers first so they cannot spawn another resumer while teardown
+  # is draining. The [u] form prevents pgrep from matching its own argv.
+  stop_matching "[u]nsnooze.js _monitor" || return 1
+  stop_matching "[u]nsnooze.js daemon" || return 1
+  stop_matching "[u]nsnooze.js _resumer" || return 1
+  for p in "${PIDS[@]:-}"; do wait "$p" 2>/dev/null || true; done
+  PIDS=()
+}
+
 cleanup() {
+  stop_suite_processes || true
   # enumerate by name: SESSIONS+= inside $(new_pane ...) runs in a subshell
   # and never reaches this trap
   tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^e2e-' \
-    | while read -r s; do tmux kill-session -t "$s" 2>/dev/null || true; done
+    | while read -r s; do tmux kill-session -t "$s" 2>/dev/null || true; done \
+    || true
   tmux kill-session -t unsnooze-e2e 2>/dev/null || true
-  for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
-  pkill -f "unsnooze.js _monitor %" 2>/dev/null || true
-  pkill -f "unsnooze.js _resumer" 2>/dev/null || true
-  pkill -f "unsnooze.js daemon" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -74,10 +102,10 @@ pass() { echo "PASS [$CURRENT]"; }
 # End-of-scenario hygiene: no monitor or resumer may outlive its scenario
 # (a leaked resumer once revived a fake record through the REAL claude).
 scenario_end() {
-  pkill -f "unsnooze.js _monitor %" 2>/dev/null || true
-  pkill -f "unsnooze.js _resumer" 2>/dev/null || true
-  pkill -f "unsnooze.js daemon" 2>/dev/null || true
-  sleep 0.3
+  stop_suite_processes || fail "background processes did not stop"
+  while read -r s; do tmux kill-session -t "$s" 2>/dev/null || true; done \
+    < <(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^e2e-' || true)
+  tmux kill-session -t unsnooze-e2e 2>/dev/null || true
 }
 
 # ---------- stubs ----------
@@ -149,13 +177,12 @@ export PATH="$FAKEBIN:$PATH"
 new_pane() {  # $1 session-name, rest: command
   local ses="$1"; shift
   tmux kill-session -t "$ses" 2>/dev/null || true
-  tmux new-session -d -s "$ses" -x 100 -y 28 "$@"
+  tmux new-session -d -s "$ses" -x 100 -y 28 -P -F '#{pane_id}' "$@"
   SESSIONS+=("$ses")
-  tmux display-message -t "$ses" -p '#{pane_id}'
 }
 
 wait_pane() {  # $1 pane, $2 regex, $3 tries(0.4s each)
-  local tries="${3:-25}"
+  local tries="${3:-$WAIT_TRIES}"
   for _ in $(seq 1 "$tries"); do
     tmux capture-pane -t "$1" -p 2>/dev/null | grep -qE "$2" && return 0
     sleep 0.4
@@ -164,7 +191,7 @@ wait_pane() {  # $1 pane, $2 regex, $3 tries(0.4s each)
 }
 
 wait_state() {  # $1 state-file, $2 grep-regex, $3 tries(0.4s each)
-  local tries="${3:-25}"
+  local tries="${3:-$WAIT_TRIES}"
   for _ in $(seq 1 "$tries"); do
     [ -f "$1" ] && grep -qE "$2" "$1" && return 0
     sleep 0.4
@@ -181,7 +208,7 @@ run_monitor() {  # [ENV=V ...] state-dir pane agent cwd
   local sdir="$1" pane="$2" agent="$3" cwd="$4"
   env "${envs[@]:-UNSNOOZE_E2E=1}" UNSNOOZE_AUTO_RESUME=off \
     UNSNOOZE_STATE_DIR="$sdir" UNSNOOZE_CWD="$cwd" \
-    node "$BIN" _monitor "$pane" "$agent" > "$sdir/monitor.log" 2>&1 &
+    node "$BIN" _monitor tmux "" "$pane" "$agent" "" > "$sdir/monitor.log" 2>&1 &
   echo $!
 }
 
@@ -191,7 +218,8 @@ seed_record() {  # $1 state-dir, $2 agent, $3 cwd, $4 pane, $5 sessionId('' = nu
     const { upsertSession } = await import('$ROOT/src/state.js');
     upsertSession({
       sessionId: '$5' || null, cwd: '$3', pane: '$4', agent: '$2',
-      tmuxSession: 'unsnooze-e2e', status: 'stopped', limitType: '5h',
+      mux: 'tmux', paneOwner: null, muxSession: 'unsnooze-e2e', leaseId: null,
+      status: 'stopped', limitType: '5h',
       detectedVia: 'scrape', detectedAt: Date.now() - 60000,
       resetAt: Date.now() - 1000, resetSource: 'absolute',
       attempts: 0, lastAttemptAt: null, lastError: null,
@@ -204,7 +232,7 @@ run_resumer_until() {  # $1 state-dir, $2 regex to wait for in state, $3 tries
   local pid=$!
   PIDS+=("$pid")
   local ok=1
-  wait_state "$1/state.json" "$2" "${3:-40}" && ok=0
+  wait_state "$1/state.json" "$2" "${3:-$WAIT_TRIES}" && ok=0
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   return $ok
@@ -232,7 +260,7 @@ S="$WORK/s2"; mkdir -p "$S/proj"
 PANE=$(new_pane e2e-s2 node "$WORK/menu-stub.js")
 wait_pane "$PANE" "What do you want to do" || fail "menu never rendered"
 MPID=$(run_monitor "$S" "$PANE" claude "$S/proj"); PIDS+=("$MPID")
-wait_pane "$PANE" "CHOSE:" 30 || fail "monitor never confirmed a selection"
+wait_pane "$PANE" "CHOSE:" || fail "monitor never confirmed a selection"
 tmux capture-pane -t "$PANE" -p | grep -q "CHOSE: 2. Stop and wait for limit to reset" \
   || fail "WRONG option chosen: $(tmux capture-pane -t "$PANE" -p | grep CHOSE)"
 # after selection the stub shows the banner — the monitor must record it
@@ -372,6 +400,7 @@ run_daemon() {  # [ENV=V ...] state-dir
   local sdir="$1"
   env UNSNOOZE_CLAUDE_DESKTOP_DIR="$sdir/desktop-unused" "${envs[@]:-UNSNOOZE_E2E=1}" \
     UNSNOOZE_SELF="$FAKEBIN/unsnooze" UNSNOOZE_STATE_DIR="$sdir" \
+    UNSNOOZE_MULTIPLEXER=tmux \
     UNSNOOZE_RESET_MARGIN_MS=0 \
     node "$BIN" daemon > "$sdir/daemon.log" 2>&1 &
   echo $!
@@ -395,9 +424,9 @@ node -e "
   });
   require('fs').appendFileSync('$TRANSCRIPT', line + '\n');
 "
-wait_state "$S/state.json" '"detectedVia": "transcript"' 40 || fail "watcher never recorded the transcript stop: $(cat "$S/state.json" 2>/dev/null)"
+wait_state "$S/state.json" '"detectedVia": "transcript"' || fail "watcher never recorded the transcript stop: $(cat "$S/state.json" 2>/dev/null)"
 grep -q '"origin": "vscode"' "$S/state.json" || fail "origin not taken from the transcript entrypoint"
-wait_state "$S/state.json" '"status": "resumed"' 40 || fail "GUI stop never revived: $(cat "$S/state.json")"
+wait_state "$S/state.json" '"status": "resumed"' || fail "GUI stop never revived: $(cat "$S/state.json")"
 grep -q -- "_run claude --resume 13131313-1414-4151-8161-171717171717" "$S/reopen-args.txt" || fail "wrong reopen args: $(cat "$S/reopen-args.txt")"
 kill "$DPID" 2>/dev/null || true; wait "$DPID" 2>/dev/null || true
 scenario_end
@@ -428,10 +457,10 @@ node -e "
   });
   require('fs').appendFileSync('$ROLLOUT', line + '\n');
 "
-wait_state "$S/state.json" '"detectedVia": "transcript"' 40 || fail "codex rollout stop never recorded: $(cat "$S/state.json" 2>/dev/null)"
+wait_state "$S/state.json" '"detectedVia": "transcript"' || fail "codex rollout stop never recorded: $(cat "$S/state.json" 2>/dev/null)"
 grep -q '"origin": "codex-ide"' "$S/state.json" || fail "originator not captured"
 grep -q '"resetSource": "absolute"' "$S/state.json" || fail "epoch reset not used"
-wait_state "$S/state.json" '"status": "resumed"' 40 || fail "codex GUI stop never revived: $(cat "$S/state.json")"
+wait_state "$S/state.json" '"status": "resumed"' || fail "codex GUI stop never revived: $(cat "$S/state.json")"
 grep -q -- "_run codex resume 14141414-1515-4161-8171-181818181818" "$S/reopen-args.txt" || fail "wrong codex reopen args: $(cat "$S/reopen-args.txt")"
 kill "$DPID" 2>/dev/null || true; wait "$DPID" 2>/dev/null || true
 scenario_end
@@ -466,8 +495,8 @@ EOF
     });
     require('fs').appendFileSync('$TRANSCRIPT', line + '\n');
   "
-  wait_state "$S/state.json" '"origin": "desktop"' 40 || fail "desktop stop not recorded with origin: $(cat "$S/state.json" 2>/dev/null)"
-  wait_state "$S/state.json" '"status": "resumed"' 40 || fail "desktop stop never revived: $(cat "$S/state.json")"
+  wait_state "$S/state.json" '"origin": "desktop"' || fail "desktop stop not recorded with origin: $(cat "$S/state.json" 2>/dev/null)"
+  wait_state "$S/state.json" '"status": "resumed"' || fail "desktop stop never revived: $(cat "$S/state.json")"
   grep -q -- "_run claude --resume 15151515-1616-4171-8181-191919191919" "$S/reopen-args.txt" || fail "wrong desktop reopen args: $(cat "$S/reopen-args.txt")"
   grep -q "$SANDBOX/.claude" "$S/reopen-configdir.txt" || fail "CLAUDE_CONFIG_DIR not exported to the revived CLI: $(cat "$S/reopen-configdir.txt" 2>/dev/null)"
   grep -q 'securestore=\[\]' "$S/reopen-securestore.txt" || fail "CLAUDE_SECURESTORAGE_CONFIG_DIR must be set-but-empty (default keychain auth): $(cat "$S/reopen-securestore.txt" 2>/dev/null)"
@@ -497,7 +526,8 @@ node --input-type=module -e "
   const { upsertSession } = await import('$ROOT/src/state.js');
   upsertSession({
     sessionId: null, cwd: '$REPO', pane: '$PANE', agent: 'claude',
-    tmuxSession: 'unsnooze-e2e', status: 'stopped', limitType: '5h',
+    mux: 'tmux', paneOwner: null, muxSession: 'unsnooze-e2e', leaseId: null,
+    status: 'stopped', limitType: '5h',
     detectedVia: 'scrape', detectedAt: Date.now() - 60000,
     resetAt: Date.now() - 1000, resetSource: 'absolute',
     attempts: 0, lastAttemptAt: null, lastError: null,
@@ -524,7 +554,8 @@ node --input-type=module -e "
   const { upsertSession } = await import('$ROOT/src/state.js');
   upsertSession({
     sessionId: null, cwd: '$REPO', pane: '$PANE2', agent: 'claude',
-    tmuxSession: 'unsnooze-e2e', status: 'stopped', limitType: '5h',
+    mux: 'tmux', paneOwner: null, muxSession: 'unsnooze-e2e', leaseId: null,
+    status: 'stopped', limitType: '5h',
     detectedVia: 'scrape', detectedAt: Date.now() - 60000,
     resetAt: Date.now() - 1000, resetSource: 'absolute',
     attempts: 0, lastAttemptAt: null, lastError: null,
