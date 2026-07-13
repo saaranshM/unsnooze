@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.9.0 — 2026-07-13
+
 - **Context-size guard** (`contextGuard`: `off` | `inform` | `pause`, default
   `inform`; threshold `contextGuardTokens`, default `100000`): waking a
   session hours after a limit stop re-reads its entire context at full
