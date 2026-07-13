@@ -81,14 +81,18 @@ test('status output shows the backend, qualified pane, and revival session', () 
 });
 
 test('held sessions: status shows the marker, resume-now clears the hold', () => {
-  const rec = seed('%46', { workspaceHold: true, holdReason: 'HEAD aaaaaaa → bbbbbbb', resetAt: Date.now() - 1000 });
+  // holdReason is self-descriptive since contextGuard: the marker is generic.
+  const rec = seed('%46', { workspaceHold: true, holdReason: 'workspace changed (HEAD aaaaaaa → bbbbbbb)', resetAt: Date.now() - 1000 });
+  const ctx = seed('%47', { workspaceHold: true, holdReason: 'context ~152k tokens', resetAt: Date.now() - 1000 });
   const lines = [];
   const orig = console.log;
   console.log = (...a) => lines.push(a.join(' '));
   try {
     cmdStatus();
-    assert.match(lines.join('\n'), /workspace changed .*resume-now/i);
+    assert.match(lines.join('\n'), /held: workspace changed .*resume-now/i);
+    assert.match(lines.join('\n'), /held: context ~152k tokens .*resume-now/i);
     cmdResumeNow(rec.key);
+    cmdResumeNow(ctx.key);
   } finally { console.log = orig; }
   const after1 = readState().sessions[rec.key];
   assert.equal(after1.workspaceHold, undefined, 'resume-now clears the hold');

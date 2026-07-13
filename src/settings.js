@@ -21,6 +21,8 @@ export const DEFAULTS = {
   guiWatch: true,          // daemon watches transcripts/rollouts for GUI-session stops
   updateCheck: true,       // daily registry version check + update notices/toast
   workspaceGuard: 'inform', // repo changed while stopped: off | inform | pause
+  contextGuard: 'inform',   // wake re-reads a big cold context: off | inform | pause
+  contextGuardTokens: 100_000, // contextGuard notify/hold threshold (tokens)
   resumeMessage: 'Continue where you left off. The session was interrupted by a usage limit which has now reset — pick up the task you were working on and finish it.',
   resumeMessages: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '' },  // per-agent override; '' = use resumeMessage
   agents: { claude: true, codex: true, grok: false, qwen: false, kimi: false, opencode: false, agy: false },   // experimental agents default off
@@ -36,6 +38,8 @@ const ENV_NAMES = {
   guiWatch: 'UNSNOOZE_GUI_WATCH',
   updateCheck: 'UNSNOOZE_UPDATE_CHECK',
   workspaceGuard: 'UNSNOOZE_WORKSPACE_GUARD',
+  contextGuard: 'UNSNOOZE_CONTEXT_GUARD',
+  contextGuardTokens: 'UNSNOOZE_CONTEXT_GUARD_TOKENS',
   resumeMessage: 'UNSNOOZE_RESUME_MESSAGE',
   'resumeMessages.claude': 'UNSNOOZE_RESUME_MESSAGE_CLAUDE',
   'resumeMessages.codex': 'UNSNOOZE_RESUME_MESSAGE_CODEX',
@@ -59,6 +63,7 @@ const KNOWN_KEYS = Object.keys(ENV_NAMES);
 const ENUMS = {
   multiplexer: ['auto', 'tmux', 'zellij'],
   workspaceGuard: ['off', 'inform', 'pause'],
+  contextGuard: ['off', 'inform', 'pause'],
   notifyChannel: ['auto', 'native', 'osc', 'bell'],
 };
 
@@ -90,12 +95,22 @@ export function getConfig(key) {
     if (typeof def === 'boolean') {
       const b = parseBool(env);
       if (b !== null) return b;
+    } else if (typeof def === 'number') {
+      const n = parseInt(env, 10);
+      if (Number.isFinite(n)) return n;
     } else {
       return env;
     }
   }
   const fromFile = dig(readFileConfig(), key);
-  return fromFile !== undefined ? fromFile : def;
+  if (fromFile === undefined) return def;
+  if (typeof def === 'number') {
+    // Hand-edited files may hold anything; a non-numeric value must not
+    // silently disable a threshold — fall back to the default instead.
+    const n = Number(fromFile);
+    return Number.isFinite(n) ? n : def;
+  }
+  return fromFile;
 }
 
 // The message to send a given agent: its resumeMessages.<id> override when
@@ -117,6 +132,10 @@ export function setConfigValue(key, rawValue) {
     const b = typeof rawValue === 'boolean' ? rawValue : parseBool(String(rawValue));
     if (b === null) throw new Error(`unsnooze: "${key}" needs a boolean (on/off, true/false)`);
     value = b;
+  } else if (typeof def === 'number') {
+    const n = parseInt(String(rawValue), 10);
+    if (!Number.isFinite(n) || n <= 0) throw new Error(`unsnooze: "${key}" needs a positive integer`);
+    value = n;
   } else {
     value = String(rawValue);
     if (ENUMS[key] && !ENUMS[key].includes(value)) {

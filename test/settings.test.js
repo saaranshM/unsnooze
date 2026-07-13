@@ -135,6 +135,32 @@ test('workspaceGuard: enum setting with inform default', () => {
   setConfigValue('workspaceGuard', 'inform');
 });
 
+test('contextGuard: enum setting with inform default', () => {
+  assert.equal(getConfig('contextGuard'), 'inform');
+  setConfigValue('contextGuard', 'pause');
+  assert.equal(getConfig('contextGuard'), 'pause');
+  assert.throws(() => setConfigValue('contextGuard', 'banana'), /one of/i);
+  setConfigValue('contextGuard', 'inform');
+});
+
+test('contextGuardTokens: positive-integer setting with env and file coercion', () => {
+  assert.equal(getConfig('contextGuardTokens'), 100_000);
+  assert.equal(setConfigValue('contextGuardTokens', '150000'), 150_000);
+  assert.equal(getConfig('contextGuardTokens'), 150_000);
+  const onDisk = JSON.parse(readFileSync(join(DIR, 'config.json'), 'utf-8'));
+  assert.equal(onDisk.contextGuardTokens, 150_000);
+  assert.throws(() => setConfigValue('contextGuardTokens', 'abc'), /positive integer/i);
+  assert.throws(() => setConfigValue('contextGuardTokens', '-5'), /positive integer/i);
+  process.env.UNSNOOZE_CONTEXT_GUARD_TOKENS = '90000';
+  assert.equal(getConfig('contextGuardTokens'), 90_000);
+  process.env.UNSNOOZE_CONTEXT_GUARD_TOKENS = 'garbage';
+  assert.equal(getConfig('contextGuardTokens'), 150_000);   // bad env ignored → file value
+  delete process.env.UNSNOOZE_CONTEXT_GUARD_TOKENS;
+  writeFileSync(join(DIR, 'config.json'), JSON.stringify({ contextGuardTokens: 'nope' }));
+  assert.equal(getConfig('contextGuardTokens'), 100_000);   // garbage file value → default
+  rmSync(join(DIR, 'config.json'));
+});
+
 test('notifyChannel: default auto, env override, enum rejection', () => {
   assert.equal(getConfig('notifyChannel'), 'auto');
   process.env.UNSNOOZE_NOTIFY_CHANNEL = 'osc';

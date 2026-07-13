@@ -17,6 +17,7 @@ import { detectLimit, isBusy } from './patterns.js';
 import { getAgent } from './agents/index.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { readState, updateState, setStatus, dueSessions, activeStopped } from './state.js';
+import { approxTokens } from './sessions.js';
 import { getConfig, resolveResumeMessage } from './settings.js';
 import { workspaceFingerprint, workspaceChanged, describeChange } from './workspace.js';
 import { notify } from './notify.js';
@@ -90,7 +91,7 @@ async function driveMenu(mux, pane, agent, text) {
 export async function dispatchOne(rec, {
   mux = resolveRecordMux(rec), resolveMux = null,
   resumeMessage, selfCmd = selfCommand(), fingerprint = workspaceFingerprint,
-  notifier = notify, matchesLease = leaseMatches,
+  notifier = notify, matchesLease = leaseMatches, contextTokens = null,
 } = {}) {
   resolveMux ||= () => mux;
   const key = rec.key;
@@ -108,7 +109,7 @@ export async function dispatchOne(rec, {
     if (change) {
       const desc = describeChange(change);
       if (guardMode === 'pause') {
-        setStatus(key, 'stopped', { workspaceHold: true, holdReason: desc });
+        setStatus(key, 'stopped', { workspaceHold: true, holdReason: `workspace changed (${desc})` });
         notifier('unsnooze: session held', `${rec.cwd}: workspace changed while stopped (${desc}) — run: unsnooze resume-now`, { context: ctxOf(rec) });
         log(`${key}: workspace changed (${desc}) — held (workspaceGuard=pause)`);
         return 'held';
@@ -117,6 +118,36 @@ export async function dispatchOne(rec, {
       log(`${key}: workspace changed (${desc}) — informing agent in the wake message`);
     }
   }
+
+  // Context-size guard: the prompt cache expired hours ago, so the first wake
+  // message re-reads the session's entire context at full (uncached) price.
+  // Estimate the size from the agent's transcript; `pause` holds big sessions,
+  // `inform` notifies the user — but only once the wake actually lands, since
+  // dispatchOne re-runs on every busy/retry tick. Manual resumes proceed.
+  let contextNote = null;
+  const ctxGuardMode = getConfig('contextGuard');
+  if (ctxGuardMode !== 'off' && !rec.manual) {
+    const estimate = contextTokens
+      ?? (typeof agent.contextTokens === 'function' ? r => agent.contextTokens(r) : null);
+    let tokens = null;
+    try { tokens = estimate ? estimate(rec) : null; } catch { /* unknown size — skip */ }
+    if (tokens != null && tokens >= getConfig('contextGuardTokens')) {
+      const size = approxTokens(tokens);
+      if (ctxGuardMode === 'pause') {
+        setStatus(key, 'stopped', { workspaceHold: true, holdReason: `context ${size} tokens` });
+        notifier('unsnooze: session held', `${rec.cwd}: waking would re-read ${size} tokens of context at full (uncached) price — run: unsnooze resume-now`, { context: ctxOf(rec) });
+        log(`${key}: context ${size} tokens ≥ threshold — held (contextGuard=pause)`);
+        return 'held';
+      }
+      contextNote = `${rec.cwd}: waking a ${size}-token session — its full context is re-read at full (uncached) price`;
+      log(`${key}: context ${size} tokens — informing (contextGuard=inform)`);
+    }
+  }
+  const notifyContext = () => {
+    if (contextNote) notifier('unsnooze: big-context wake', contextNote, { context: ctxOf(rec) });
+  };
+  const reopenGuarded = () =>
+    reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onDelivered: notifyContext });
 
   // Live-pane path: only if the pane still exists AND the agent CLI is its
   // foreground command (pane ids get recycled — never inject into a random
@@ -140,7 +171,7 @@ export async function dispatchOne(rec, {
     const authorized = owned && contentOwned;
 
     if (menu) {
-      if (!authorized) return reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd });
+      if (!authorized) return reopenGuarded();
       if (!getConfig('menuAutoAnswer')) return 'held';
       try {
         if (await driveMenu(mux, rec.pane, agent, text)) return 'progress';
@@ -154,15 +185,18 @@ export async function dispatchOne(rec, {
       setStatus(key, 'resuming', { lastAttemptAt: Date.now(), lastError: null, verifyRetries: 0 });
       await mux.sendText(rec.pane, resumeMessage);
       log(`${key}: sent continue via ${rec.mux} ${rec.paneOwner ?? '-'}:${rec.pane}`);
+      notifyContext();
       return 'injected';
     }
     if (owned) return 'busy';
   }
 
-  return reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd });
+  return reopenGuarded();
 }
 
-async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd }) {
+// onDelivered fires only when the resume message actually reached the agent
+// (argv or typed) — not on ready-timeouts or a still-active limit banner.
+async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onDelivered = () => {} }) {
   const key = rec.key;
   const resume = agent.resumeArgs(rec.sessionId, resumeMessage);
   const leaseId = createLeaseId();
@@ -193,7 +227,7 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd }) {
 
   // The resume prompt traveled in argv (e.g. `codex resume <id> "msg"`) —
   // nothing to type into the TUI; verifyOne checks the outcome later.
-  if (!resume.messageViaPane) return 'reopen';
+  if (!resume.messageViaPane) { onDelivered(); return 'reopen'; }
 
   // Wait for the TUI to be ready (input prompt visible), then send the message.
   const deadline = Date.now() + READY_TIMEOUT_MS;
@@ -210,6 +244,7 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd }) {
     if (!isBusy(text, agent.patterns.busyPatterns) && agent.patterns.idleRegex.test(text)) {
       await mux.sendText(address.pane, resumeMessage);
       log(`${key}: resume message sent to new pane ${address.pane}`);
+      onDelivered();
       return 'reopen';
     }
   }

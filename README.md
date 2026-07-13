@@ -200,6 +200,8 @@ unsnooze help                   # full command list (also -h / --help)
 | `agents.claude` / `agents.codex` | `true` | Which CLIs are guarded. |
 | `agents.grok` / `agents.qwen` / `agents.kimi` / `agents.opencode` / `agents.agy` | `false` | Experimental adapters — off by default; enable in `unsnooze setup` or `unsnooze config set agents.qwen on`. |
 | `workspaceGuard` | `inform` | Repo changed while a session slept? `inform` wakes it with a heads-up in the message; `pause` holds it (desktop notification, diff shown on `resume-now`); `off` disables. |
+| `contextGuard` | `inform` | Big cold context at wake? Waking a session re-reads its **entire context at full uncached price** ([why](#why-did-resuming-a-big-session-eat-so-much-of-my-quota)). `inform` resumes and notifies you of the size; `pause` holds sessions above the threshold for `unsnooze resume-now`; `off` disables. Claude Code only for now. |
+| `contextGuardTokens` | `100000` | Context-size threshold (tokens) at which `contextGuard` notifies or holds. |
 | `updateCheck` | `true` | Daily new-version check (a plain GET to the npm registry, nothing identifying is sent). Notices after commands + one desktop toast per version. |
 
 Every setting also has a `UNSNOOZE_*` env override (see `src/settings.js`), and
@@ -258,6 +260,12 @@ watcher stops (no pane context) always use native.
   the wake, the resumed agent is told to re-read before acting — or, with
   `workspaceGuard=pause`, the session is held and `unsnooze resume-now`
   shows the diff first.
+- **Cold-cache wake guard**: waking a session after hours means the provider's
+  prompt cache is long expired — the first message re-reads the entire
+  context at full price, and a fat session can eat a real slice of the fresh
+  quota window. unsnooze estimates the size from the session transcript
+  (shown as `ctx ~152k tok` in `unsnooze status`) and, per `contextGuard`,
+  notifies you or holds the session instead of spending it silently.
 
 ## Requirements
 
@@ -326,6 +334,25 @@ message includes what changed ("HEAD abc1234 → def5678 — re-read before
 continuing"). Set `workspaceGuard` to `pause` to hold such sessions for a
 manual `unsnooze resume-now` (which prints the diff stat), or `off` to
 disable the check.
+
+### Why did resuming a big session eat so much of my quota?
+
+Because of prompt-cache expiry, not because of unsnooze. Providers cache your
+session's context so each turn only pays full price for what's new — but that
+cache lives ~5 minutes. After hours stopped at a limit, the cache is long
+gone, so the **first** wake message (unsnooze's, or a hand-typed "continue" —
+identical cost either way; the wake message itself is ~30 tokens) makes the
+API re-read the entire conversation at full uncached price. A ~150k-token
+session on a top-tier model can cost a meaningful slice of a fresh 5-hour
+window the moment it wakes, before any new work happens.
+
+What actually helps: `/compact` (or starting a fresh session with a handoff
+summary) *before* you hit the limit, and keeping overnight sessions lean.
+What unsnooze does: the `contextGuard` setting estimates the context size
+from the session transcript before waking. `inform` (default) resumes and
+notifies you of the price; `pause` holds sessions above `contextGuardTokens`
+(default 100k) until you decide with `unsnooze resume-now`; the estimate is
+also visible per-session in `unsnooze status` (`ctx ~152k tok`).
 
 ### Does it work if my laptop was asleep or the terminal was closed?
 

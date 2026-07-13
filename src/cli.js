@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { LOG_FILE, MAX_RESUME_ATTEMPTS } from './config.js';
 import { readState, setStatus, updateState } from './state.js';
+import { getAgent } from './agents/index.js';
+import { approxTokens } from './sessions.js';
 import { getConfig, setConfigValue, listConfig, CONFIG_FILE } from './settings.js';
 import { spawnResumerIfNeeded } from './spawn.js';
 
@@ -35,10 +37,18 @@ export function cmdStatus() {
       ? ` · msg: "${s.resumeMessage.length > 44 ? s.resumeMessage.slice(0, 44) + '…' : s.resumeMessage}"`
       : '';
     const hold = s.workspaceHold
-      ? ` · workspace changed (${s.holdReason ?? '?'}) — resume-now to wake`
+      ? ` · held: ${s.holdReason ?? '?'} — resume-now to wake`
       : '';
+    // The price of waking: estimated context tokens the API re-reads cold.
+    let ctx = '';
+    if (s.status === 'stopped') {
+      try {
+        const t = getAgent(s.agent).contextTokens?.(s);
+        if (t != null) ctx = ` · ctx ${approxTokens(t)} tok`;
+      } catch { /* estimate unavailable — omit */ }
+    }
     console.log(`  [${s.status.toUpperCase().padEnd(9)}] ${id}  ${(s.agent || 'claude').padEnd(6)} ${s.limitType?.padEnd(7) ?? 'unknown'} ${s.cwd}`);
-    console.log(`              mux ${s.mux ?? '-'} · pane ${pane} · session ${s.muxSession ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}${msg}${hold}`);
+    console.log(`              mux ${s.mux ?? '-'} · pane ${pane} · session ${s.muxSession ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}${msg}${ctx}${hold}`);
   }
   return 0;
 }

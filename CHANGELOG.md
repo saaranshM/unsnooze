@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Context-size guard** (`contextGuard`: `off` | `inform` | `pause`, default
+  `inform`; threshold `contextGuardTokens`, default `100000`): waking a
+  session hours after a limit stop re-reads its entire context at full
+  uncached price (the provider's prompt cache expires in minutes) — a
+  150k-token session can eat a real slice of a fresh 5-hour window the moment
+  it wakes. unsnooze now estimates the size from the session transcript (the
+  last `message.usage` entry, tail-read) before dispatch: `inform` resumes
+  and notifies you of the price once the wake lands; `pause` holds sessions
+  at or above the threshold (`held: context ~152k tokens` in status) until
+  `unsnooze resume-now`, which always bypasses the guard. The estimate also
+  shows per-session in `unsnooze status` (`ctx ~152k tok`). Claude Code only
+  for now — the agent-adapter hook (`contextTokens`) is open for Codex, whose
+  rollout `token_count` events carry the same data. Prompted by r/ClaudeAI
+  feedback on a resume consuming 30% of a 5h quota.
+
 ## 1.8.1 — 2026-07-13
 
 - **Discovery / SEO**: package description and keywords expanded so npm and

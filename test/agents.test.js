@@ -41,3 +41,11 @@ test('claude adapter: pattern sets drive the shared engine', () => {
   assert.equal(d.limitType, '5h');
   assert.equal(isBusy('✻ Cogitating… (esc to interrupt)', claude.patterns.busyPatterns), true);
 });
+
+test('claude adapter: contextTokens needs cwd + sessionId, null when unknown', () => {
+  const claude = getAgent('claude');
+  assert.equal(typeof claude.contextTokens, 'function');
+  assert.equal(claude.contextTokens({ cwd: null, sessionId: 'abc' }), null);
+  assert.equal(claude.contextTokens({ cwd: '/tmp/x', sessionId: null }), null);
+  assert.equal(claude.contextTokens({ cwd: '/nonexistent-xyz', sessionId: 'abc' }), null);   // no transcript → null
+});

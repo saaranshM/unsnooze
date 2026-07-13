@@ -3,7 +3,7 @@
 // session-id lookup, and (claude-only) the interactive limit-menu driver.
 
 import { contentLines } from '../patterns.js';
-import { latestSessionId } from '../sessions.js';
+import { latestSessionId, transcriptPath, lastUsageTokens } from '../sessions.js';
 
 export const patterns = {
   // Claude Code renders limits across multiple TUI lines, e.g.:
@@ -93,6 +93,13 @@ export default {
     return { args: sessionId ? ['--resume', sessionId] : ['-c'], messageViaPane: true };
   },
   latestSessionId,
+  // Estimated tokens the API re-reads on a cold wake (prompt cache long
+  // expired). null → unknown, contextGuard skips. Adapters without this
+  // method are unguarded.
+  contextTokens(rec) {
+    if (!rec?.cwd || !rec?.sessionId) return null;   // watcher/scrape records may lack either
+    return lastUsageTokens(transcriptPath(rec.cwd, rec.sessionId));
+  },
   // The foreground process for a claude session is `node` (nvm shim) or `claude`.
   isForegroundCommand(cmd) {
     return cmd === 'claude' || cmd === 'node' || cmd === 'unsnooze';

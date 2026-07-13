@@ -457,6 +457,185 @@ test('workspaceGuard off: changed repo ignored', async () => {
   }
 });
 
+test('contextGuard pause: big context → held, nothing sent, notified once', async () => {
+  process.env.UNSNOOZE_CONTEXT_GUARD = 'pause';
+  try {
+    const rec = seed({ pane: '%81' });
+    const sent = [];
+    const toasts = [];
+    const result = await dispatchOne(rec, {
+      mux: liveTmux(sent), contextTokens: () => 152_500,
+      notifier: (t, m, opts) => toasts.push({ t, m, opts }),
+    });
+    assert.equal(result, 'held');
+    assert.equal(sent.length, 0);
+    const after1 = readState().sessions[rec.key];
+    assert.equal(after1.workspaceHold, true);
+    assert.match(after1.holdReason, /context ~153k tokens/);
+    assert.equal(toasts.length, 1);
+    assert.match(toasts[0].t, /session held/);
+    assert.match(toasts[0].m, /~153k tokens/);
+    assert.deepEqual(toasts[0].opts?.context, { mux: 'tmux', pane: '%81', paneOwner: null });
+    const { dueForDispatch } = await import('../src/resumer.js');
+    assert.ok(!dueForDispatch().some(s => s.key === rec.key), 'held records are not dispatchable');
+    // resume-now marks manual → bypasses the guard entirely
+    const again = await dispatchOne({ ...readState().sessions[rec.key], manual: true }, {
+      mux: liveTmux(sent), contextTokens: () => 152_500, notifier: () => {},
+    });
+    assert.equal(again, 'injected');
+  } finally {
+    delete process.env.UNSNOOZE_CONTEXT_GUARD;
+  }
+});
+
+test('contextGuard pause: below threshold → resumes normally, no toast', async () => {
+  process.env.UNSNOOZE_CONTEXT_GUARD = 'pause';
+  try {
+    const rec = seed({ pane: '%82' });
+    const sent = [];
+    const toasts = [];
+    const result = await dispatchOne(rec, {
+      mux: liveTmux(sent), contextTokens: () => 50_000,
+      notifier: (t, m, opts) => toasts.push({ t, m, opts }),
+    });
+    assert.equal(result, 'injected');
+    assert.equal(sent.length, 1);
+    assert.equal(toasts.length, 0);
+  } finally {
+    delete process.env.UNSNOOZE_CONTEXT_GUARD;
+  }
+});
+
+test('contextGuard inform (default): big context → resumed, clean wake message, one toast', async () => {
+  const rec = seed({ pane: '%83' });
+  const sent = [];
+  const toasts = [];
+  const result = await dispatchOne(rec, {
+    mux: liveTmux(sent), contextTokens: () => 152_500,
+    notifier: (t, m, opts) => toasts.push({ t, m, opts }),
+  });
+  assert.equal(result, 'injected');
+  assert.equal(sent.length, 1);
+  assert.ok(!/context/i.test(sent[0]), 'wake message must not mention context size');
+  assert.equal(toasts.length, 1);
+  assert.match(toasts[0].t, /big-context wake/);
+  assert.match(toasts[0].m, /~153k-token/);
+  assert.deepEqual(toasts[0].opts?.context, { mux: 'tmux', pane: '%83', paneOwner: null });
+});
+
+test('contextGuard inform: busy pane → no toast (notify only on delivery)', async () => {
+  const rec = seed({ pane: '%84' });
+  const toasts = [];
+  const busyTmux = {
+    paneAlive: async () => true,
+    paneCurrentCommand: async () => 'claude',
+    capturePane: async () => '✻ Cogitating… (esc to interrupt)',
+    sendText: async () => { throw new Error('must not send while busy'); },
+  };
+  const result = await dispatchOne(rec, {
+    mux: busyTmux, contextTokens: () => 152_500,
+    notifier: (t, m, opts) => toasts.push({ t, m, opts }),
+  });
+  assert.equal(result, 'busy');
+  assert.equal(toasts.length, 0);
+});
+
+test('contextGuard inform: reopen path → toast fires after the message lands', async () => {
+  const sid = '00000000-0000-4000-8000-c0417e871111';   // fixed id: seed() finds pane-null records unreliably
+  seed({ sessionId: sid, pane: null });
+  const rec = readState().sessions[sid];
+  const sent = [];
+  const toasts = [];
+  const mux = {
+    newWindow: async () => ({ pane: '%85', paneOwner: null }),
+    capturePane: async () => '❯ \n',
+    sendText: async (pane, text) => sent.push(text),
+  };
+  const result = await dispatchOne(rec, {
+    mux, resolveMux: () => mux, contextTokens: () => 152_500,
+    notifier: (t, m, opts) => toasts.push({ t, m, opts }),
+  });
+  assert.equal(result, 'reopen');
+  assert.equal(sent.length, 1);
+  assert.equal(toasts.length, 1);
+  assert.match(toasts[0].t, /big-context wake/);
+});
+
+test('contextGuard inform: below threshold → no toast', async () => {
+  const rec = seed({ pane: '%86' });
+  const toasts = [];
+  await dispatchOne(rec, {
+    mux: liveTmux([]), contextTokens: () => 50_000,
+    notifier: (t, m, opts) => toasts.push({ t, m, opts }),
+  });
+  assert.equal(toasts.length, 0);
+});
+
+test('contextGuard: threshold honors the env override', async () => {
+  process.env.UNSNOOZE_CONTEXT_GUARD_TOKENS = '200000';
+  try {
+    const rec = seed({ pane: '%87' });
+    const toasts = [];
+    const result = await dispatchOne(rec, {
+      mux: liveTmux([]), contextTokens: () => 152_500,
+      notifier: (t, m, opts) => toasts.push({ t, m, opts }),
+    });
+    assert.equal(result, 'injected');
+    assert.equal(toasts.length, 0);
+  } finally {
+    delete process.env.UNSNOOZE_CONTEXT_GUARD_TOKENS;
+  }
+});
+
+test('contextGuard off and manual resumes: estimator never called', async () => {
+  process.env.UNSNOOZE_CONTEXT_GUARD = 'off';
+  let calls = 0;
+  try {
+    const rec = seed({ pane: '%88' });
+    const result = await dispatchOne(rec, {
+      mux: liveTmux([]), contextTokens: () => { calls++; return 152_500; },
+    });
+    assert.equal(result, 'injected');
+  } finally {
+    delete process.env.UNSNOOZE_CONTEXT_GUARD;
+  }
+  const rec2 = seed({ pane: '%89', manual: true });
+  const result2 = await dispatchOne(rec2, {
+    mux: liveTmux([]), contextTokens: () => { calls++; return 152_500; },
+  });
+  assert.equal(result2, 'injected');
+  assert.equal(calls, 0);
+});
+
+test('contextGuard: estimator null or throwing → resumes silently', async () => {
+  const toasts = [];
+  const rec = seed({ pane: '%90' });
+  assert.equal(await dispatchOne(rec, {
+    mux: liveTmux([]), contextTokens: () => null,
+    notifier: (t, m, opts) => toasts.push({ t, m, opts }),
+  }), 'injected');
+  const rec2 = seed({ pane: '%91' });
+  assert.equal(await dispatchOne(rec2, {
+    mux: liveTmux([]), contextTokens: () => { throw new Error('transcript unreadable'); },
+    notifier: (t, m, opts) => toasts.push({ t, m, opts }),
+  }), 'injected');
+  assert.equal(toasts.length, 0);
+});
+
+test('contextGuard: adapter without contextTokens → guard skipped, no crash', async () => {
+  const sid = '00000000-0000-4000-8000-c0417e872222';   // fixed id: seed() finds pane-null records unreliably
+  seed({ sessionId: sid, pane: null, agent: 'codex' });
+  const rec = readState().sessions[sid];
+  const toasts = [];
+  const mux = { newWindow: async () => ({ pane: '%92', paneOwner: null }) };
+  const result = await dispatchOne(rec, {
+    mux, resolveMux: () => mux,
+    notifier: (t, m, opts) => toasts.push({ t, m, opts }),
+  });
+  assert.equal(result, 'reopen');
+  assert.equal(toasts.length, 0);
+});
+
 const MENU = [
   'What do you want to do?',
   '❯ 1. Upgrade your plan',
