@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.10.0 — 2026-07-14
+
 - **Session-name ownership** (fix: interactive `claude` dying with
   `duplicate session: unsnooze`): the interactive launcher owns the base name
   `unsnooze` (and `unsnooze-2`… on collision); the resumer daemon may join a
