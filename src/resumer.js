@@ -11,16 +11,17 @@ import {
   RESUMER_LOCK, STATE_DIR, POLL_INTERVAL_MS, STAGGER_MS, VERIFY_DELAY_MS,
   BUSY_DEFER_MS, MAX_BUSY_DEFERS, MAX_RESUME_ATTEMPTS, READY_TIMEOUT_MS,
   CAPTURE_LINES, PANE_SCAN_LINES, RESUME_SESSION_NAME,
-  RESET_MARGIN_MS, FALLBACK_RESET_MS,
+  RESET_MARGIN_MS, FALLBACK_RESET_MS, PROBE_INTERVAL_MS, PROBE_MAX_MS,
 } from './config.js';
 import { detectLimit, isBusy } from './patterns.js';
 import { getAgent } from './agents/index.js';
-import { parseResetTime, resetAtMs } from './time-parser.js';
+import { parseResetTime, resetAtMs, nextProbeDelayMs } from './time-parser.js';
 import {
   readState, updateState, setStatus, dueSessions, activeStopped,
   prune, sweepRecords, markStaleAbandoned,
 } from './state.js';
 import { approxTokens } from './sessions.js';
+import { latestRateLimitFromTranscript } from './watchers/claude.js';
 import { getConfig, resolveResumeMessage } from './settings.js';
 import { workspaceFingerprint, workspaceChanged, describeChange } from './workspace.js';
 import { notify } from './notify.js';
@@ -107,7 +108,104 @@ async function driveMenu(mux, pane, agent, text) {
   return true;
 }
 
-// Ordered safety decision. Returns: busy | retry | progress | held | injected | reopen.
+// §4: when a fallback record is due, re-capture the pane (or transcript) and
+// either resume (banner gone) or reschedule the next probe with backoff.
+// Returns null when the caller should proceed with a normal dispatch.
+export async function probeFallback(rec, {
+  mux = resolveRecordMux(rec),
+  now = Date.now(),
+} = {}) {
+  if (rec.resetSource !== 'fallback' || rec.manual) return null;
+  const key = rec.key;
+  const agent = getAgent(rec.agent);
+  let stillLimited = null;
+  let resetLine = null;
+  let bannerAt = rec.bannerAt ?? null;
+
+  // Prefer a fresh transcript entry when available (claude).
+  const fromTx = latestRateLimitFromTranscript(rec.cwd, rec.sessionId, { now });
+  if (fromTx) {
+    stillLimited = true;
+    resetLine = fromTx.resetLine;
+    bannerAt = fromTx.timestampMs;
+  } else if (rec.pane && await mux.paneAlive(rec.pane)) {
+    let text;
+    try { text = await mux.capturePane(rec.pane, CAPTURE_LINES); }
+    catch (err) {
+      log(`${key}: probe capture failed: ${err.message}`);
+      return rescheduleProbe(rec, now);
+    }
+    const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
+    const menu = !!(agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES));
+    stillLimited = d.hit || menu;
+    resetLine = d.hit ? d.resetLine : null;
+  } else {
+    // No live signal — treat as still unknown and probe again (or give up
+    // at the hard ceiling and let reopen try).
+    return rescheduleProbe(rec, now);
+  }
+
+  if (!stillLimited) {
+    // Banner cleared — proceed with a normal wake.
+    log(`${key}: probe found banner cleared — resuming`);
+    return null;
+  }
+
+  // Banner still present. If it now parses to a real time, upgrade off fallback.
+  if (resetLine) {
+    const { at, source } = resetAtMs(parseResetTime(resetLine), {
+      marginMs: RESET_MARGIN_MS,
+      fallbackMs: PROBE_INTERVAL_MS,
+      now: new Date(now),
+      bannerAt,
+    });
+    if (source !== 'fallback') {
+      setStatus(key, 'stopped', {
+        resetAt: at, resetSource: source, bannerAt,
+        lastError: 'limit still active (probe upgraded estimate)',
+        probeCount: 0,
+      });
+      log(`${key}: probe upgraded fallback→${source}, rescheduled to ${new Date(at).toISOString()}`);
+      return 'probe';
+    }
+  }
+
+  return rescheduleProbe(rec, now);
+}
+
+function rescheduleProbe(rec, now = Date.now()) {
+  const key = rec.key;
+  const probeCount = rec.probeCount || 0;
+  const detectedAt = rec.detectedAt || now;
+  const ceiling = detectedAt + FALLBACK_RESET_MS + RESET_MARGIN_MS;
+  // Past the hard ceiling: schedule a final attempt at the ceiling (or now
+  // if already past) and stop tagging as endless probes — reopen path runs.
+  if (now >= ceiling) {
+    setStatus(key, 'stopped', {
+      resetAt: now,
+      resetSource: 'fallback',
+      lastError: 'probe ceiling reached — attempting resume',
+      probeCount: probeCount + 1,
+    });
+    log(`${key}: probe ceiling reached — attempting resume`);
+    return null;   // proceed with dispatch
+  }
+  const delay = nextProbeDelayMs(probeCount, {
+    intervalMs: PROBE_INTERVAL_MS, maxMs: PROBE_MAX_MS,
+  });
+  let nextAt = now + delay + RESET_MARGIN_MS;
+  if (nextAt > ceiling) nextAt = ceiling;
+  setStatus(key, 'stopped', {
+    resetAt: nextAt,
+    resetSource: 'fallback',
+    lastError: 'limit still active — probing',
+    probeCount: probeCount + 1,
+  });
+  log(`${key}: probe #${probeCount + 1} rescheduled to ${new Date(nextAt).toISOString()}`);
+  return 'probe';
+}
+
+// Ordered safety decision. Returns: busy | retry | progress | held | injected | reopen | probe.
 export async function dispatchOne(rec, {
   mux = resolveRecordMux(rec), resolveMux = null,
   resumeMessage, selfCmd = selfCommand(), fingerprint = workspaceFingerprint,
@@ -120,6 +218,15 @@ export async function dispatchOne(rec, {
   // explicit option → per-agent (`resumeMessages.<id>`) → global. Applies to
   // both the live-pane sendText and the argv reopen path.
   resumeMessage = rec.resumeMessage ?? resumeMessage ?? resolveResumeMessage(agent.id);
+
+  // §4: fallback records probe cheaply before a real resume attempt.
+  if (rec.resetSource === 'fallback' && !rec.manual) {
+    const probed = await probeFallback(rec, { mux });
+    if (probed === 'probe') return 'probe';
+    // null → banner gone or ceiling hit — fall through to normal dispatch.
+    // Re-read record in case probeFallback mutated it.
+    rec = readState().sessions[key] || rec;
+  }
 
   // Stale-workspace guard: another session (or a human) may have moved the
   // repo while this one slept. Manual resumes (resume-now) always proceed.
@@ -309,14 +416,27 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
   const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
   if (d.hit || (agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES))) {
     // Limit not actually reset — reschedule from the fresh banner.
-    const { at, source } = resetAtMs(parseResetTime(d.resetLine), {
-      marginMs: RESET_MARGIN_MS, fallbackMs: FALLBACK_RESET_MS,
+    // Prefer a dated transcript entry when present so relative/absolute
+    // offsets anchor to the banner's own time.
+    let resetLine = d.hit ? d.resetLine : null;
+    let bannerAt = null;
+    const fromTx = latestRateLimitFromTranscript(rec.cwd, rec.sessionId);
+    if (fromTx) {
+      resetLine = fromTx.resetLine ?? resetLine;
+      bannerAt = fromTx.timestampMs;
+    }
+    const { at, source } = resetAtMs(parseResetTime(resetLine), {
+      marginMs: RESET_MARGIN_MS,
+      fallbackMs: PROBE_INTERVAL_MS,
+      bannerAt,
     });
     setStatus(key, 'stopped', {
       attempts: (rec.attempts || 0) + 1, resetAt: at, resetSource: source,
+      bannerAt: bannerAt ?? rec.bannerAt ?? null,
       lastError: 'limit still active at resume time', verifyRetries: 0,
+      ...(source === 'fallback' ? { probeCount: (rec.probeCount || 0) + 1 } : { probeCount: 0 }),
     });
-    log(`${key}: limit still active, rescheduled to ${new Date(at).toISOString()}`);
+    log(`${key}: limit still active, rescheduled to ${new Date(at).toISOString()} (${source})`);
     return;
   }
   setStatus(key, 'resumed', { lastError: null, verifyRetries: 0 });
@@ -324,9 +444,7 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
   const hint = attachHint(rec.mux, session);
   log(`${key}: verified resumed in ${session}${hint ? ` — ${hint}` : ''}`);
   const fromGui = rec.origin && rec.origin !== 'cli';
-  const where = hint
-    ? ` in ${session} — attach: ${hint}`
-    : '';
+  const where = hint ? ` in ${session} — attach: ${hint}` : '';
   notify('unsnoozed ✅', `${rec.cwd} is running again${where}${fromGui ? ` (was in ${rec.origin} — revived in ${rec.mux})` : ''}`, { context: ctxOf(rec) });
   return 'resumed';
 }
@@ -353,7 +471,7 @@ export function routeDispatchOutcome(result, rec, deferCounts, { maxBusyDefers =
     setStatus(rec.key, 'stopped', { lastError: null, verifyRetries: 0 });
     return { verify: false, waitBusy: false };
   }
-  if (result === 'held') return { verify: false, waitBusy: false };
+  if (result === 'held' || result === 'probe') return { verify: false, waitBusy: false };
   return { verify: result === 'injected' || result === 'reopen', waitBusy: false };
 }
 

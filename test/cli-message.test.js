@@ -80,6 +80,44 @@ test('status output shows the backend, qualified pane, and revival session', asy
   assert.match(lines.join('\n'), /mux zellij · pane main:1 · session unsnooze-e2e/);
 });
 
+test('fmtResetProvenance surfaces absolute/transcript vs probing fallback', () => {
+  assert.equal(
+    fmtResetProvenance({ resetSource: 'absolute', detectedVia: 'transcript' }),
+    'absolute, from transcript',
+  );
+  assert.equal(
+    fmtResetProvenance({ resetSource: 'relative', detectedVia: 'scrape' }),
+    'relative, from scrape',
+  );
+  assert.equal(
+    fmtResetProvenance({ resetSource: 'fallback' }),
+    'guessed: no reset time found — probing',
+  );
+});
+
+test('status output includes provenance for absolute and fallback records', async () => {
+  seed('%48', {
+    sessionId: 'dddd4444-5555-4666-8777-888888888888',
+    resetSource: 'absolute',
+    detectedVia: 'transcript',
+    resetAt: Date.now() + 3_600_000,
+  });
+  seed('%49', {
+    sessionId: 'eeee5555-6666-4777-8888-999999999999',
+    resetSource: 'fallback',
+    detectedVia: 'scrape',
+    resetAt: Date.now() + 15 * 60_000,
+  });
+  const lines = [];
+  const orig = console.log;
+  console.log = (...a) => lines.push(a.join(' '));
+  try { await cmdStatus(); } finally { console.log = orig; }
+  const out = lines.join('\n');
+  assert.match(out, /absolute, from transcript/);
+  assert.match(out, /guessed: no reset time found — probing/);
+});
+
+
 test('held sessions: status shows the marker, resume-now clears the hold', async () => {
   // holdReason is self-descriptive since contextGuard: the marker is generic.
   const rec = seed('%46', { workspaceHold: true, holdReason: 'workspace changed (HEAD aaaaaaa → bbbbbbb)', resetAt: Date.now() - 1000 });

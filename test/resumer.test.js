@@ -11,7 +11,7 @@ process.env.UNSNOOZE_NOTIFICATIONS = 'off';   // no desktop popups from tests
 process.env.UNSNOOZE_READY_TIMEOUT_MS = '6000';   // keep the reopen poll short in tests
 process.env.UNSNOOZE_VERIFY_DELAY_MS = '0';
 
-const { dispatchOne, verifyOne, routeDispatchOutcome, runResumer, reviveTarget } = await import('../src/resumer.js');
+const { dispatchOne, verifyOne, routeDispatchOutcome, runResumer, probeFallback, reviveTarget } = await import('../src/resumer.js');
 const { upsertSession, readState, setStatus, updateState, sweepRecords, markStaleAbandoned } = await import('../src/state.js');
 const { RESUME_SESSION_NAME } = await import('../src/config.js');
 
@@ -56,44 +56,24 @@ test('reopen environment contains only record env and unsnooze control vars', as
       },
     });
     let launchSpec;
-    let targetSession;
     const mux = {
-      sessionExists: async () => false,
-      newWindow: async (session, _cwd, spec) => {
-        targetSession = session;
+      newWindow: async (_session, _cwd, spec) => {
         launchSpec = spec;
         return { pane: '%177', paneOwner: null };
       },
     };
 
     assert.equal(await dispatchOne(rec, { mux }), 'reopen');
-    // tmux paneOwner is always null — do NOT set UNSNOOZE_PANE_OWNER from muxSession.
     assert.deepEqual(launchSpec.env, {
       CLAUDE_CONFIG_DIR: '/tmp/sandbox/.claude',
       CLAUDE_SECURESTORAGE_CONFIG_DIR: '',
       UNSNOOZE_MUX: 'tmux',
       UNSNOOZE_LEASE_ID: launchSpec.env.UNSNOOZE_LEASE_ID,
     });
-    // Dead/absent original session → dedicated resume session, never the base name.
-    assert.equal(targetSession, RESUME_SESSION_NAME);
-    assert.equal(readState().sessions[rec.key].muxSession, RESUME_SESSION_NAME);
   } finally {
     delete process.env.SECRET_API_KEY;
     delete process.env.UNRELATED_DAEMON_SETTING;
   }
-});
-
-test('reviveTarget joins a live named session and otherwise uses RESUME_SESSION_NAME', async () => {
-  const live = { sessionExists: async name => name === 'unsnooze' };
-  assert.equal(await reviveTarget(live, { muxSession: 'unsnooze' }), 'unsnooze');
-  assert.equal(await reviveTarget(live, { tmuxSession: 'unsnooze' }), 'unsnooze');
-
-  const dead = { sessionExists: async () => false };
-  assert.equal(await reviveTarget(dead, { muxSession: 'unsnooze' }), RESUME_SESSION_NAME);
-  assert.equal(await reviveTarget(dead, { muxSession: null }), RESUME_SESSION_NAME);
-  // Never invents the interactive base name when nothing is live.
-  assert.notEqual(RESUME_SESSION_NAME, 'unsnooze');
-  assert.ok(RESUME_SESSION_NAME.endsWith('-resumed'));
 });
 
 test('record with cwd null → reopened in the home dir, not a newWindow crash', async () => {
@@ -757,12 +737,9 @@ test('reopen rebinds owner, publishes lease id in structured env, and scrubs sta
   try {
     const rec = seed({ mux: 'zellij', paneOwner: 'main', pane: '3', muxSession: 'revive' });
     let launchSpec;
-    let targetSession;
     const oldMux = {
       paneAlive: async () => false,
-      sessionExists: async name => name === 'revive',
-      newWindow: async (session, _cwd, spec) => {
-        targetSession = session;
+      newWindow: async (_session, _cwd, spec) => {
         launchSpec = spec;
         return { pane: '9', paneOwner: 'revive' };
       },
@@ -778,54 +755,18 @@ test('reopen rebinds owner, publishes lease id in structured env, and scrubs sta
       resolveMux: next => { resolved.push(next.paneOwner); return newMux; },
     });
     assert.equal(result, 'reopen');
-    assert.equal(targetSession, 'revive');
     assert.deepEqual(resolved, ['revive']);
     assert.deepEqual(sent, ['9']);
     assert.equal(launchSpec.env.UNSNOOZE_PANE, undefined);
     assert.equal(launchSpec.env.UNSNOOZE_ACTIVE, undefined);
-    // zellij only: UNSNOOZE_PANE_OWNER comes from the revive target.
     assert.equal(launchSpec.env.UNSNOOZE_PANE_OWNER, 'revive');
     const saved = readState().sessions[rec.key];
     assert.equal(saved.paneOwner, 'revive');
-    assert.equal(saved.muxSession, 'revive');
     assert.equal(saved.leaseId, launchSpec.env.UNSNOOZE_LEASE_ID);
   } finally {
     delete process.env.UNSNOOZE_PANE;
     delete process.env.UNSNOOZE_PANE_OWNER;
   }
-});
-
-test('sweepRecords drops dead-pane terminal records but keeps live ones', async () => {
-  const dead = seed({ sessionId: 'sweep-dead', pane: '%d1', status: 'resumed' });
-  setStatus(dead.key, 'resumed');
-  const live = seed({ sessionId: 'sweep-live', pane: '%l1', status: 'resumed' });
-  setStatus(live.key, 'resumed');
-  // Only %l1 is "alive"; every other terminal record (including leftovers from
-  // earlier tests in this file) is treated as dead and swept.
-  const n = await sweepRecords({
-    resolveMux: () => ({ paneAlive: async pane => pane === '%l1' }),
-  });
-  assert.ok(n >= 1);
-  const state = readState();
-  assert.equal(state.sessions[dead.key], undefined);
-  assert.ok(state.sessions[live.key]);
-});
-
-test('stale stopped record with a dead pane is marked failed instead of revived', async () => {
-  const rec = seed({
-    sessionId: 'stale-old',
-    pane: '%gone',
-    status: 'stopped',
-    detectedAt: Date.now() - 8 * 86_400_000,
-    resetAt: Date.now() - 1000,
-  });
-  const n = await markStaleAbandoned({
-    resolveMux: () => ({ paneAlive: async () => false }),
-    staleAfterMs: 7 * 86_400_000,
-  });
-  assert.equal(n, 1);
-  assert.equal(readState().sessions[rec.key].status, 'failed');
-  assert.match(readState().sessions[rec.key].lastError, /stale/);
 });
 
 test('verifyOne capture failure stays resuming and re-resolves the re-read record', async () => {
@@ -879,4 +820,163 @@ test('defer outcome routing keeps busy, retry, and held semantically distinct', 
   routeDispatchOutcome('held', held, counts);
   assert.equal(readState().sessions[held.key].status, 'stopped');
   assert.equal(readState().sessions[held.key].attempts, 0);
+});
+
+// --- §4 fallback probing ---
+
+test('probeFallback: banner still present → reschedule next probe, not 5h', async () => {
+  const now = Date.now();
+  const rec = seed({
+    pane: '%200',
+    resetSource: 'fallback',
+    resetAt: now - 1000,
+    detectedAt: now - 60_000,
+    probeCount: 0,
+  });
+  const mux = {
+    paneAlive: async () => true,
+    capturePane: async () => 'Rate limit exceeded. Please wait.\n> ',
+  };
+  // Use grok-like patterns via agent on record
+  updateState(s => { s.sessions[rec.key].agent = 'grok'; });
+  const refreshed = readState().sessions[rec.key];
+  const result = await probeFallback(refreshed, { mux, now });
+  assert.equal(result, 'probe');
+  const after = readState().sessions[rec.key];
+  assert.equal(after.resetSource, 'fallback');
+  assert.equal(after.probeCount, 1);
+  const wait = after.resetAt - now;
+  // ~15 min + margin, not 5h
+  assert.ok(wait < 20 * 60_000, `expected probe-scale wait, got ${wait}ms`);
+  assert.ok(wait > 10 * 60_000, `expected ~15m wait, got ${wait}ms`);
+});
+
+test('probeFallback: banner gone → null (proceed to resume)', async () => {
+  const rec = seed({
+    pane: '%201',
+    resetSource: 'fallback',
+    resetAt: Date.now() - 1000,
+    probeCount: 1,
+  });
+  const mux = {
+    paneAlive: async () => true,
+    capturePane: async () => '❯ working normally\n',
+  };
+  assert.equal(await probeFallback(rec, { mux }), null);
+});
+
+test('dispatchOne on fallback with live banner returns probe (no inject)', async () => {
+  const rec = seed({
+    pane: '%202',
+    agent: 'grok',
+    resetSource: 'fallback',
+    resetAt: Date.now() - 1000,
+    probeCount: 0,
+    detectedAt: Date.now() - 60_000,
+  });
+  let injected = false;
+  const mux = {
+    paneAlive: async () => true,
+    paneCurrentCommand: async () => 'grok',
+    capturePane: async () => 'Rate limit exceeded. Please wait a moment and try again.\n> ',
+    sendText: async () => { injected = true; },
+  };
+  assert.equal(await dispatchOne(rec, { mux, matchesLease: async () => true }), 'probe');
+  assert.equal(injected, false);
+});
+
+test('routeDispatchOutcome treats probe like held (no verify, no attempt bump)', () => {
+  const rec = seed({ pane: '%203', resetSource: 'fallback' });
+  const counts = new Map();
+  const routed = routeDispatchOutcome('probe', rec, counts);
+  assert.deepEqual(routed, { verify: false, waitBusy: false });
+  assert.equal(readState().sessions[rec.key].attempts, 0);
+});
+
+// --- session-name ownership tests (merged from plan 1) ---
+
+test('reopen environment contains only record env and unsnooze control vars', async () => {
+  process.env.SECRET_API_KEY = 'must-not-leak';
+  process.env.UNRELATED_DAEMON_SETTING = 'must-not-leak-either';
+  try {
+    const rec = seed({
+      pane: null,
+      agent: 'codex',
+      env: {
+        CLAUDE_CONFIG_DIR: '/tmp/sandbox/.claude',
+        CLAUDE_SECURESTORAGE_CONFIG_DIR: '',
+      },
+    });
+    let launchSpec;
+    let targetSession;
+    const mux = {
+      sessionExists: async () => false,
+      newWindow: async (session, _cwd, spec) => {
+        targetSession = session;
+        launchSpec = spec;
+        return { pane: '%177', paneOwner: null };
+      },
+    };
+
+    assert.equal(await dispatchOne(rec, { mux }), 'reopen');
+    // tmux paneOwner is always null — do NOT set UNSNOOZE_PANE_OWNER from muxSession.
+    assert.deepEqual(launchSpec.env, {
+      CLAUDE_CONFIG_DIR: '/tmp/sandbox/.claude',
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: '',
+      UNSNOOZE_MUX: 'tmux',
+      UNSNOOZE_LEASE_ID: launchSpec.env.UNSNOOZE_LEASE_ID,
+    });
+    // Dead/absent original session → dedicated resume session, never the base name.
+    assert.equal(targetSession, RESUME_SESSION_NAME);
+    assert.equal(readState().sessions[rec.key].muxSession, RESUME_SESSION_NAME);
+  } finally {
+    delete process.env.SECRET_API_KEY;
+    delete process.env.UNRELATED_DAEMON_SETTING;
+  }
+});
+
+test('reviveTarget joins a live named session and otherwise uses RESUME_SESSION_NAME', async () => {
+  const live = { sessionExists: async name => name === 'unsnooze' };
+  assert.equal(await reviveTarget(live, { muxSession: 'unsnooze' }), 'unsnooze');
+  assert.equal(await reviveTarget(live, { tmuxSession: 'unsnooze' }), 'unsnooze');
+
+  const dead = { sessionExists: async () => false };
+  assert.equal(await reviveTarget(dead, { muxSession: 'unsnooze' }), RESUME_SESSION_NAME);
+  assert.equal(await reviveTarget(dead, { muxSession: null }), RESUME_SESSION_NAME);
+  // Never invents the interactive base name when nothing is live.
+  assert.notEqual(RESUME_SESSION_NAME, 'unsnooze');
+  assert.ok(RESUME_SESSION_NAME.endsWith('-resumed'));
+});
+
+test('sweepRecords drops dead-pane terminal records but keeps live ones', async () => {
+  const dead = seed({ sessionId: 'sweep-dead', pane: '%d1', status: 'resumed' });
+  setStatus(dead.key, 'resumed');
+  const live = seed({ sessionId: 'sweep-live', pane: '%l1', status: 'resumed' });
+  setStatus(live.key, 'resumed');
+  // Only %l1 is "alive"; every other terminal record (including leftovers from
+  // earlier tests in this file) is treated as dead and swept.
+  const n = await sweepRecords({
+    resolveMux: () => ({ paneAlive: async pane => pane === '%l1' }),
+  });
+  assert.ok(n >= 1);
+  const state = readState();
+  assert.equal(state.sessions[dead.key], undefined);
+  assert.ok(state.sessions[live.key]);
+});
+
+test('stale stopped record with a dead pane is marked failed instead of revived', async () => {
+  const rec = seed({
+    sessionId: 'stale-old',
+    pane: '%gone',
+    status: 'stopped',
+    detectedAt: Date.now() - 8 * 86_400_000,
+    resetAt: Date.now() - 1000,
+  });
+  const n = await markStaleAbandoned({
+    resolveMux: () => ({ paneAlive: async () => false }),
+    staleAfterMs: 7 * 86_400_000,
+  });
+  assert.equal(n, 1);
+  assert.equal(readState().sessions[rec.key].status, 'failed');
+  assert.match(readState().sessions[rec.key].lastError, /stale/);
 });

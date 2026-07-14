@@ -19,6 +19,19 @@ function fmtCountdown(ms) {
   return `${h}h ${m % 60}m`;
 }
 
+
+// Surface how the reset estimate was derived so a silent wrong guess can't hide.
+export function fmtResetProvenance(s) {
+  if (s.resetSource === 'fallback' || !s.resetSource) {
+    return 'guessed: no reset time found — probing';
+  }
+  const via = s.detectedVia === 'transcript' ? 'transcript'
+    : s.detectedVia === 'hook' ? 'hook'
+    : s.detectedVia === 'scrape' ? 'scrape'
+    : null;
+  return via ? `${s.resetSource}, from ${via}` : s.resetSource;
+}
+
 export async function cmdStatus() {
   const state = readState();
   const sessions = Object.values(state.sessions);
@@ -32,7 +45,10 @@ export async function cmdStatus() {
   console.log(`unsnooze: ${sessions.length} tracked session(s)  (resumer pid: ${state.resumerPid ?? 'not running'})${pausedNote}\n`);
   for (const s of sessions.sort((a, b) => (a.resetAt || 0) - (b.resetAt || 0))) {
     const id = s.sessionId ? s.sessionId.slice(0, 8) : '(no id)';
-    const reset = s.resetAt ? `${new Date(s.resetAt).toLocaleString()} (${fmtCountdown(s.resetAt - now)})` : '?';
+    const when = s.resetAt
+      ? `${new Date(s.resetAt).toLocaleString()} (${fmtCountdown(s.resetAt - now)})`
+      : '?';
+    const reset = `${when} (${fmtResetProvenance(s)})`;
     const origin = s.origin ?? (s.pane ? 'cli' : '?');
     const pane = s.paneOwner ? `${s.paneOwner}:${s.pane ?? '-'}` : (s.pane ?? '-');
     const msg = s.resumeMessage

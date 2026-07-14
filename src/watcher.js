@@ -18,7 +18,7 @@ import { join, sep, basename, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import {
   CLAUDE_DIR, CODEX_DIR, WATCH_OFFSETS_FILE, WATCH_FRESHNESS_MS,
-  RESET_MARGIN_MS, FALLBACK_RESET_MS,
+  RESET_MARGIN_MS, PROBE_INTERVAL_MS,
 } from './config.js';
 import { getMultiplexer } from './multiplexer.js';
 import { parseTranscriptLine } from './watchers/claude.js';
@@ -146,13 +146,17 @@ export function defaultSources() {
 // cancelled.
 export function dispatchCandidate(c) {
   const detectedAt = c.timestampMs || Date.now();
+  const bannerAt = c.timestampMs || null;
   let at, source;
   if (c.resetAt) {
     at = c.resetAt + RESET_MARGIN_MS;
     source = 'absolute';
   } else {
     ({ at, source } = resetAtMs(parseResetTime(c.resetLine), {
-      marginMs: RESET_MARGIN_MS, fallbackMs: FALLBACK_RESET_MS,
+      marginMs: RESET_MARGIN_MS,
+      fallbackMs: PROBE_INTERVAL_MS,
+      now: new Date(detectedAt),
+      bannerAt,
     }));
   }
 
@@ -166,6 +170,7 @@ export function dispatchCandidate(c) {
       if (s && (s.status === 'stopped' || s.status === 'resuming')) {
         s.resetAt = at;
         s.resetSource = source;
+        if (bannerAt != null) s.bannerAt = bannerAt;
         if (c.limitType && c.limitType !== 'unknown') s.limitType = c.limitType;
       }
     });
@@ -185,6 +190,7 @@ export function dispatchCandidate(c) {
     limitType: c.limitType || 'unknown',
     detectedVia: 'transcript',
     detectedAt,
+    bannerAt,
     resetAt: at,
     resetSource: source,
     attempts: 0,

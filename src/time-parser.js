@@ -5,7 +5,6 @@
 // Optional weekday between "resets" and the time covers weekly banners
 // ("resets Tuesday 9am (UTC)").
 const RESET_TIME_REGEX = /resets?\s+(?:at\s+)?(?:on\s+)?(?:(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(([^)]+)\))?/i;
-const RELATIVE_TIME_REGEX = /(?:try again|wait|resets?\s+in)[:\s]\s*(?:for\s+)?(?:in\s+)?(\d+)\s*(hours?|minutes?|mins?|h|m)\b/i;
 // "resets Tuesday 3pm" / "resets on Mon" — weekly limits carry a day name.
 const DAY_REGEX = /resets?\s+(?:on\s+)?(mon|tue|wed|thu|fri|sat|sun)[a-z]*/i;
 const DAY_INDEX = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
@@ -19,10 +18,11 @@ const RESET_DATE_REGEX = /resets?\s+(?:on\s+)?(jan|feb|mar|apr|may|jun|jul|aug|s
 //   older:     "Try again in 4 days 20 hours 9 minutes."
 const TRY_AT_TIME_REGEX = /try again at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i;
 const TRY_AT_DATE_REGEX = /try again at\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*(am|pm)/i;
-// Multi-unit relative, verb-generalized across CLIs: codex "Try again in 4 days
-// 20 hours 9 minutes", agy "Refreshes in 6 days and 18 hours", opencode "It
-// will reset in 2 hours 5 minutes" / "Retry in 45 minutes".
-const MULTI_RELATIVE_REGEX = /(?:try again|resets?|refreshes|retry|wait)\s+in\s+(?:(\d+)\s*days?\b(?:\s+and)?\s*)?(?:(\d+)\s*hours?\b(?:\s+and)?\s*)?(?:(\d+)\s*min(?:ute)?s?\b)?/i;
+// Relative "in …" clause — word forms and compact Go-style ("1h 30m", "2h5m").
+// Capture the duration phrase and sum every token via parseGoDuration.
+const RELATIVE_IN_REGEX = /(?:try again|resets?|refreshes|retry|wait)\s+in[:\s]+(.+?)(?:\.\s|\.\s*$|attempt\s*#?\d+|$)/i;
+// "wait 5 minutes" / "wait for 5 minutes" without a leading "in".
+const WAIT_DURATION_REGEX = /\bwait\s+(?:for\s+)?(?!in\b)(.+?)(?:\.\s|\.\s*$|$)/i;
 // opencode status line: "Rate Limited [retrying in 2h5m attempt #4]" — the
 // duration is Go-style ("2h5m", "2m 5s", "~2 days").
 const RETRY_BANNER_REGEX = /retrying in\s+([^\]\n]*?)\s*attempt\s*#?\d+/i;
@@ -37,6 +37,8 @@ const DURATION_UNIT_MS = {
 
 function parseGoDuration(text) {
   let total = 0;
+  // Reset lastIndex — the regex is global and shared across calls.
+  DURATION_TOKEN_REGEX.lastIndex = 0;
   for (const m of text.matchAll(DURATION_TOKEN_REGEX)) {
     const raw = m[2].toLowerCase();
     // Exact form first ("ms" must not singular-strip to "m"), then singular.
@@ -52,6 +54,11 @@ function to24h(hour, ampm) {
   if (ampm === 'pm' && h !== 12) h += 12;
   if (ampm === 'am' && h === 12) h = 0;
   return h;
+}
+
+function toMs(t) {
+  if (t instanceof Date) return t.getTime();
+  return Number(t);
 }
 
 export function parseResetTime(text) {
@@ -122,25 +129,17 @@ export function parseResetTime(text) {
     };
   }
 
-  // Multi-unit relative ("in 4 days 20 hours 9 minutes", "in 6 days and 18
-  // hours", "reset in 2 hours 5 minutes") — checked BEFORE the single-unit
-  // form, which would truncate "2 hours 5 minutes" to just "2 hours".
-  const multiMatch = text.match(MULTI_RELATIVE_REGEX);
-  if (multiMatch && (multiMatch[1] || multiMatch[2] || multiMatch[3])) {
-    const days = parseInt(multiMatch[1] || '0', 10);
-    const hours = parseInt(multiMatch[2] || '0', 10);
-    const minutes = parseInt(multiMatch[3] || '0', 10);
-    return { relative: true, waitMs: ((days * 24 + hours) * 60 + minutes) * 60_000 };
+  // Relative offsets: sum every duration token so "1h 30m" / "2 hours 5 minutes"
+  // / "6 days and 18 hours" all land at the full wait, not the first unit.
+  const inMatch = text.match(RELATIVE_IN_REGEX);
+  if (inMatch) {
+    const waitMs = parseGoDuration(inMatch[1]);
+    if (waitMs > 0) return { relative: true, waitMs };
   }
-
-  // Single-unit fallback covers colon/verb forms the multi regex doesn't
-  // ("resets in: 3 hours", "wait 5 minutes").
-  const relMatch = text.match(RELATIVE_TIME_REGEX);
-  if (relMatch) {
-    const amount = parseInt(relMatch[1], 10);
-    const unit = relMatch[2].toLowerCase();
-    const isMinutes = unit.startsWith('m');
-    return { relative: true, waitMs: amount * (isMinutes ? 60_000 : 3_600_000) };
+  const waitMatch = text.match(WAIT_DURATION_REGEX);
+  if (waitMatch) {
+    const waitMs = parseGoDuration(waitMatch[1]);
+    if (waitMs > 0) return { relative: true, waitMs };
   }
 
   // Day-only weekly banner ("resets Tuesday") with no time — midnight-ish target,
@@ -153,15 +152,32 @@ export function parseResetTime(text) {
 }
 
 // Convert parsed reset info into an absolute epoch ms (includes margin).
-// Unparseable input falls back to now + fallbackMs.
-export function resetAtMs(parsed, { marginMs = 60_000, fallbackMs = 5 * 3_600_000, now = new Date() } = {}) {
+//
+// `now`     — wall-clock reference (is the reset already past?).
+// `bannerAt`— when the banner text was produced. Relative offsets and
+//             next-occurrence math anchor here so a stale scrape doesn't
+//             re-add the full wait. Falls back to `now` when unknown.
+// Unparseable input falls back to now + fallbackMs (callers pass a short
+// probe interval, not a multi-hour guess).
+export function resetAtMs(parsed, {
+  marginMs = 60_000,
+  fallbackMs = 5 * 3_600_000,
+  now = new Date(),
+  bannerAt = null,
+} = {}) {
+  const wallNow = toMs(now);
+  const anchor = bannerAt != null ? toMs(bannerAt) : wallNow;
+  // Absolute next-occurrence math uses an anchor Date so targetTimestamp's
+  // formatToParts sees the banner's local day, not today's.
+  const anchorDate = new Date(anchor);
+
   const source = !parsed ? 'fallback' : parsed.relative ? 'relative' : 'absolute';
-  if (!parsed) return { at: now.getTime() + fallbackMs + marginMs, source };
-  if (parsed.relative) return { at: now.getTime() + parsed.waitMs + marginMs, source };
+  if (!parsed) return { at: wallNow + fallbackMs + marginMs, source };
+  if (parsed.relative) return { at: anchor + parsed.waitMs + marginMs, source };
   // Pre-resolved epoch (full-date banner, local time). A stale past date means
   // we misread the banner — fall back rather than firing immediately.
   if (parsed.absolute) {
-    if (parsed.atMs <= now.getTime()) return { at: now.getTime() + fallbackMs + marginMs, source: 'fallback' };
+    if (parsed.atMs <= wallNow) return { at: wallNow + fallbackMs + marginMs, source: 'fallback' };
     return { at: parsed.atMs + marginMs, source };
   }
 
@@ -170,7 +186,7 @@ export function resetAtMs(parsed, { marginMs = 60_000, fallbackMs = 5 * 3_600_00
     tz = parsed.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
     Intl.DateTimeFormat('en-US', { timeZone: tz });
   } catch {
-    return { at: now.getTime() + fallbackMs + marginMs, source: 'fallback' };
+    return { at: wallNow + fallbackMs + marginMs, source: 'fallback' };
   }
 
   // DST-safe: build today's date in the target tz, then iteratively correct the
@@ -193,10 +209,11 @@ export function resetAtMs(parsed, { marginMs = 60_000, fallbackMs = 5 * 3_600_00
     return candidate;
   }
 
-  function targetTimestamp(h, m) {
+  // Resolve h:m on the local calendar day of `ref` (banner time or wall clock).
+  function targetTimestamp(h, m, ref = anchorDate) {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour12: false,
-    }).formatToParts(now);
+    }).formatToParts(ref);
     const y = parseInt(parts.find(p => p.type === 'year').value);
     const mo = parseInt(parts.find(p => p.type === 'month').value);
     const d = parseInt(parts.find(p => p.type === 'day').value);
@@ -205,10 +222,18 @@ export function resetAtMs(parsed, { marginMs = 60_000, fallbackMs = 5 * 3_600_00
     return correctWallClock(new Date(targetStr + 'Z').getTime(), h, m);
   }
 
+  // Occurrence of h:m relative to the banner's calendar day.
+  // - If that wall-clock is still after the banner, use it (may already be
+  //   past wall-clock `now` — caller treats that as "already reset").
+  // - If the banner was printed at/after that clock time, roll +1 day
+  //   (the announcement means tomorrow). Undated scrapes (bannerAt unknown,
+  //   so anchor === wallNow) leave a past-on-day time past so we due-now
+  //   instead of the old blind +24h rollover.
+  // Weekday forms always roll forward to the named day in the future.
   function nextOccurrence(h, m) {
-    let t = targetTimestamp(h, m);
-    if (t <= now.getTime()) t += 86_400_000;
+    let t = targetTimestamp(h, m, anchorDate);
     if (parsed.day != null) {
+      if (t <= anchor) t += 86_400_000;
       // Roll forward to the named weekday (in the target tz).
       for (let i = 0; i < 7; i++) {
         const wd = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' })
@@ -216,14 +241,22 @@ export function resetAtMs(parsed, { marginMs = 60_000, fallbackMs = 5 * 3_600_00
         if (DAY_INDEX[wd] === parsed.day) break;
         t += 86_400_000;
       }
+      return t;
+    }
+    if (t <= anchor) {
+      // Dated banner, or ambiguous (need both am/pm candidates as real
+      // next-occurrences): roll to the next day. Undated non-ambiguous
+      // past clock times stay past so the outer guard returns due-now
+      // instead of a blind +24h.
+      if (bannerAt != null || parsed.ambiguous) t += 86_400_000;
     }
     return t;
   }
 
-  // Month-date form ("resets Jul 4 at 12:30am (tz)"): roll forward from today
-  // in the target tz to the named month/day, re-correct the wall-clock (the
-  // walk may cross DST). An already-past date means we misread stale text —
-  // fall back rather than waiting toward next year.
+  // Month-date form ("resets Jul 4 at 12:30am (tz)"): roll forward from the
+  // banner's local day in the target tz to the named month/day, re-correct the
+  // wall-clock (the walk may cross DST). An already-past date means we misread
+  // stale text — fall back rather than waiting toward next year.
   if (parsed.month != null) {
     const monthDayAt = t => {
       const fp = new Intl.DateTimeFormat('en-US', { timeZone: tz, month: 'numeric', day: 'numeric' })
@@ -239,7 +272,7 @@ export function resetAtMs(parsed, { marginMs = 60_000, fallbackMs = 5 * 3_600_00
       // the named date at the wrong instant (landing a day late after the
       // final correction). The walk is capped just past the 10-day acceptance
       // window below — longer walks are discarded anyway.
-      let t = targetTimestamp(h, m);
+      let t = targetTimestamp(h, m, anchorDate);
       for (let i = 0; i <= 12; i++) {
         const [mo, d] = monthDayAt(t);
         if (mo === parsed.month && d === parsed.dayOfMonth) return t;
@@ -253,9 +286,9 @@ export function resetAtMs(parsed, { marginMs = 60_000, fallbackMs = 5 * 3_600_00
     // The yearless form only ever names a date within the weekly window; a
     // resolution further out means the date already passed and the walk landed
     // on NEXT year's occurrence — that's a misread, not an 11-month wait.
-    const maxAhead = now.getTime() + 10 * 86_400_000;
-    const future = candidates.filter(t => t != null && t > now.getTime() && t <= maxAhead);
-    if (future.length === 0) return { at: now.getTime() + fallbackMs + marginMs, source: 'fallback' };
+    const maxAhead = wallNow + 10 * 86_400_000;
+    const future = candidates.filter(t => t != null && t > wallNow && t <= maxAhead);
+    if (future.length === 0) return { at: wallNow + fallbackMs + marginMs, source: 'fallback' };
     return { at: Math.min(...future) + marginMs, source };
   }
 
@@ -267,5 +300,25 @@ export function resetAtMs(parsed, { marginMs = 60_000, fallbackMs = 5 * 3_600_00
   } else {
     at = nextOccurrence(parsed.hour, parsed.minute);
   }
+  // Banner announced a clock time that (relative to wall clock) is already
+  // past → the limit already reset; wake immediately rather than +24h.
+  if (at <= wallNow) return { at: wallNow + marginMs, source };
   return { at: at + marginMs, source };
+}
+
+// Probe backoff: 15 → 30 → 60 min (capped). probeCount is 0-based number of
+// completed probes so far. Hard ceiling is enforced by the caller against
+// detectedAt + FALLBACK_RESET_MS.
+export function nextProbeDelayMs(probeCount = 0, {
+  intervalMs = 15 * 60_000,
+  maxMs = 60 * 60_000,
+} = {}) {
+  const delay = intervalMs * (2 ** Math.max(0, probeCount));
+  return Math.min(delay, maxMs);
+}
+
+export function sourceRank(source) {
+  if (source === 'absolute') return 2;
+  if (source === 'relative') return 1;
+  return 0; // fallback / unknown
 }

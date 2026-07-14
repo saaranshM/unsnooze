@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseResetTime, resetAtMs } from '../src/time-parser.js';
+import { parseResetTime, resetAtMs, nextProbeDelayMs, sourceRank } from '../src/time-parser.js';
 
 const MARGIN = 60_000;
 const H = 3_600_000;
+const PROBE = 15 * 60_000;
 
 test('parses absolute "resets 3pm (UTC)"', () => {
   const p = parseResetTime('· resets 3pm (UTC)');
@@ -63,16 +64,16 @@ test('month-date day-walk across a DST fall-back stays on the named date', () =>
 
 test('month-date already past → fallback, never next year', () => {
   const now = new Date('2026-07-10T12:00:00Z');
-  const { at, source } = resetAtMs(parseResetTime('resets Jul 4 at 12:30am (Asia/Calcutta)'), { now, fallbackMs: 5 * H, marginMs: MARGIN });
+  const { at, source } = resetAtMs(parseResetTime('resets Jul 4 at 12:30am (Asia/Calcutta)'), { now, fallbackMs: PROBE, marginMs: MARGIN });
   assert.equal(source, 'fallback');
-  assert.equal(at, now.getTime() + 5 * H + MARGIN);
+  assert.equal(at, now.getTime() + PROBE + MARGIN);
 });
 
-test('unparseable → null → fallback used', () => {
+test('unparseable → null → probe-interval fallback (not 5h)', () => {
   assert.equal(parseResetTime('garbage text'), null);
   const now = new Date('2026-07-05T12:00:00Z');
-  const { at, source } = resetAtMs(null, { now, fallbackMs: 5 * H, marginMs: MARGIN });
-  assert.equal(at, now.getTime() + 5 * H + MARGIN);
+  const { at, source } = resetAtMs(null, { now, fallbackMs: PROBE, marginMs: MARGIN });
+  assert.equal(at, now.getTime() + PROBE + MARGIN);
   assert.equal(source, 'fallback');
 });
 
@@ -82,10 +83,55 @@ test('absolute UTC time in the future today', () => {
   assert.equal(at, new Date('2026-07-05T15:00:00Z').getTime() + MARGIN);
 });
 
-test('absolute UTC time already past → tomorrow', () => {
+// §3 deliberate correction: already-past absolute time is DUE NOW, not +24h.
+// (Previously this test pinned the +24h rollover as intended — that was the bug.)
+test('absolute UTC time already past → due now, not tomorrow', () => {
   const now = new Date('2026-07-05T18:00:00Z');
-  const { at } = resetAtMs(parseResetTime('resets 3pm (UTC)'), { now, marginMs: MARGIN });
-  assert.equal(at, new Date('2026-07-06T15:00:00Z').getTime() + MARGIN);
+  const { at, source } = resetAtMs(parseResetTime('resets 3pm (UTC)'), { now, marginMs: MARGIN });
+  assert.equal(source, 'absolute');
+  assert.equal(at, now.getTime() + MARGIN);
+});
+
+test('stale absolute banner: next occurrence after bannerAt, past wall-clock → due now', () => {
+  // Banner said 10:40pm IST at banner time; scraped hours later after reset.
+  // 10:40pm Asia/Calcutta = 17:10 UTC.
+  const bannerAt = new Date('2026-07-05T14:00:00Z').getTime(); // 7:30pm IST
+  const now = new Date('2026-07-05T18:00:00Z');                 // 11:30pm IST — past 10:40pm
+  const p = parseResetTime("You've hit your session limit · resets 10:40pm (Asia/Calcutta)");
+  const { at, source } = resetAtMs(p, { now, bannerAt, marginMs: MARGIN });
+  assert.equal(source, 'absolute');
+  // Resolved 10:40pm IST after banner (= 17:10 UTC) is past wall now → due now
+  assert.equal(at, now.getTime() + MARGIN);
+});
+
+test('real fixture: session limit · resets 10:40pm (Asia/Calcutta) anchors to banner time', () => {
+  // Replay-style: entry timestamp 2026-07-05T14:00:00Z, reset 10:40pm IST same day.
+  // 10:40pm Asia/Calcutta = 17:10 UTC. Banner is before that → future reset.
+  const bannerAt = new Date('2026-07-05T14:00:00Z').getTime();
+  const now = new Date('2026-07-05T14:05:00Z'); // scrape ~5 min later
+  const p = parseResetTime("You've hit your session limit · resets 10:40pm (Asia/Calcutta)");
+  assert.ok(p);
+  assert.equal(p.hour, 22);
+  assert.equal(p.minute, 40);
+  assert.equal(p.timezone, 'Asia/Calcutta');
+  const { at, source } = resetAtMs(p, { now, bannerAt, marginMs: MARGIN });
+  assert.equal(source, 'absolute');
+  const expected = new Date('2026-07-05T17:10:00Z').getTime() + MARGIN;
+  assert.equal(at, expected);
+  // Must NOT be +5h from scrape and NOT +24h
+  assert.notEqual(at, now.getTime() + 5 * H + MARGIN);
+  assert.notEqual(at, expected + 86_400_000);
+});
+
+test('stale relative banner: printed at T0, scraped at T0+2h ⇒ reset = T0+offset', () => {
+  const bannerAt = new Date('2026-07-05T10:00:00Z').getTime();
+  const now = new Date('2026-07-05T12:00:00Z'); // +2h
+  const p = parseResetTime('resets in 3 hours');
+  const { at, source } = resetAtMs(p, { now, bannerAt, marginMs: MARGIN });
+  assert.equal(source, 'relative');
+  assert.equal(at, bannerAt + 3 * H + MARGIN);
+  // Not scrape+offset
+  assert.notEqual(at, now.getTime() + 3 * H + MARGIN);
 });
 
 test('ambiguous hour picks nearest future occurrence', () => {
@@ -117,10 +163,10 @@ test('invalid timezone falls back', () => {
   const now = new Date('2026-07-05T12:00:00Z');
   const { at, source } = resetAtMs(
     { hour: 15, minute: 0, timezone: 'Not/AZone', ambiguous: false, day: null },
-    { now, fallbackMs: 5 * H, marginMs: MARGIN },
+    { now, fallbackMs: PROBE, marginMs: MARGIN },
   );
   assert.equal(source, 'fallback');
-  assert.equal(at, now.getTime() + 5 * H + MARGIN);
+  assert.equal(at, now.getTime() + PROBE + MARGIN);
 });
 
 // --- multi-unit relative forms from the 2026 adapters (agy / opencode) ---
@@ -149,6 +195,14 @@ test('single-unit and colon forms still parse (regression)', () => {
   assert.equal(parseResetTime('Try again in 4 days 20 hours 9 minutes.').waitMs, ((4 * 24 + 20) * 60 + 9) * 60_000);
 });
 
+// --- §5 compact multi-unit: "1h 30m" must sum both tokens ---
+
+test('parses compact "resets in 1h 30m" as 1h30m not 1h', () => {
+  const p = parseResetTime('resets in 1h 30m');
+  assert.equal(p.relative, true);
+  assert.equal(p.waitMs, 1 * H + 30 * 60_000); // 5_400_000
+});
+
 // --- opencode status-line Go-durations: "[retrying in 2h5m attempt #4]" ---
 
 test('parses compact Go-duration "[retrying in 2h5m attempt #4]"', () => {
@@ -171,4 +225,16 @@ test('parses approx Go-duration "[retrying in ~2 days attempt #9]"', () => {
 
 test('bare "[retrying attempt #3]" (no duration) yields no parse', () => {
   assert.equal(parseResetTime('Rate Limited [retrying attempt #3]'), null);
+});
+
+test('nextProbeDelayMs backs off 15→30→60 and caps', () => {
+  assert.equal(nextProbeDelayMs(0, { intervalMs: PROBE, maxMs: 60 * 60_000 }), PROBE);
+  assert.equal(nextProbeDelayMs(1, { intervalMs: PROBE, maxMs: 60 * 60_000 }), 30 * 60_000);
+  assert.equal(nextProbeDelayMs(2, { intervalMs: PROBE, maxMs: 60 * 60_000 }), 60 * 60_000);
+  assert.equal(nextProbeDelayMs(5, { intervalMs: PROBE, maxMs: 60 * 60_000 }), 60 * 60_000);
+});
+
+test('sourceRank orders absolute > relative > fallback', () => {
+  assert.ok(sourceRank('absolute') > sourceRank('relative'));
+  assert.ok(sourceRank('relative') > sourceRank('fallback'));
 });

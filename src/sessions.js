@@ -1,7 +1,8 @@
 // Lookup helpers for Claude Code's transcript store (~/.claude/projects/).
 // Used to backfill sessionId when detection came from pane scraping and the
 // StopFailure hook didn't supply one, and to estimate a session's context
-// size before waking it (contextGuard).
+// size before waking it (contextGuard). Rate-limit banner reads live in
+// watchers/claude.js (latestRateLimitFromTranscript).
 
 import { readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';

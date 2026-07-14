@@ -35,6 +35,11 @@ export const RESET_MARGIN_MS = envInt('UNSNOOZE_RESET_MARGIN_MS', 60_000);
 export const POLL_INTERVAL_MS = envInt('UNSNOOZE_POLL_INTERVAL_MS', 30_000);       // resumer epoch polling
 export const SCRAPE_INTERVAL_MS = envInt('UNSNOOZE_SCRAPE_INTERVAL_MS', 5_000);    // monitor pane scraping
 export const FALLBACK_RESET_MS = envInt('UNSNOOZE_FALLBACK_RESET_MS', 5 * 3_600_000);
+// When no reset time parses: cheap pane probes instead of sleeping for 5h.
+// Backoff 15 → 30 → 60 min (capped at PROBE_MAX_MS); hard ceiling remains
+// FALLBACK_RESET_MS from detectedAt.
+export const PROBE_INTERVAL_MS = envInt('UNSNOOZE_PROBE_INTERVAL_MS', 15 * 60_000);
+export const PROBE_MAX_MS = envInt('UNSNOOZE_PROBE_MAX_MS', 60 * 60_000);
 export const STAGGER_MS = envInt('UNSNOOZE_STAGGER_MS', 8_000);
 export const VERIFY_DELAY_MS = envInt('UNSNOOZE_VERIFY_DELAY_MS', 20_000);
 export const BUSY_DEFER_MS = envInt('UNSNOOZE_BUSY_DEFER_MS', 60_000);

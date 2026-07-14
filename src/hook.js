@@ -6,12 +6,15 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { EVENTS_DIR, FALLBACK_RESET_MS, RESET_MARGIN_MS, CAPTURE_LINES, PANE_SCAN_LINES } from './config.js';
+import {
+  EVENTS_DIR, PROBE_INTERVAL_MS, RESET_MARGIN_MS, CAPTURE_LINES, PANE_SCAN_LINES,
+} from './config.js';
 import { detectLimit } from './patterns.js';
 import { getAgent } from './agents/index.js';
 import { getConfig } from './settings.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { upsertSession } from './state.js';
+import { latestRateLimitFromTranscript } from './watchers/claude.js';
 import { getMultiplexer } from './multiplexer.js';
 import { spawnResumerIfNeeded } from './spawn.js';
 import { makeLogger } from './logger.js';
@@ -72,9 +75,22 @@ export async function runHook(rest = []) {
     // rate_limit (or unknown — treat conservatively as a limit if we can see a banner)
     const cwd = payload.cwd || process.cwd();
     const detectedAt = Date.now();
+    const sessionId = payload.session_id || agent.latestSessionId?.(cwd, detectedAt) || null;
+
+    // Prefer the dated transcript entry over an undated pane scrape when the
+    // agent keeps transcripts (claude). Yields both banner text and bannerAt.
     let resetLine = null;
     let limitType = 'unknown';
-    if (pane) {
+    let bannerAt = null;
+    let detectedVia = 'hook';
+    const fromTx = latestRateLimitFromTranscript(cwd, sessionId, { now: detectedAt });
+    if (fromTx) {
+      resetLine = fromTx.resetLine;
+      limitType = fromTx.limitType || 'unknown';
+      bannerAt = fromTx.timestampMs;
+      detectedVia = 'transcript';
+      log(`StopFailure: rate-limit banner from transcript (ts=${bannerAt ? new Date(bannerAt).toISOString() : '?'})`);
+    } else if (pane) {
       try {
         const text = await mux.capturePane(pane, CAPTURE_LINES);
         const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
@@ -85,9 +101,11 @@ export async function runHook(rest = []) {
     if (kind === 'unknown' && !resetLine) return 0;   // nothing actionable
 
     const { at, source } = resetAtMs(parseResetTime(resetLine), {
-      marginMs: RESET_MARGIN_MS, fallbackMs: FALLBACK_RESET_MS,
+      marginMs: RESET_MARGIN_MS,
+      fallbackMs: PROBE_INTERVAL_MS,
+      now: new Date(detectedAt),
+      bannerAt,
     });
-    const sessionId = payload.session_id || agent.latestSessionId(cwd, detectedAt);
 
     // Discover the live session name from the pane — never freeze the module
     // load-time MUX_SESSION_NAME constant onto the record.
@@ -108,13 +126,15 @@ export async function runHook(rest = []) {
       muxSession,
       status: 'stopped',
       limitType,
-      detectedVia: 'hook',
+      detectedVia,
       detectedAt,
+      bannerAt,
       resetAt: at,
       resetSource: source,
       attempts: 0,
       lastAttemptAt: null,
       lastError: null,
+      ...(source === 'fallback' ? { probeCount: 0 } : {}),
     });
     log(`recorded limit stop: session=${sessionId} resetAt=${new Date(at).toISOString()} (${source})`);
     spawnResumerIfNeeded();
