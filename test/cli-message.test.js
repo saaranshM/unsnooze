@@ -60,27 +60,27 @@ test('no match → exit 1; missing text → exit 2', () => {
   assert.equal(cmdMessage(['--all']), 2);
 });
 
-test('status output marks sessions with a custom message', () => {
+test('status output marks sessions with a custom message', async () => {
   seed('%45', { sessionId: 'cccc3333-4444-4555-8666-777777777777' });
   cmdMessage(['cccc3333', 'run the deploy checklist']);
   const lines = [];
   const orig = console.log;
   console.log = (...a) => lines.push(a.join(' '));
-  try { cmdStatus(); } finally { console.log = orig; }
+  try { await cmdStatus(); } finally { console.log = orig; }
   const out = lines.join('\n');
   assert.match(out, /msg: "run the deploy checklist"/);
 });
 
-test('status output shows the backend, qualified pane, and revival session', () => {
+test('status output shows the backend, qualified pane, and revival session', async () => {
   seed('1', { mux: 'zellij', paneOwner: 'main', muxSession: 'unsnooze-e2e' });
   const lines = [];
   const orig = console.log;
   console.log = (...a) => lines.push(a.join(' '));
-  try { cmdStatus(); } finally { console.log = orig; }
+  try { await cmdStatus(); } finally { console.log = orig; }
   assert.match(lines.join('\n'), /mux zellij · pane main:1 · session unsnooze-e2e/);
 });
 
-test('held sessions: status shows the marker, resume-now clears the hold', () => {
+test('held sessions: status shows the marker, resume-now clears the hold', async () => {
   // holdReason is self-descriptive since contextGuard: the marker is generic.
   const rec = seed('%46', { workspaceHold: true, holdReason: 'workspace changed (HEAD aaaaaaa → bbbbbbb)', resetAt: Date.now() - 1000 });
   const ctx = seed('%47', { workspaceHold: true, holdReason: 'context ~152k tokens', resetAt: Date.now() - 1000 });
@@ -88,11 +88,11 @@ test('held sessions: status shows the marker, resume-now clears the hold', () =>
   const orig = console.log;
   console.log = (...a) => lines.push(a.join(' '));
   try {
-    cmdStatus();
+    await cmdStatus();
     assert.match(lines.join('\n'), /held: workspace changed .*resume-now/i);
     assert.match(lines.join('\n'), /held: context ~152k tokens .*resume-now/i);
-    cmdResumeNow(rec.key);
-    cmdResumeNow(ctx.key);
+    await cmdResumeNow(rec.key);
+    await cmdResumeNow(ctx.key);
   } finally { console.log = orig; }
   const after1 = readState().sessions[rec.key];
   assert.equal(after1.workspaceHold, undefined, 'resume-now clears the hold');

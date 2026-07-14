@@ -2,6 +2,8 @@ import { execFile as execFileCb, spawnSync } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
 import { promisify } from 'node:util';
 
+import { resolveSessionName, SessionCreateError } from './session-name.js';
+
 const execFileAsync = promisify(execFileCb);
 
 function defaultSpawner(file, args, { sync = false, ...options } = {}) {
@@ -27,6 +29,8 @@ function wrappedSessionName(env) {
 // Submit delay: text and the submitting Enter must be TWO separate send-keys
 // calls with a pause between them, or Ink treats Enter as bracketed paste.
 export const SUBMIT_DELAY_MS = 150;
+
+export { SessionCreateError };
 
 export function createTmux({ spawner = defaultSpawner, env = process.env } = {}) {
   const run = (...args) => spawner('tmux', args);
@@ -76,6 +80,17 @@ export function createTmux({ spawner = defaultSpawner, env = process.env } = {})
         return out.trim() === pane;
       } catch {
         return false;
+      }
+    },
+
+    // Live session the pane currently lives in. Trust stdout, not the exit
+    // code (same tmux 3.7b blank-success pitfall as paneAlive).
+    async sessionForPane(pane) {
+      try {
+        const out = (await run('display-message', '-t', pane, '-p', '#{session_name}')).trim();
+        return out || null;
+      } catch {
+        return null;
       }
     },
 
@@ -147,6 +162,33 @@ export function createTmux({ spawner = defaultSpawner, env = process.env } = {})
       }
     },
 
+    async listSessions() {
+      try {
+        const out = await run('list-sessions', '-F', '#{session_name}');
+        return out.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+          .map(name => ({ name, exited: false }));
+      } catch {
+        return [];
+      }
+    },
+
+    async listSessionPanes(sessionName) {
+      try {
+        const out = await run('list-panes', '-t', sessionName, '-F', '#{pane_id}');
+        return out.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      } catch {
+        return [];
+      }
+    },
+
+    async closePane(pane) {
+      await run('kill-pane', '-t', pane);
+    },
+
+    async deleteSession(name) {
+      await run('kill-session', '-t', name);
+    },
+
     async newWindow(sessionName, cwd, launchSpec) {
       // Environment flags require tmux >= 3.0 for new-window and >= 3.2 for
       // new-session. Older tmux fails revival with an "unknown flag -e" error.
@@ -159,7 +201,9 @@ export function createTmux({ spawner = defaultSpawner, env = process.env } = {})
         pane = await run('new-window', '-t', `${sessionName}:`, '-c', cwd,
           '-P', '-F', '#{pane_id}', ...launch);
       }
-      return { pane: pane.trim(), paneOwner: sessionName };
+      // tmux pane ids are server-global; paneOwner is only meaningful for
+      // zellij. Tracking the session lives on muxSession, not paneOwner.
+      return { pane: pane.trim(), paneOwner: null };
     },
 
     launchWrapped(launchSpec) {
@@ -167,9 +211,26 @@ export function createTmux({ spawner = defaultSpawner, env = process.env } = {})
       // tmux in the foreground also gives Ctrl-C to the active pane directly.
       // Its -e environment flags require tmux >= 3.2; older versions fail
       // revival with an "unknown flag -e" error.
-      const args = ['new-session', '-s', wrappedSessionName(env),
+      const name = resolveSessionName(wrappedSessionName(env), candidate => {
+        try {
+          return spawner('tmux', ['has-session', '-t', candidate],
+            { sync: true, stdio: 'ignore', env }).status === 0;
+        } catch {
+          return false;
+        }
+      });
+      // Session name is discovered live via sessionForPane at record-write
+      // time — do NOT inject UNSNOOZE_SESSION_NAME (would leak into daemons
+      // spawned from the agent via {...process.env}).
+      const args = ['new-session', '-s', name,
         ...envArgs(launchSpec.env), launchSpec.file, ...(launchSpec.args || [])];
       const result = spawner('tmux', args, { sync: true, stdio: 'inherit', env });
+      if (result?.error) {
+        throw new SessionCreateError(
+          `failed to start tmux session "${name}": ${result.error.message}`,
+          result.error,
+        );
+      }
       return exitStatus(result);
     },
 

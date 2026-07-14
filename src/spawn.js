@@ -1,7 +1,7 @@
 // Detached-process helpers shared by launcher, hook, and monitor.
 
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
 import { RESUMER_LOCK } from './config.js';
@@ -38,4 +38,26 @@ export function spawnResumerIfNeeded() {
   const pid = spawnDetached(['_resumer']);
   log(`spawned resumer pid ${pid}`);
   return pid;
+}
+
+// Stop a running resumer (if any): SIGTERM the lock pid, unlink the lock.
+// Tolerates a dead/stale pid and a missing lock — uninstall must not fail.
+export function stopResumer() {
+  let pid = null;
+  try {
+    if (!existsSync(RESUMER_LOCK)) return { stopped: false, pid: null, reason: 'no-lock' };
+    pid = parseInt(readFileSync(RESUMER_LOCK, 'utf-8'), 10);
+    if (Number.isFinite(pid) && pidAlive(pid)) {
+      try { process.kill(pid, 'SIGTERM'); } catch { /* raced with exit */ }
+      log(`stopped resumer pid ${pid}`);
+      try { unlinkSync(RESUMER_LOCK); } catch { /* gone */ }
+      return { stopped: true, pid };
+    }
+    // Stale lock: clean up.
+    try { unlinkSync(RESUMER_LOCK); } catch { /* gone */ }
+    return { stopped: false, pid: Number.isFinite(pid) ? pid : null, reason: 'stale' };
+  } catch (err) {
+    try { unlinkSync(RESUMER_LOCK); } catch { /* best-effort */ }
+    return { stopped: false, pid, reason: err.message };
+  }
 }

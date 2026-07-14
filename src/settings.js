@@ -23,6 +23,11 @@ export const DEFAULTS = {
   workspaceGuard: 'inform', // repo changed while stopped: off | inform | pause
   contextGuard: 'inform',   // wake re-reads a big cold context: off | inform | pause
   contextGuardTokens: 100_000, // contextGuard notify/hold threshold (tokens)
+  // Opt-in: auto-close `resumed` panes idle longer than reapIdleAfter (ms).
+  // Off by default — an idle revived TUI is indistinguishable from one the
+  // user will return to. Explicit cleanup: `unsnooze reap --yes`.
+  reapResumed: false,
+  reapIdleAfter: 7 * 86_400_000,
   resumeMessage: 'Continue where you left off. The session was interrupted by a usage limit which has now reset — pick up the task you were working on and finish it.',
   resumeMessages: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '' },  // per-agent override; '' = use resumeMessage
   agents: { claude: true, codex: true, grok: false, qwen: false, kimi: false, opencode: false, agy: false },   // experimental agents default off
@@ -40,6 +45,8 @@ const ENV_NAMES = {
   workspaceGuard: 'UNSNOOZE_WORKSPACE_GUARD',
   contextGuard: 'UNSNOOZE_CONTEXT_GUARD',
   contextGuardTokens: 'UNSNOOZE_CONTEXT_GUARD_TOKENS',
+  reapResumed: 'UNSNOOZE_REAP_RESUMED',
+  reapIdleAfter: 'UNSNOOZE_REAP_IDLE_AFTER',
   resumeMessage: 'UNSNOOZE_RESUME_MESSAGE',
   'resumeMessages.claude': 'UNSNOOZE_RESUME_MESSAGE_CLAUDE',
   'resumeMessages.codex': 'UNSNOOZE_RESUME_MESSAGE_CODEX',

@@ -16,7 +16,7 @@ import { CLAUDE_SETTINGS, STATE_DIR } from './config.js';
 import { getConfig, configFileExists } from './settings.js';
 import { xmlEscape } from './notify.js';
 import { installGrokHooks, uninstallGrokHooks } from './agents/grok.js';
-import { UNSNOOZE_BIN } from './spawn.js';
+import { UNSNOOZE_BIN, stopResumer } from './spawn.js';
 
 const FENCE_OPEN = '# >>> unsnooze >>>';
 const FENCE_CLOSE = '# <<< unsnooze <<<';
@@ -340,6 +340,16 @@ export function cmdInstall(rest, { agents = enabledAgents() } = {}) {
 export function cmdUninstall(rest) {
   const opts = parseArgs(rest);
   const explicitRc = rest.includes('--zshrc');
+
+  // Stop the resumer/daemon first so it cannot keep writing state after hooks
+  // are gone (zombie-daemon-running-deleted-code failure mode).
+  try {
+    const result = stopResumer();
+    if (result.stopped) console.log(`unsnooze: resumer stopped (pid ${result.pid})`);
+    else if (result.reason === 'stale') console.log('unsnooze: stale resumer lock cleared');
+  } catch (err) {
+    console.log(`unsnooze: could not stop resumer (${err.message})`);
+  }
 
   if (existsSync(opts.settings)) {
     const before = readFileSync(opts.settings, 'utf-8');

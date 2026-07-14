@@ -3,6 +3,8 @@ import { constants as osConstants } from 'node:os';
 import { basename } from 'node:path';
 import { promisify } from 'node:util';
 
+import { resolveSessionName, SessionCreateError } from './session-name.js';
+
 const execFileAsync = promisify(execFileCb);
 
 function defaultSpawner(file, args, { sync = false, ...options } = {}) {
@@ -48,11 +50,44 @@ function wrappedLayout(launchSpec) {
   return `layout { pane command=${kdlString(argv[0])} close_on_exit=true { args ${argv.slice(1).map(kdlString).join(' ')} } }`;
 }
 
+// Parse `zellij list-sessions -s` rows: strip ANSI, keep leading name token,
+// detect an "(EXITED …)" suffix. Rows that fail to parse are dropped.
+function parseSessionRows(stdout) {
+  return String(stdout)
+    // eslint-disable-next-line no-control-regex
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => {
+      const name = line.split(/\s+/)[0];
+      if (!name) return null;
+      return { name, exited: /\(EXITED/i.test(line) };
+    })
+    .filter(Boolean);
+}
+
 export const SUBMIT_DELAY_MS = 150;
+
+export { SessionCreateError };
 
 export function createZellij({ spawner = defaultSpawner, env = process.env } = {}) {
   const childEnv = () => scrubZellijEnv(env);
   const run = (args, options = {}) => spawner('zellij', args, { env: childEnv(), ...options });
+
+  // Sync counterpart of sessionExists, for the sync launchWrapped path. Rows can
+  // carry ANSI colour and an "(EXITED …)" suffix, so only the leading name token
+  // is compared. Probe failure → empty set: assume free and let zellij arbitrate.
+  const liveSessionNames = () => {
+    try {
+      const result = spawner('zellij', ['list-sessions', '-s'],
+        { sync: true, encoding: 'utf8', env: childEnv() });
+      const stdout = typeof result === 'string' ? result : (result?.stdout ?? '');
+      return new Set(parseSessionRows(stdout).map(row => row.name));
+    } catch {
+      return new Set();
+    }
+  };
 
   const build = owner => {
     const owned = (...args) => {
@@ -60,8 +95,9 @@ export function createZellij({ spawner = defaultSpawner, env = process.env } = {
       return run(['-s', owner, ...args]);
     };
 
-    const paneEntries = async () => {
-      const stdout = await owned('action', 'list-panes', '-a', '-j');
+    const paneEntries = async (session = owner) => {
+      if (!session) throw new Error('unsnooze: zellij pane operation requires a session owner');
+      const stdout = await run(['-s', session, 'action', 'list-panes', '-a', '-j']);
       const parsed = JSON.parse(stdout);
       return Array.isArray(parsed) ? parsed : [];
     };
@@ -127,6 +163,12 @@ export function createZellij({ spawner = defaultSpawner, env = process.env } = {
         }
       },
 
+      // Pane ids are per-session; the bound owner is the session name. Fall
+      // back to the ambient ZELLIJ_SESSION_NAME when unbound.
+      async sessionForPane(_pane) {
+        return owner || env.ZELLIJ_SESSION_NAME || null;
+      },
+
       async paneCurrentCommand(pane) {
         try {
           const id = Number(pane);
@@ -144,21 +186,75 @@ export function createZellij({ spawner = defaultSpawner, env = process.env } = {
       async sessionExists(name) {
         try {
           const stdout = await run(['list-sessions', '-s']);
-          return stdout.split(/\r?\n/).some(line => line.trim() === name);
+          return parseSessionRows(stdout).some(row => row.name === name);
         } catch {
           return false;
         }
       },
 
-      async newWindow(sessionName, cwd, launchSpec) {
-        if (!(await backend.sessionExists(sessionName))) {
-          await run(['attach', '-b', '-c', sessionName]);
+      async listSessions() {
+        try {
+          const stdout = await run(['list-sessions', '-s']);
+          return parseSessionRows(stdout);
+        } catch {
+          return [];
         }
+      },
+
+      async listSessionPanes(sessionName) {
+        try {
+          const entries = await paneEntries(sessionName);
+          return entries
+            .filter(entry => entry.is_plugin === false && entry.exited === false)
+            .map(entry => String(entry.id));
+        } catch {
+          return [];
+        }
+      },
+
+      async closePane(pane) {
+        if (!owner) throw new Error('unsnooze: zellij pane operation requires a session owner');
+        await owned('action', 'close-pane', '-p', `terminal_${pane}`);
+      },
+
+      async deleteSession(name) {
+        await run(['delete-session', name]);
+      },
+
+      async newWindow(sessionName, cwd, launchSpec) {
+        let created = false;
+        let preexisting = [];
+        if (!(await backend.sessionExists(sessionName))) {
+          // attach -b -c uses the default layout, which leaves a shell pane
+          // that never exits. Snapshot its ids so we can close them after the
+          // agent pane is added (closing the last pane would kill the session).
+          await run(['attach', '-b', '-c', sessionName]);
+          created = true;
+          try {
+            preexisting = (await paneEntries(sessionName))
+              .filter(entry => entry.is_plugin === false)
+              .map(entry => entry.id);
+          } catch {
+            preexisting = [];
+          }
+        }
+        // --close-on-exit matches launchWrapped's close_on_exit=true and tmux
+        // (pane dies with its command) so exited revivals don't keep the session.
         const stdout = await run([
-          '-s', sessionName, 'run', '--cwd', cwd, '--', ...launchArgv(launchSpec),
+          '-s', sessionName, 'run', '--close-on-exit', '--cwd', cwd, '--',
+          ...launchArgv(launchSpec),
         ]);
         const match = stdout.trim().match(/^terminal_(\d+)$/);
         if (!match) throw new Error(`unsnooze: unexpected zellij pane id: ${stdout.trim()}`);
+        if (created && preexisting.length) {
+          for (const id of preexisting) {
+            try {
+              await run(['-s', sessionName, 'action', 'close-pane', '-p', `terminal_${id}`]);
+            } catch {
+              // Best-effort: a missing default pane is fine.
+            }
+          }
+        }
         return { pane: match[1], paneOwner: sessionName };
       },
 
@@ -166,11 +262,21 @@ export function createZellij({ spawner = defaultSpawner, env = process.env } = {
         // The layout contains exactly one auto-closing pane, avoiding the
         // lingering default shell created by attach -b. The foreground client
         // owns the terminal, so Ctrl-C reaches zellij and its active pane.
+        const live = liveSessionNames();
+        const name = resolveSessionName(wrappedSessionName(env), c => live.has(c));
+        // Session name is discovered live via sessionForPane at record-write
+        // time — do NOT inject UNSNOOZE_SESSION_NAME into the layout env.
         const result = spawner('zellij', [
-          '--session', wrappedSessionName(env), '--layout-string', wrappedLayout(launchSpec),
+          '--session', name, '--layout-string', wrappedLayout(launchSpec),
         ], {
           sync: true, stdio: 'inherit', env: childEnv(),
         });
+        if (result?.error) {
+          throw new SessionCreateError(
+            `failed to start zellij session "${name}": ${result.error.message}`,
+            result.error,
+          );
+        }
         return exitStatus(result);
       },
 

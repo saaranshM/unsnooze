@@ -6,7 +6,7 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { EVENTS_DIR, FALLBACK_RESET_MS, RESET_MARGIN_MS, CAPTURE_LINES, PANE_SCAN_LINES, MUX_SESSION_NAME } from './config.js';
+import { EVENTS_DIR, FALLBACK_RESET_MS, RESET_MARGIN_MS, CAPTURE_LINES, PANE_SCAN_LINES } from './config.js';
 import { detectLimit } from './patterns.js';
 import { getAgent } from './agents/index.js';
 import { getConfig } from './settings.js';
@@ -89,6 +89,13 @@ export async function runHook(rest = []) {
     });
     const sessionId = payload.session_id || agent.latestSessionId(cwd, detectedAt);
 
+    // Discover the live session name from the pane — never freeze the module
+    // load-time MUX_SESSION_NAME constant onto the record.
+    let muxSession = null;
+    if (pane && typeof mux.sessionForPane === 'function') {
+      try { muxSession = await mux.sessionForPane(pane); } catch { muxSession = null; }
+    }
+
     upsertSession({
       sessionId: sessionId || null,
       cwd,
@@ -98,7 +105,7 @@ export async function runHook(rest = []) {
       leaseId,
       agent: agent.id,
       origin: 'cli',   // the hook only fires for CLI launches we can see
-      muxSession: MUX_SESSION_NAME,
+      muxSession,
       status: 'stopped',
       limitType,
       detectedVia: 'hook',

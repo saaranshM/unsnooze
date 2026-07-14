@@ -18,7 +18,7 @@ import { join, sep, basename, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import {
   CLAUDE_DIR, CODEX_DIR, WATCH_OFFSETS_FILE, WATCH_FRESHNESS_MS,
-  RESET_MARGIN_MS, FALLBACK_RESET_MS, MUX_SESSION_NAME,
+  RESET_MARGIN_MS, FALLBACK_RESET_MS,
 } from './config.js';
 import { getMultiplexer } from './multiplexer.js';
 import { parseTranscriptLine } from './watchers/claude.js';
@@ -179,7 +179,8 @@ export function dispatchCandidate(c) {
     agent: c.agent,
     origin: c.origin || null,
     mux: getMultiplexer().name, paneOwner: null, leaseId: null,
-    muxSession: MUX_SESSION_NAME,
+    // GUI/transcript records have no pane — session is discovered on revival.
+    muxSession: null,
     status: 'stopped',
     limitType: c.limitType || 'unknown',
     detectedVia: 'transcript',

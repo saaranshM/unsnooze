@@ -11,11 +11,18 @@ import { getConfig } from './settings.js';
 import { spawnDetached } from './spawn.js';
 import { makeLogger } from './logger.js';
 import { createLeaseId, processBirth, writeLease, removeLease } from './lease.js';
+import { SessionCreateError } from './multiplexers/session-name.js';
 
 const log = makeLogger('launcher');
 
 function isPrintMode(args) {
   return args.includes('-p') || args.includes('--print');
+}
+
+function runUnwatched(agent, args, reason) {
+  if (reason) process.stderr.write(`unsnooze: ${reason}\n`);
+  const r = spawnSync(agent.bin, args, { stdio: 'inherit', env: { ...process.env, UNSNOOZE_ACTIVE: '1' } });
+  return r.status ?? 1;
 }
 
 export function runLauncher(args, agentId = 'claude') {
@@ -39,15 +46,25 @@ export function runLauncher(args, agentId = 'claude') {
       } else {
         process.stderr.write(`unsnooze: install ${mux.name} to enable auto-resume.\n`);
       }
-      const r = spawnSync(agent.bin, args, { stdio: 'inherit', env: { ...process.env, UNSNOOZE_ACTIVE: '1' } });
-      return r.status ?? 1;
+      return runUnwatched(agent, args);
     }
     log(`not in ${mux.name} — wrapping into a managed session`);
-    return mux.launchWrapped({
-      file: process.execPath,
-      args: [process.argv[1], '_run', agent.id, ...args],
-      env: process.env,
-    });
+    try {
+      // A returned status is the agent's (or session's) exit — never re-run.
+      return mux.launchWrapped({
+        file: process.execPath,
+        args: [process.argv[1], '_run', agent.id, ...args],
+        env: process.env,
+      });
+    } catch (err) {
+      // Session creation failed (tmux/zellij binary spawn, unexpected throw).
+      // Never brick the user's `claude`/`codex` — fall back unwatched.
+      const msg = err instanceof SessionCreateError
+        ? `${err.message} — running without limit-watch.`
+        : `failed to wrap into ${mux.name} (${err.message}) — running without limit-watch.`;
+      log(`launchWrapped failed: ${err.stack || err}`);
+      return runUnwatched(agent, args, msg);
+    }
   }
 
   const pane = mux.currentPaneId();

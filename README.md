@@ -171,6 +171,8 @@ unsnooze status                 # tracked sessions + reset countdowns
 unsnooze resume-now [id|--all]  # don't wait for the reset time
 unsnooze cancel [id|--all]      # stop tracking a session
 unsnooze message <id> "text"    # per-session wake message (--clear to reset)
+unsnooze sessions               # list unsnooze-owned mux sessions + panes
+unsnooze reap [--dry-run|--yes] # close finished panes / empty sessions (default dry-run)
 unsnooze config list            # settings (see below)
 unsnooze config set <k> <v>     # e.g. autoResume off
 unsnooze logs [-f]              # what unsnooze has been doing
@@ -202,10 +204,27 @@ unsnooze help                   # full command list (also -h / --help)
 | `workspaceGuard` | `inform` | Repo changed while a session slept? `inform` wakes it with a heads-up in the message; `pause` holds it (desktop notification, diff shown on `resume-now`); `off` disables. |
 | `contextGuard` | `inform` | Big cold context at wake? Waking a session re-reads its **entire context at full uncached price** ([why](#why-did-resuming-a-big-session-eat-so-much-of-my-quota)). `inform` resumes and notifies you of the size; `pause` holds sessions above the threshold for `unsnooze resume-now`; `off` disables. Claude Code only for now. |
 | `contextGuardTokens` | `100000` | Context-size threshold (tokens) at which `contextGuard` notifies or holds. |
+| `reapResumed` | `false` | Opt-in: auto-close `resumed` panes idle longer than `reapIdleAfter`. Off by default — use `unsnooze reap --yes` for explicit cleanup. |
+| `reapIdleAfter` | `604800000` (7d) | Idle age (ms) before an opt-in auto-reap closes a `resumed` pane. |
 | `updateCheck` | `true` | Daily new-version check (a plain GET to the npm registry, nothing identifying is sent). Notices after commands + one desktop toast per version. |
 
 Every setting also has a `UNSNOOZE_*` env override (see `src/settings.js`), and
 all timings/paths are tunable via `UNSNOOZE_*` env vars (see `src/config.js`).
+
+### Multiplexer session names
+
+Interactive launches own the base session name (default **`unsnooze`**); a second
+concurrent terminal takes `unsnooze-2`, etc. The resumer daemon may **join** a
+live session but only ever **creates** `unsnooze-resumed`, so a revived agent
+never steals the interactive name.
+
+| env | default | meaning |
+|---|---|---|
+| `UNSNOOZE_SESSION_NAME` | `unsnooze` | Interactive base session name (also accepts legacy `UNSNOOZE_TMUX_SESSION`). |
+| `UNSNOOZE_RESUME_SESSION` | `<base>-resumed` | Session the daemon creates when the pane's original session is gone. |
+
+Find revived agents with `unsnooze status` (prints an attach hint when the
+session is live), `unsnooze sessions`, or e.g. `tmux attach -t unsnooze-resumed`.
 
 ### Notification channels
 

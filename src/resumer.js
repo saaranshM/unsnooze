@@ -10,13 +10,16 @@ import { getMultiplexer } from './multiplexer.js';
 import {
   RESUMER_LOCK, STATE_DIR, POLL_INTERVAL_MS, STAGGER_MS, VERIFY_DELAY_MS,
   BUSY_DEFER_MS, MAX_BUSY_DEFERS, MAX_RESUME_ATTEMPTS, READY_TIMEOUT_MS,
-  CAPTURE_LINES, PANE_SCAN_LINES, MUX_SESSION_NAME,
+  CAPTURE_LINES, PANE_SCAN_LINES, RESUME_SESSION_NAME,
   RESET_MARGIN_MS, FALLBACK_RESET_MS,
 } from './config.js';
 import { detectLimit, isBusy } from './patterns.js';
 import { getAgent } from './agents/index.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
-import { readState, updateState, setStatus, dueSessions, activeStopped } from './state.js';
+import {
+  readState, updateState, setStatus, dueSessions, activeStopped,
+  prune, sweepRecords, markStaleAbandoned,
+} from './state.js';
 import { approxTokens } from './sessions.js';
 import { getConfig, resolveResumeMessage } from './settings.js';
 import { workspaceFingerprint, workspaceChanged, describeChange } from './workspace.js';
@@ -24,6 +27,7 @@ import { notify } from './notify.js';
 import { UNSNOOZE_BIN } from './spawn.js';
 import { makeLogger } from './logger.js';
 import { createLeaseId, leaseMatches } from './lease.js';
+import { autoReapIfEnabled, attachHint } from './reap.js';
 
 const log = makeLogger('resumer');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -70,10 +74,26 @@ export function resolveRecordMux(rec) {
   return getMultiplexer(rec.mux, { owner: rec.paneOwner });
 }
 
-function reopenEnv(rec, leaseId) {
+// Join the session the pane lived in only if it is still alive; otherwise the
+// daemon gets its own session. It must never CREATE the launcher's base name.
+export async function reviveTarget(mux, rec) {
+  const named = rec.muxSession ?? rec.tmuxSession;
+  if (named && typeof mux.sessionExists === 'function') {
+    try {
+      if (await mux.sessionExists(named)) return named;
+    } catch { /* fall through to resume session */ }
+  }
+  return RESUME_SESSION_NAME;
+}
+
+function reopenEnv(rec, leaseId, target) {
   const env = { ...(rec.env || {}) };
   env.UNSNOOZE_MUX = rec.mux;
-  if (rec.muxSession) env.UNSNOOZE_PANE_OWNER = rec.muxSession;
+  // tmux pane ids are server-global — paneOwner is always null there. Only
+  // zellij needs UNSNOOZE_PANE_OWNER so bind() can address the right session.
+  if (rec.mux === 'zellij') {
+    env.UNSNOOZE_PANE_OWNER = target || rec.paneOwner || rec.muxSession || '';
+  }
   env.UNSNOOZE_LEASE_ID = leaseId;
   return env;
 }
@@ -200,15 +220,15 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
   const key = rec.key;
   const resume = agent.resumeArgs(rec.sessionId, resumeMessage);
   const leaseId = createLeaseId();
+  const target = await reviveTarget(mux, rec);
   const launchSpec = {
     file: selfCmd[0], args: [...selfCmd.slice(1), '_run', agent.id, ...resume.args],
-    env: reopenEnv(rec, leaseId),
+    env: reopenEnv(rec, leaseId, target),
   };
   setStatus(key, 'resuming', { lastAttemptAt: Date.now(), verifyRetries: 0 });
   let address;
   try {
-    address = await mux.newWindow(rec.muxSession ?? rec.tmuxSession ?? MUX_SESSION_NAME,
-      rec.cwd || homedir(), launchSpec);
+    address = await mux.newWindow(target, rec.cwd || homedir(), launchSpec);
   } catch (err) {
     setStatus(key, 'stopped', {
       attempts: (rec.attempts || 0) + 1,
@@ -217,13 +237,15 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
     });
     return 'retry';
   }
+  // Persist the revival target as muxSession so future joins and attach hints
+  // name the session the pane actually lives in.
   updateState(state => {
     const s = state.sessions[key];
-    if (s) Object.assign(s, address, { leaseId });
+    if (s) Object.assign(s, address, { leaseId, muxSession: target });
   });
-  const rebound = { ...rec, ...address, leaseId };
+  const rebound = { ...rec, ...address, leaseId, muxSession: target };
   mux = resolveMux(rebound);
-  log(`${key}: re-opened via ${rec.mux} ${address.paneOwner ?? '-'}:${address.pane}`);
+  log(`${key}: re-opened via ${rec.mux} ${address.paneOwner ?? '-'}:${address.pane} in session ${target}`);
 
   // The resume prompt traveled in argv (e.g. `codex resume <id> "msg"`) —
   // nothing to type into the TUI; verifyOne checks the outcome later.
@@ -298,9 +320,14 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
     return;
   }
   setStatus(key, 'resumed', { lastError: null, verifyRetries: 0 });
-  log(`${key}: verified resumed`);
+  const session = rec.muxSession || RESUME_SESSION_NAME;
+  const hint = attachHint(rec.mux, session);
+  log(`${key}: verified resumed in ${session}${hint ? ` — ${hint}` : ''}`);
   const fromGui = rec.origin && rec.origin !== 'cli';
-  notify('unsnoozed ✅', `${rec.cwd} is running again${fromGui ? ` (was in ${rec.origin} — revived in ${rec.mux})` : ''}`, { context: ctxOf(rec) });
+  const where = hint
+    ? ` in ${session} — attach: ${hint}`
+    : '';
+  notify('unsnoozed ✅', `${rec.cwd} is running again${where}${fromGui ? ` (was in ${rec.origin} — revived in ${rec.mux})` : ''}`, { context: ctxOf(rec) });
   return 'resumed';
 }
 
@@ -360,6 +387,17 @@ export async function runResumer({
     for (;;) {
       if (signal?.aborted) { log('shutdown requested — resumer exiting'); return 0; }
       await tickWatcher();
+
+      // Scheduled cleanup: age prune + pane-aware sweep + abandon stale stops.
+      try {
+        updateState(state => { prune(state); return state; });
+        await sweepRecords({ resolveMux });
+        await markStaleAbandoned({ resolveMux });
+        await autoReapIfEnabled({ resolveMux });
+      } catch (err) {
+        log(`cleanup tick failed: ${err.message}`);
+      }
+
       const stopped = activeStopped();
       const resuming = Object.values(readState().sessions).filter(s => s.status === 'resuming');
       if (stopped.length === 0 && resuming.length === 0 && !persistent) {

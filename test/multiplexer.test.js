@@ -173,14 +173,21 @@ test('zellij newWindow encodes env in argv and parses terminal id with its new o
   assert.deepEqual(created, { pane: '42', paneOwner: 'revival' });
   const run = spawner.calls.find(call => call.args.includes('run'));
   assert.deepEqual(run.args, [
-    '-s', 'revival', 'run', '--cwd', '/tmp/project', '--',
+    '-s', 'revival', 'run', '--close-on-exit', '--cwd', '/tmp/project', '--',
     '/usr/bin/env', 'LEASE=xyz', 'EMPTY=', '/usr/bin/node', 'agent.js', '--resume', 'abc',
   ]);
   assert.equal(Object.keys(run.options.env).some(key => key.startsWith('ZELLIJ')), false);
 });
 
 test('zellij creates a missing session before opening its new pane', async () => {
-  const spawner = fakeSpawner((_file, args) => args[0] === 'list-sessions' ? 'main\n' : 'terminal_8\n');
+  const spawner = fakeSpawner((_file, args) => {
+    if (args[0] === 'list-sessions') return 'main\n';
+    if (args[0] === 'attach') return '';
+    if (args.includes('list-panes')) return JSON.stringify([{ id: 3, is_plugin: false, exited: false }]);
+    if (args.includes('run')) return 'terminal_8\n';
+    if (args.includes('close-pane')) return '';
+    return '';
+  });
   const mux = createZellij({ spawner, env: {} }).bind('main');
 
   assert.deepEqual(await mux.newWindow('revival', '/tmp', { file: 'claude', args: [], env: {} }),
@@ -201,7 +208,7 @@ test('owner binding is isolated across sequential resolutions with the same pane
   assert.equal(spawner.calls[1].args[1], 'two');
 });
 
-test('tmux backend accepts structured launches and returns the canonical address', async () => {
+test('tmux backend accepts structured launches and returns paneOwner null', async () => {
   const spawner = fakeSpawner((_file, args) => {
     if (args[0] === 'has-session') throw new Error('missing');
     if (args[0] === 'new-session') return '%9\n';
@@ -209,9 +216,10 @@ test('tmux backend accepts structured launches and returns the canonical address
   });
   const mux = createTmux({ spawner, env: {} });
 
+  // tmux pane ids are server-global — paneOwner must stay null so leases match.
   assert.deepEqual(await mux.newWindow('revival', '/tmp', {
     file: 'node', args: ['agent.js'], env: { TOKEN: 'value' },
-  }), { pane: '%9', paneOwner: 'revival' });
+  }), { pane: '%9', paneOwner: null });
   assert.deepEqual(spawner.calls[1].args, [
     'new-session', '-d', '-s', 'revival', '-c', '/tmp', '-P', '-F', '#{pane_id}',
     '-e', 'TOKEN=value', 'node', 'agent.js',
@@ -226,7 +234,10 @@ test('launchWrapped names the session, preserves structured argv/env, and return
     env: { PATH: '/bin', UNSNOOZE_SESSION_NAME: 'wrapped' },
   });
   assert.equal(tmux.launchWrapped({ file: 'node', args: ['agent.js'], env: { TOKEN: 'x' } }), 23);
-  assert.deepEqual(tmuxSpawner.calls[0].args,
+  // calls[0] is the has-session probe that keeps the name free of collisions.
+  // Live discovery (sessionForPane) supersedes env injection — do not inject
+  // UNSNOOZE_SESSION_NAME into the child (would leak into spawned daemons).
+  assert.deepEqual(tmuxSpawner.calls.at(-1).args,
     ['new-session', '-s', 'wrapped', '-e', 'TOKEN=x', 'node', 'agent.js']);
 
   const zellijSpawner = fakeSpawner(() => ({ status: 17 }));
@@ -235,11 +246,95 @@ test('launchWrapped names the session, preserves structured argv/env, and return
     env: { PATH: '/bin', ZELLIJ_SESSION_NAME: 'stale', UNSNOOZE_SESSION_NAME: 'wrapped' },
   });
   assert.equal(zellij.launchWrapped({ file: 'node', args: ['agent.js'], env: { TOKEN: 'x' } }), 17);
-  assert.deepEqual(zellijSpawner.calls[0].args.slice(0, 3),
-    ['--session', 'wrapped', '--layout-string']);
-  assert.match(zellijSpawner.calls[0].args[3], /close_on_exit=true/);
-  assert.match(zellijSpawner.calls[0].args[3], /TOKEN=x/);
-  assert.equal(Object.keys(zellijSpawner.calls[0].options.env).some(key => key.startsWith('ZELLIJ')), false);
+  // calls[0] is the list-sessions probe that keeps the name free of collisions.
+  const launch = zellijSpawner.calls.at(-1);
+  assert.deepEqual(launch.args.slice(0, 3), ['--session', 'wrapped', '--layout-string']);
+  assert.match(launch.args[3], /close_on_exit=true/);
+  assert.match(launch.args[3], /TOKEN=x/);
+  assert.equal(launch.args[3].includes('UNSNOOZE_SESSION_NAME'), false);
+  assert.equal(Object.keys(launch.options.env).some(key => key.startsWith('ZELLIJ')), false);
+});
+
+test('launchWrapped sidesteps a taken session name instead of dying on a duplicate', () => {
+  // tmux/zellij both refuse a session name that is already live ("duplicate
+  // session: unsnooze"), so a second concurrent `unsnooze <agent>` must land in
+  // its own session rather than colliding with the first one.
+  const tmuxSpawner = fakeSpawner((_file, args) => {
+    if (args[0] === 'has-session') {
+      return { status: args[2] === 'unsnooze' || args[2] === 'unsnooze-2' ? 0 : 1 };
+    }
+    return { status: 0 };
+  });
+  const tmux = createTmux({ spawner: tmuxSpawner, env: { PATH: '/bin' } });
+
+  assert.equal(tmux.launchWrapped({ file: 'node', args: ['agent.js'], env: {} }), 0);
+  const tmuxLaunch = tmuxSpawner.calls.at(-1).args;
+  assert.deepEqual(tmuxLaunch.slice(0, 3), ['new-session', '-s', 'unsnooze-3']);
+  assert.equal(tmuxLaunch.some(a => String(a).startsWith('UNSNOOZE_SESSION_NAME=')), false);
+
+  const zellijSpawner = fakeSpawner((_file, args, options) => {
+    if (args[0] === 'list-sessions') {
+      return options.sync ? { status: 0, stdout: 'unsnooze\nother\n' } : 'unsnooze\nother\n';
+    }
+    return { status: 0 };
+  });
+  const zellij = createZellij({ spawner: zellijSpawner, env: { PATH: '/bin' } });
+
+  assert.equal(zellij.launchWrapped({ file: 'node', args: ['agent.js'], env: {} }), 0);
+  const zellijLaunch = zellijSpawner.calls.at(-1).args;
+  assert.deepEqual(zellijLaunch.slice(0, 2), ['--session', 'unsnooze-2']);
+  assert.equal(zellijLaunch[3].includes('UNSNOOZE_SESSION_NAME'), false);
+});
+
+test('launchWrapped keeps the base name when nothing holds it', () => {
+  const spawner = fakeSpawner((_file, args) => (
+    args[0] === 'has-session' ? { status: 1 } : { status: 0 }
+  ));
+  createTmux({ spawner, env: { PATH: '/bin' } }).launchWrapped({ file: 'node', args: [], env: {} });
+  assert.deepEqual(spawner.calls.at(-1).args.slice(0, 3), ['new-session', '-s', 'unsnooze']);
+});
+
+test('tmux sessionForPane reads #{session_name} and treats blank/error as null', async () => {
+  const spawner = fakeSpawner(() => 'main\n');
+  const mux = createTmux({ spawner, env: {} });
+  assert.equal(await mux.sessionForPane('%1'), 'main');
+  assert.deepEqual(spawner.calls[0].args,
+    ['display-message', '-t', '%1', '-p', '#{session_name}']);
+  assert.equal(await createTmux({ spawner: fakeSpawner(() => '\n'), env: {} }).sessionForPane('%1'), null);
+  assert.equal(await createTmux({
+    spawner: fakeSpawner(() => { throw new Error('gone'); }), env: {},
+  }).sessionForPane('%1'), null);
+});
+
+test('zellij sessionForPane returns the bound owner (or ambient env)', async () => {
+  const z = createZellij({ spawner: fakeSpawner(() => ''), env: { ZELLIJ_SESSION_NAME: 'ambient' } });
+  assert.equal(await z.sessionForPane('1'), 'ambient');
+  assert.equal(await z.bind('owned').sessionForPane('1'), 'owned');
+});
+
+test('zellij newWindow adds --close-on-exit and closes the default shell pane', async () => {
+  let panesListed = 0;
+  const spawner = fakeSpawner((_file, args) => {
+    if (args[0] === 'list-sessions') return 'main\n';
+    if (args[0] === 'attach') return '';
+    if (args.includes('list-panes')) {
+      panesListed += 1;
+      // Default shell pane created by attach -b -c
+      return JSON.stringify([{ id: 1, is_plugin: false, exited: false, pane_command: 'zsh' }]);
+    }
+    if (args.includes('run')) return 'terminal_9\n';
+    if (args.includes('close-pane')) return '';
+    return '';
+  });
+  const mux = createZellij({ spawner, env: {} }).bind('main');
+  const created = await mux.newWindow('revival', '/tmp', { file: 'claude', args: [], env: {} });
+  assert.deepEqual(created, { pane: '9', paneOwner: 'revival' });
+  const run = spawner.calls.find(c => c.args.includes('run'));
+  assert.ok(run.args.includes('--close-on-exit'));
+  const close = spawner.calls.find(c => c.args.includes('close-pane'));
+  assert.ok(close, 'default shell pane must be closed after agent pane is added');
+  assert.ok(close.args.includes('terminal_1'));
+  assert.ok(panesListed >= 1);
 });
 
 test('launchWrapped maps Ctrl-C termination to the conventional exit status', () => {

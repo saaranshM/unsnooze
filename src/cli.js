@@ -1,4 +1,4 @@
-// User-facing subcommands: status, resume-now, cancel, logs, config.
+// User-facing subcommands: status, resume-now, cancel, logs, config, sessions, reap.
 
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -8,6 +8,8 @@ import { getAgent } from './agents/index.js';
 import { approxTokens } from './sessions.js';
 import { getConfig, setConfigValue, listConfig, CONFIG_FILE } from './settings.js';
 import { spawnResumerIfNeeded } from './spawn.js';
+import { getMultiplexer } from './multiplexer.js';
+import { listOwnedSessions, reap, attachHint } from './reap.js';
 
 function fmtCountdown(ms) {
   if (ms <= 0) return 'due now';
@@ -17,7 +19,7 @@ function fmtCountdown(ms) {
   return `${h}h ${m % 60}m`;
 }
 
-export function cmdStatus() {
+export async function cmdStatus() {
   const state = readState();
   const sessions = Object.values(state.sessions);
   const paused = !getConfig('autoResume');
@@ -47,8 +49,19 @@ export function cmdStatus() {
         if (t != null) ctx = ` · ctx ${approxTokens(t)} tok`;
       } catch { /* estimate unavailable — omit */ }
     }
+    // Attach hint when the mux session the record points at is still live.
+    let attach = '';
+    if (s.muxSession) {
+      try {
+        const mux = getMultiplexer(s.mux || 'tmux');
+        if (typeof mux.sessionExists === 'function' && await mux.sessionExists(s.muxSession)) {
+          const hint = attachHint(s.mux, s.muxSession);
+          if (hint) attach = ` · attach: ${hint}`;
+        }
+      } catch { /* mux unavailable — omit */ }
+    }
     console.log(`  [${s.status.toUpperCase().padEnd(9)}] ${id}  ${(s.agent || 'claude').padEnd(6)} ${s.limitType?.padEnd(7) ?? 'unknown'} ${s.cwd}`);
-    console.log(`              mux ${s.mux ?? '-'} · pane ${pane} · session ${s.muxSession ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}${msg}${ctx}${hold}`);
+    console.log(`              mux ${s.mux ?? '-'} · pane ${pane} · session ${s.muxSession ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}${msg}${ctx}${hold}${attach}`);
   }
   return 0;
 }
@@ -173,4 +186,57 @@ export function cmdConfig(rest) {
     console.error(err.message);
     return 1;
   }
+}
+
+// `unsnooze sessions` — list unsnooze-owned mux sessions with panes + records.
+export async function cmdSessions() {
+  const owned = await listOwnedSessions();
+  if (owned.length === 0) {
+    console.log('unsnooze: no unsnooze-owned mux sessions found.');
+    return 0;
+  }
+  console.log(`unsnooze: ${owned.length} mux session(s)\n`);
+  for (const s of owned) {
+    const flag = s.exited ? 'EXITED' : 'live';
+    const panes = s.panes.length ? s.panes.join(', ') : '(none)';
+    console.log(`  [${flag.padEnd(6)}] ${s.mux}  ${s.name}  panes: ${panes}`);
+    if (s.attach) console.log(`              attach: ${s.attach}`);
+    for (const r of s.records) {
+      console.log(`              · ${r.status} ${(r.agent || '?').padEnd(6)} ${r.cwd || '?'} pane ${r.pane ?? '-'}`);
+    }
+  }
+  return 0;
+}
+
+// `unsnooze reap [--dry-run|--yes]` — close terminal-record panes and empty/
+// EXITED unsnooze sessions. Default is dry-run.
+export async function cmdReap(rest = []) {
+  // Default dry-run unless --yes.
+  const yes = rest.includes('--yes');
+  const result = await reap({ dryRun: !yes, yes });
+  if (result.actions.length === 0) {
+    console.log(result.dryRun
+      ? 'unsnooze reap (dry-run): nothing to do.'
+      : 'unsnooze reap: nothing to do.');
+    return 0;
+  }
+  const prefix = result.dryRun ? 'unsnooze reap (dry-run)' : 'unsnooze reap';
+  console.log(`${prefix}: ${result.actions.length} action(s)\n`);
+  for (const a of result.actions) {
+    if (a.kind === 'close-pane') {
+      console.log(`  close pane ${a.mux} ${a.paneOwner ? `${a.paneOwner}:` : ''}${a.pane} (record ${a.key})`);
+    } else if (a.kind === 'delete-session') {
+      console.log(`  delete session ${a.mux} ${a.name} (${a.reason})`);
+    } else if (a.kind === 'drop-record') {
+      console.log(`  drop record ${a.key} (${a.reason})`);
+    } else if (a.kind === 'error') {
+      console.log(`  error: ${a.key || a.name}: ${a.message}`);
+    } else {
+      console.log(`  ${a.kind}: ${JSON.stringify(a)}`);
+    }
+  }
+  if (result.dryRun) {
+    console.log('\nRe-run with --yes to apply.');
+  }
+  return 0;
 }

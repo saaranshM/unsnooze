@@ -14,7 +14,7 @@ import { getMultiplexer } from './multiplexer.js';
 import {
   SCRAPE_INTERVAL_MS, PANE_SCAN_LINES, CAPTURE_LINES, EVENTS_DIR,
   EVENT_MARKER_TTL_MS, OVERLOAD_BACKOFF_S, OVERLOAD_JITTER,
-  FALLBACK_RESET_MS, RESET_MARGIN_MS, MUX_SESSION_NAME,
+  FALLBACK_RESET_MS, RESET_MARGIN_MS,
 } from './config.js';
 import { detectLimit, isBusy, overloadMatch } from './patterns.js';
 import { getAgent } from './agents/index.js';
@@ -62,9 +62,15 @@ export function createMonitor({
       marginMs: RESET_MARGIN_MS, fallbackMs: FALLBACK_RESET_MS,
     });
     const sessionId = agent.latestSessionId(cwd, detectedAt);
+    // Discover the live session name from the pane — never freeze the module
+    // load-time MUX_SESSION_NAME constant onto the record.
+    let muxSession = null;
+    if (typeof mux.sessionForPane === 'function') {
+      try { muxSession = await mux.sessionForPane(pane); } catch { muxSession = null; }
+    }
     const state = upsertSession({
       sessionId, cwd, pane, mux: muxName, paneOwner, leaseId,
-      agent: agent.id, muxSession: MUX_SESSION_NAME,
+      agent: agent.id, muxSession,
       status: 'stopped', limitType, detectedVia: via, detectedAt,
       resetAt: at, resetSource: source,
       attempts: 0, lastAttemptAt: null, lastError: null,

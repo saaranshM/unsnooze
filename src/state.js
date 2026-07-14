@@ -11,7 +11,7 @@ import {
 import { join } from 'node:path';
 import {
   STATE_DIR, STATE_FILE, LOCK_DIR, STALE_LOCK_MS, PRUNE_AFTER_MS,
-  DEDUPE_WINDOW_MS,
+  DEDUPE_WINDOW_MS, STALE_AFTER_MS,
 } from './config.js';
 import { workspaceFingerprint } from './workspace.js';
 import { makeLogger } from './logger.js';
@@ -180,13 +180,81 @@ export function setStatus(key, status, extra = {}) {
   });
 }
 
-function prune(state) {
+// Drop terminal records older than PRUNE_AFTER_MS. Exported so the resumer
+// can run it on a schedule (not only when a new limit-stop is upserted).
+export function prune(state) {
   const cutoff = Date.now() - PRUNE_AFTER_MS;
   for (const [key, s] of Object.entries(state.sessions)) {
     const terminal = ['resumed', 'failed', 'cancelled'].includes(s.status);
     const ts = s.lastAttemptAt || s.detectedAt || 0;
     if (terminal && ts < cutoff) delete state.sessions[key];
   }
+}
+
+export function pruneNow() {
+  return updateState(state => { prune(state); return state; });
+}
+
+// Drop terminal records whose pane is dead or absent immediately (regardless
+// of age). Live-pane terminal records keep the 7-day prune rule above.
+// resolveMux(rec) → mux backend with paneAlive; paneAlive failures count as dead.
+export async function sweepRecords({ resolveMux } = {}) {
+  if (typeof resolveMux !== 'function') {
+    throw new Error('unsnooze: sweepRecords requires resolveMux');
+  }
+  const state = readState();
+  const drop = [];
+  for (const rec of Object.values(state.sessions)) {
+    if (!['resumed', 'failed', 'cancelled'].includes(rec.status)) continue;
+    if (!rec.pane) {
+      drop.push(rec.key);
+      continue;
+    }
+    try {
+      const mux = resolveMux(rec);
+      if (!(await mux.paneAlive(rec.pane))) drop.push(rec.key);
+    } catch {
+      drop.push(rec.key);
+    }
+  }
+  if (drop.length === 0) return 0;
+  updateState(s => {
+    for (const key of drop) delete s.sessions[key];
+    return s;
+  });
+  return drop.length;
+}
+
+// Non-terminal records with a dead/absent pane and old detectedAt are marked
+// failed so the daemon stops resurrecting long-abandoned sessions.
+export async function markStaleAbandoned({
+  resolveMux, staleAfterMs = STALE_AFTER_MS, now = Date.now(),
+} = {}) {
+  if (typeof resolveMux !== 'function') {
+    throw new Error('unsnooze: markStaleAbandoned requires resolveMux');
+  }
+  const cutoff = now - staleAfterMs;
+  let marked = 0;
+  for (const rec of Object.values(readState().sessions)) {
+    if (!['stopped', 'resuming'].includes(rec.status)) continue;
+    if ((rec.detectedAt || 0) > cutoff) continue;
+    let dead = !rec.pane;
+    if (!dead) {
+      try {
+        dead = !(await resolveMux(rec).paneAlive(rec.pane));
+      } catch {
+        dead = true;
+      }
+    }
+    if (!dead) continue;
+    setStatus(rec.key, 'failed', {
+      lastError: rec.pane ? 'stale: pane dead' : 'stale: pane absent',
+      verifyRetries: 0,
+    });
+    marked += 1;
+    log(`${rec.key}: marked failed (stale abandoned, detectedAt ${new Date(rec.detectedAt || 0).toISOString()})`);
+  }
+  return marked;
 }
 
 export function activeStopped(state = readState()) {

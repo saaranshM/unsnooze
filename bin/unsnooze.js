@@ -6,7 +6,7 @@ const [, , cmd, ...rest] = process.argv;
 
 // Only human-facing commands may print update notices — never the wrapper
 // passthrough, hooks, or daemons (their output lands in agent panes/logs).
-const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'help', '-h', '--help', '--help-unsnooze']);
+const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'help', '-h', '--help', '--help-unsnooze']);
 
 async function maybeUpdateNotices() {
   try {
@@ -55,6 +55,14 @@ async function main() {
     case 'config': {
       const { cmdConfig } = await import('../src/cli.js');
       return cmdConfig(rest);
+    }
+    case 'sessions': {
+      const { cmdSessions } = await import('../src/cli.js');
+      return cmdSessions();
+    }
+    case 'reap': {
+      const { cmdReap } = await import('../src/cli.js');
+      return cmdReap(rest);
     }
     case 'install': {
       const { cmdInstall } = await import('../src/install.js');
@@ -119,6 +127,9 @@ Usage:
   unsnooze resume-now [id|--all]   resume stopped session(s) immediately
   unsnooze cancel [id|--all]       stop tracking session(s)
   unsnooze message <id|--all> <t>  set a per-session wake message (--clear to reset)
+  unsnooze sessions                list unsnooze-owned mux sessions + panes
+  unsnooze reap [--dry-run|--yes]  close terminal-record panes / empty sessions
+                                   (default: dry-run; pass --yes to apply)
   unsnooze logs [-f]               show (or follow) the unsnooze log
   unsnooze update                  update unsnooze itself to the latest version
   unsnooze daemon                  persistent watcher for GUI sessions (VS Code

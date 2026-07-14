@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Session-name ownership** (fix: interactive `claude` dying with
+  `duplicate session: unsnooze`): the interactive launcher owns the base name
+  `unsnooze` (and `unsnooze-2`… on collision); the resumer daemon may join a
+  live session but only ever **creates** `unsnooze-resumed`. Records now
+  discover the live mux session via `sessionForPane` instead of freezing the
+  load-time `MUX_SESSION_NAME` constant. tmux `newWindow` returns
+  `paneOwner: null` (pane ids are server-global). Uninstall stops the resumer.
+  Failed session creation degrades to an unwatched agent CLI instead of
+  bricking `claude`/`codex`. New: `unsnooze sessions`, `unsnooze reap
+  [--dry-run|--yes]`; optional `reapResumed` / `reapIdleAfter`. Zellij revival
+  uses `--close-on-exit` and closes the default shell pane left by
+  `attach -b -c`. Env: `UNSNOOZE_SESSION_NAME`, `UNSNOOZE_RESUME_SESSION`.
+
 ## 1.9.0 — 2026-07-13
 
 - **Context-size guard** (`contextGuard`: `off` | `inform` | `pause`, default
