@@ -29,6 +29,16 @@ test('parses relative "try again in 5 minutes"', () => {
   assert.equal(p.waitMs, 5 * 60_000);
 });
 
+test('parses "try again in 0 minutes" as already-elapsed (not a fallback miss)', () => {
+  // e2e + real "limit just lifted" banners; must not fall through to probe/5h.
+  const p = parseResetTime("You've hit your session limit · try again in 0 minutes");
+  assert.equal(p.relative, true);
+  assert.equal(p.waitMs, 0);
+  const { at, source } = resetAtMs(p, { now: new Date(1_000_000), marginMs: MARGIN });
+  assert.equal(source, 'relative');
+  assert.equal(at, 1_000_000 + MARGIN);
+});
+
 test('parses "resets in: 3 hours"', () => {
   const p = parseResetTime('resets in: 3 hours');
   assert.equal(p.waitMs, 3 * H);

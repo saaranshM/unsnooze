@@ -51,6 +51,71 @@ test('readState migrates live-pane and pane-less legacy records to tmux', () => 
   updateState(current => { current.sessions = before; });
 });
 
+test('legacy tmux records: bogus paneOwner session name is cleared to null', () => {
+  // Pre-ownership-fix newWindow stored sessionName as paneOwner for tmux,
+  // which made leaseMatches permanently fail. Upgrade must heal existing state.
+  updateState(state => {
+    state.sessions.legacy_owner = {
+      ...record({ sessionId: 'legacy-owner', pane: '%90' }),
+      mux: 'tmux',
+      paneOwner: 'unsnooze',   // wrong — tmux panes are server-global
+      muxSession: 'unsnooze',
+    };
+  });
+  const found = Object.values(readState().sessions).find(s => s.sessionId === 'legacy-owner');
+  assert.ok(found);
+  assert.equal(found.paneOwner, null);
+  assert.equal(found.muxSession, 'unsnooze'); // session name kept for revive join
+  // zellij owners must NOT be cleared — ids are per-session there.
+  updateState(state => {
+    state.sessions.zj = {
+      ...record({ sessionId: 'zj-keep', pane: '3' }),
+      mux: 'zellij',
+      paneOwner: 'main',
+      muxSession: 'main',
+    };
+  });
+  const zj = Object.values(readState().sessions).find(s => s.sessionId === 'zj-keep');
+  assert.equal(zj.paneOwner, 'main');
+});
+
+test('legacy fallback now+5h waits are pulled into the probe window', async () => {
+  const { PROBE_INTERVAL_MS, PROBE_MAX_MS } = await import('../src/config.js');
+  const far = Date.now() + 5 * 3_600_000 + 60_000; // classic FALLBACK_RESET + margin
+  updateState(state => {
+    state.sessions.old_fb = {
+      ...record({ sessionId: 'old-fb', pane: '%91' }),
+      resetSource: 'fallback',
+      resetAt: far,
+    };
+  });
+  const rec = Object.values(readState().sessions).find(s => s.sessionId === 'old-fb');
+  assert.ok(rec.resetAt <= Date.now() + PROBE_INTERVAL_MS + 5_000);
+  assert.ok(rec.resetAt >= Date.now() - 1_000);
+  // Fresh probe schedules (within the ladder) must not be pulled earlier.
+  const probeAt = Date.now() + PROBE_MAX_MS;
+  updateState(state => {
+    state.sessions.fresh_fb = {
+      ...record({ sessionId: 'fresh-fb', pane: '%92' }),
+      resetSource: 'fallback',
+      resetAt: probeAt,
+    };
+  });
+  const fresh = Object.values(readState().sessions).find(s => s.sessionId === 'fresh-fb');
+  assert.ok(Math.abs(fresh.resetAt - probeAt) < 2_000);
+  // Absolute far-future waits are intentional — leave them alone.
+  const absAt = Date.now() + 5 * 3_600_000;
+  updateState(state => {
+    state.sessions.abs_far = {
+      ...record({ sessionId: 'abs-far', pane: '%93' }),
+      resetSource: 'absolute',
+      resetAt: absAt,
+    };
+  });
+  const abs = Object.values(readState().sessions).find(s => s.sessionId === 'abs-far');
+  assert.ok(Math.abs(abs.resetAt - absAt) < 2_000);
+});
+
 test('pane dedupe includes mux and owner instead of colliding on raw pane id', () => {
   const t = Date.now();
   upsertSession(record({ pane: '1', mux: 'zellij', paneOwner: 'alpha', detectedAt: t }));

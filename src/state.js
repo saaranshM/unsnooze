@@ -11,7 +11,8 @@ import {
 import { join } from 'node:path';
 import {
   STATE_DIR, STATE_FILE, LOCK_DIR, STALE_LOCK_MS, PRUNE_AFTER_MS,
-  DEDUPE_WINDOW_MS, STALE_AFTER_MS,
+  DEDUPE_WINDOW_MS, STALE_AFTER_MS, PROBE_INTERVAL_MS, PROBE_MAX_MS,
+  RESET_MARGIN_MS,
 } from './config.js';
 import { workspaceFingerprint } from './workspace.js';
 import { makeLogger } from './logger.js';
@@ -74,10 +75,29 @@ function normalizeState(state) {
   return state;
 }
 
+// In-place upgrades for records written by older unsnooze versions. Must stay
+// additive and safe: never drop a live session, never invent a far-future wait.
 function normalizeRecord(rec) {
   if (!rec.mux) rec.mux = 'tmux';
+  // Pre-multiplexer field: tmuxSession → muxSession (idempotent).
   if (!rec.muxSession && rec.tmuxSession) rec.muxSession = rec.tmuxSession;
-  if (rec.mux === 'tmux' && rec.paneOwner === undefined) rec.paneOwner = null;
+  // tmux pane ids are server-global. Pre-1.10 newWindow() wrongly stored the
+  // session name as paneOwner, which broke leaseMatches against live leases
+  // (always written with paneOwner: null). Clear it so injection works again.
+  if (rec.mux === 'tmux' && rec.paneOwner != null) rec.paneOwner = null;
+  else if (rec.mux === 'tmux' && rec.paneOwner === undefined) rec.paneOwner = null;
+  // Pre-probe era: fallback records were scheduled at now+5h. After upgrade,
+  // only pull in waits that are *beyond* the probe ladder (old blind 5h
+  // guesses). Do not touch fresh probe schedules (≤ PROBE_MAX + margin) or
+  // absolute/relative sources — those times are intentional.
+  if (rec.resetSource === 'fallback' && typeof rec.resetAt === 'number') {
+    const beyondProbeLadder = Date.now() + PROBE_MAX_MS + RESET_MARGIN_MS;
+    if (rec.resetAt > beyondProbeLadder) {
+      rec.resetAt = Date.now() + PROBE_INTERVAL_MS;
+    }
+  }
+  // bannerAt / probeCount / resetSource provenance fields are optional; callers
+  // tolerate absence. Do not invent them here.
   return rec;
 }
 

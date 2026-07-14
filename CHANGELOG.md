@@ -25,6 +25,12 @@
   tick requires corroboration; later ticks can upgrade a weak estimate.
   `unsnooze status` shows provenance (`absolute, from transcript` vs
   `guessed: no reset time found — probing`).
+- **Upgrade-safe state migration** for existing installs: `tmuxSession` →
+  `muxSession` (unchanged), bogus tmux `paneOwner` values cleared so leases
+  match again, old blind `fallback` waits beyond the probe ladder are pulled
+  into the first probe window (absolute/relative schedules untouched),
+  `TMUX_SESSION_NAME` alias kept, `reapResumed` defaults off, new config keys
+  only add defaults (existing `config.json` keeps working without edits).
 
 ## 1.9.0 — 2026-07-13
 

@@ -24,6 +24,8 @@ export const WATCH_OFFSETS_FILE = join(STATE_DIR, 'watch-offsets.json');
 // (see RESUME_SESSION_NAME); it may only join it when already live.
 export const MUX_SESSION_NAME = process.env.UNSNOOZE_SESSION_NAME
   || process.env.UNSNOOZE_TMUX_SESSION || 'unsnooze';
+// Legacy alias — older docs/scripts and any external importers used this name.
+export const TMUX_SESSION_NAME = MUX_SESSION_NAME;
 
 // Session the daemon creates for revivals when the pane's original session is
 // gone. Must never collide with the interactive base name.

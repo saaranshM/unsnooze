@@ -47,6 +47,17 @@ function parseGoDuration(text) {
   }
   return total;
 }
+
+// Parse a captured duration phrase. Returns waitMs (including 0 for "0 minutes")
+// or null when the phrase has no duration tokens. Explicit zero is a real,
+// already-elapsed wait — the e2e path and "try again in 0 minutes" banners
+// depend on this not falling through to the blind fallback.
+function parseDurationPhrase(phrase) {
+  if (!phrase || !/\d/.test(phrase)) return null;
+  DURATION_TOKEN_REGEX.lastIndex = 0;
+  if (!DURATION_TOKEN_REGEX.test(phrase)) return null;
+  return parseGoDuration(phrase);
+}
 const MONTH_INDEX = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
 function to24h(hour, ampm) {
@@ -68,8 +79,8 @@ export function parseResetTime(text) {
   // the live countdown and beats any older prose in the same line.
   const retryMatch = text.match(RETRY_BANNER_REGEX);
   if (retryMatch) {
-    const waitMs = parseGoDuration(retryMatch[1]);
-    if (waitMs > 0) return { relative: true, waitMs };
+    const waitMs = parseDurationPhrase(retryMatch[1]);
+    if (waitMs != null) return { relative: true, waitMs };
   }
 
   // Full-date form first — its trailing "9:01 PM" would otherwise be eaten by
@@ -131,15 +142,16 @@ export function parseResetTime(text) {
 
   // Relative offsets: sum every duration token so "1h 30m" / "2 hours 5 minutes"
   // / "6 days and 18 hours" all land at the full wait, not the first unit.
+  // "0 minutes" is intentional (already elapsed) — not a miss.
   const inMatch = text.match(RELATIVE_IN_REGEX);
   if (inMatch) {
-    const waitMs = parseGoDuration(inMatch[1]);
-    if (waitMs > 0) return { relative: true, waitMs };
+    const waitMs = parseDurationPhrase(inMatch[1]);
+    if (waitMs != null) return { relative: true, waitMs };
   }
   const waitMatch = text.match(WAIT_DURATION_REGEX);
   if (waitMatch) {
-    const waitMs = parseGoDuration(waitMatch[1]);
-    if (waitMs > 0) return { relative: true, waitMs };
+    const waitMs = parseDurationPhrase(waitMatch[1]);
+    if (waitMs != null) return { relative: true, waitMs };
   }
 
   // Day-only weekly banner ("resets Tuesday") with no time — midnight-ish target,
