@@ -9,7 +9,7 @@ const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-message-test-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
 process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 
-const { cmdMessage, cmdStatus, cmdResumeNow } = await import('../src/cli.js');
+const { cmdMessage, cmdStatus, cmdResumeNow, fmtResetProvenance } = await import('../src/cli.js');
 const { upsertSession, readState } = await import('../src/state.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));

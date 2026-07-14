@@ -14,6 +14,17 @@
   [--dry-run|--yes]`; optional `reapResumed` / `reapIdleAfter`. Zellij revival
   uses `--close-on-exit` and closes the default shell pane left by
   `attach -b -c`. Env: `UNSNOOZE_SESSION_NAME`, `UNSNOOZE_RESUME_SESSION`.
+- **Reset-time accuracy** (fix: blind `now + 5h` fallback and +24h rollover
+  of already-past clock times): reset times are anchored to the banner's own
+  timestamp (`bannerAt`), not the scrape moment. Claude stops prefer the dated
+  transcript entry over an undated pane scrape. An absolute clock time already
+  past relative to wall clock means the limit already reset (due now), not
+  tomorrow. Compact durations like `1h 30m` sum all tokens. Unparseable banners
+  probe cheaply (`PROBE_INTERVAL_MS`, backoff to `PROBE_MAX_MS`) instead of
+  sleeping five hours; hard ceiling remains `FALLBACK_RESET_MS`. Monitor first
+  tick requires corroboration; later ticks can upgrade a weak estimate.
+  `unsnooze status` shows provenance (`absolute, from transcript` vs
+  `guessed: no reset time found — probing`).
 
 ## 1.9.0 — 2026-07-13
 

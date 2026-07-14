@@ -739,9 +739,12 @@ test('reopen rebinds owner, publishes lease id in structured env, and scrubs sta
     let launchSpec;
     const oldMux = {
       paneAlive: async () => false,
-      newWindow: async (_session, _cwd, spec) => {
+      // Live named session → join it (do not fall back to unsnooze-resumed).
+      sessionExists: async name => name === 'revive',
+      newWindow: async (session, _cwd, spec) => {
+        assert.equal(session, 'revive');
         launchSpec = spec;
-        return { pane: '9', paneOwner: 'revive' };
+        return { pane: '9', paneOwner: session };
       },
     };
     const sent = [];
