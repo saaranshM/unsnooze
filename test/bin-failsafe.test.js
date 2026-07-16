@@ -7,7 +7,14 @@
 // imports genuinely do not exist — the exact half-installed layout observed
 // in the 2026-07-15 incident (12,989 MODULE_NOT_FOUND daemon crashes).
 
-import { test, after } from 'node:test';
+import { test as baseTest, after } from 'node:test';
+
+// These tests drive unix binaries (/bin/echo, sh shims) and PATH semantics —
+// the surfaces under test (shell wrappers, tmux fallback) are unix-only by
+// design (native Windows runs detection-only). Skip on win32, honestly.
+const test = process.platform === 'win32'
+  ? (name, fn) => baseTest(name, { skip: 'unix-only surface (sh/PATH/tmux)' }, fn)
+  : baseTest;
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, copyFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
