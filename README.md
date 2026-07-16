@@ -37,6 +37,43 @@ existing tool solves only a slice of it:
 | Survives laptop sleep & weekly-scale waits | ✅ epoch polling | partial | partial | n/a |
 | Settings + first-run wizard | ✅ | ❌ | ❌ | ❌ |
 
+## Trust & security
+
+unsnooze is a **scheduler that presses your keys — not an auto-approver.** It waits
+for your usage limit to reset, then resumes the *same* session. It never changes how
+your agent handles permissions.
+
+- **Types only after proving the pane is yours.** Every keystroke requires both
+  *identity* (a tmux `@unsnooze_owner` stamp, else a lease = process id + birth
+  time — a mismatch vetoes, because pane ids get recycled) and *liveness* (your
+  agent is still running there). Pane closes require proven identity (idle
+  threshold too for `resumed` panes). Ownership unprovable → it reopens a fresh
+  session instead of typing.
+- **See before you trust: `unsnooze preview`.** A true dry-run — it prints exactly
+  what would be typed, where, and why (or what's holding it back), and sends
+  nothing. Preview shares its decision code with the real dispatcher, so it cannot
+  drift from what dispatch actually does.
+- **Answers Claude's limit menu safely — never a blind Enter.** It locates the
+  cursor and the **"Stop and wait for limit to reset"** option and computes the
+  exact moves. Unreadable menu → it presses nothing. It will never select
+  "Upgrade your plan." Toggle with `menuAutoAnswer`.
+- **No `--dangerously-skip-permissions`, no auto-trust, no auto-approve.** unsnooze
+  never passes bypass flags, never presses "Yes, I trust this folder," and never
+  touches MCP config. Whatever your agent does *after* resuming is governed by
+  **its own** permission model — the same as if you'd typed the message yourself.
+- **Nearly zero network, zero telemetry.** One version check to
+  `registry.npmjs.org` (nothing identifying; `updateCheck=false` turns it off), and
+  push notifications only if *you* configure an ntfy topic. State stays local under
+  `~/.unsnooze`.
+- **Reversible install.** The settings hook and rc-file wrappers are backed up
+  first (`*.unsnooze-orig` pristine + `*.unsnooze-bak` rolling); `unsnooze
+  uninstall` removes every change. Releases are published with npm provenance.
+
+**Honest limits:** unsnooze *does* inject keystrokes into your live terminal on
+your behalf, and it does not sandbox your agent or defend against prompt
+injection / malicious repos — that's your agent's job. Full threat model, residual
+risks, and vulnerability reporting: **[SECURITY.md](SECURITY.md)**.
+
 ## Supported CLIs
 
 - **Claude Code** — dual-channel detection: the `StopFailure` hook (authoritative,
@@ -171,8 +208,11 @@ unsnooze status                 # tracked sessions + reset countdowns
 unsnooze resume-now [id|--all]  # don't wait for the reset time
 unsnooze cancel [id|--all]      # stop tracking a session
 unsnooze message <id> "text"    # per-session wake message (--clear to reset)
+unsnooze preview [id]           # dry-run: what WOULD happen right now, and why —
+                                # nothing is typed or opened
 unsnooze sessions               # list unsnooze-owned mux sessions + panes
 unsnooze reap [--dry-run|--yes] # close finished panes / empty sessions (default dry-run)
+unsnooze doctor [--fix]         # install health check + retire old csg leftovers
 unsnooze config list            # settings (see below)
 unsnooze config set <k> <v>     # e.g. autoResume off
 unsnooze logs [-f]              # what unsnooze has been doing
@@ -207,6 +247,10 @@ unsnooze help                   # full command list (also -h / --help)
 | `reapResumed` | `false` | Opt-in: auto-close `resumed` panes idle longer than `reapIdleAfter`. Off by default — use `unsnooze reap --yes` for explicit cleanup. |
 | `reapIdleAfter` | `604800000` (7d) | Idle age (ms) before an opt-in auto-reap closes a `resumed` pane. |
 | `updateCheck` | `true` | Daily new-version check (a plain GET to the npm registry, nothing identifying is sent). Notices after commands + one desktop toast per version. |
+| `ntfyTopic` | `""` | [ntfy](https://ntfy.sh) push notifications — **off until set**. Fires *alongside* the local channel on limit-hit / resumed / gave-up. ⚠️ ntfy.sh topics are public — the name is the password. Use an unguessable one, e.g. `unsnooze-$(openssl rand -hex 8)`, a token, or a self-hosted server. |
+| `ntfyServer` | `https://ntfy.sh` | ntfy server base URL (self-hosted servers welcome). |
+| `ntfyToken` | `""` | Optional `tk_…` access token (`Authorization: Bearer`) for reserved topics / authed servers. |
+| `ntfyPrivacy` | `full` | `terse` keeps directory paths out of pushed bodies (titles only) — recommended on public ntfy.sh topics. |
 
 Every setting also has a `UNSNOOZE_*` env override (see `src/settings.js`), and
 all timings/paths are tunable via `UNSNOOZE_*` env vars (see `src/config.js`).
@@ -386,7 +430,12 @@ npm test                     # unit tests (node:test)
 ./scripts/e2e-simulate.sh    # full detect → wait → re-open cycle in a
                              # scratch tmux session (no real limits needed)
 bash -n scripts/e2e-zellij.sh # syntax-check the reserved-session Zellij smoke test
+vhs demo/demo.tape           # regenerate assets/demo.gif (brew install vhs)
 ```
+
+Releases are tagged (`git tag v<version> && git push origin v<version>`) and
+published to npm by CI with [provenance](https://docs.npmjs.com/generating-provenance-statements)
+via trusted publishing — see `.github/workflows/release.yml`.
 
 ## License
 

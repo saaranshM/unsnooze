@@ -15,6 +15,7 @@ import { release as osRelease } from 'node:os';
 import { getConfig } from './settings.js';
 import { getMultiplexer } from './multiplexer.js';
 import { sendOsc as defaultSendOsc, sendBell as defaultSendBell } from './notify-tty.js';
+import { sendNtfy } from './notify-ntfy.js';
 
 function defaultSpawner(cmd, args) {
   const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
@@ -113,9 +114,17 @@ export function notify(title, message, {
   channel = null,
   tty = { sendOsc: defaultSendOsc, sendBell: defaultSendBell },
   getMux = getMultiplexer,
+  ntfyFetcher = undefined,
+  priority = 3,
 } = {}) {
   try {
     if (!getConfig('notifications')) return;
+
+    // ntfy push is ADDITIVE: a phone buzz complements the local toast — the
+    // scenarios unsnooze exists for are exactly the ones where the user is
+    // not looking at this machine. No-op until ntfyTopic is configured;
+    // fire-and-forget so an offline push can never slow a resume.
+    sendNtfy(title, message, { fetcher: ntfyFetcher, priority }).catch(() => {});
 
     const nativeOpts = { platform, wsl, spawner };
     const fireNative = () => nativeNotify(title, message, nativeOpts);

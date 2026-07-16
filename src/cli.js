@@ -10,6 +10,7 @@ import { getConfig, setConfigValue, listConfig, CONFIG_FILE } from './settings.j
 import { spawnResumerIfNeeded } from './spawn.js';
 import { getMultiplexer } from './multiplexer.js';
 import { listOwnedSessions, reap, attachHint } from './reap.js';
+import { planFor } from './resumer.js';
 
 function fmtCountdown(ms) {
   if (ms <= 0) return 'due now';
@@ -200,6 +201,76 @@ export function cmdConfig(rest) {
     return 2;
   } catch (err) {
     console.error(err.message);
+    return 1;
+  }
+}
+
+// `unsnooze preview [id]` — dry-run: what WOULD the resumer do right now,
+// and why? Shares planFor/assessPane/evaluate*Guard with the real dispatch,
+// so this can never drift from what dispatch actually does. Read-only pane
+// captures only — nothing is typed, opened, or modified.
+// Exit codes (terraform -detailed-exitcode style): 0 = nothing would wake
+// right now, 2 = at least one actionable wake, 1 = internal error.
+export async function cmdPreview(rest = [], {
+  resolveMux = rec => getMultiplexer(rec.mux, { owner: rec.paneOwner }),
+  matchesLease = undefined,
+  print = console.log,
+  now = Date.now(),
+} = {}) {
+  try {
+    const idOrAll = rest.find(a => !a.startsWith('-'));
+    const state = readState();
+    let records = Object.values(state.sessions);
+    if (idOrAll) {
+      records = records.filter(s => s.key.startsWith(idOrAll) || (s.sessionId || '').startsWith(idOrAll));
+    }
+    if (records.length === 0) {
+      print(idOrAll ? `unsnooze preview: no session matching "${idOrAll}".` : 'unsnooze preview: no tracked sessions.');
+      return 0;
+    }
+    print('unsnooze preview — what WOULD happen right now (nothing is sent)\n');
+    const VERBS = {
+      inject: p => `would TYPE the wake message into pane ${p.target?.pane}`,
+      'drive-menu': p => `would SELECT "Stop and wait for limit to reset" in pane ${p.target?.pane}`,
+      reopen: p => `would REOPEN in session "${p.target?.session}"${p.messageViaPane ? ' and type the message once the TUI shows an idle prompt' : ' (message travels in argv)'}`,
+      busy: () => 'would DEFER — agent is busy',
+      'menu-held': () => 'limit menu on screen — would WAIT (menuAutoAnswer off)',
+      probe: () => 'would PROBE (reset time unknown) — not a resume',
+      waiting: () => 'waiting for the reset',
+      paused: () => 'paused — would do nothing',
+      held: () => 'held — would do nothing until resume-now',
+      'give-up': () => 'would GIVE UP (attempt cap reached)',
+      verifying: () => 'verifying an in-flight resume',
+      retry: () => 'would RETRY later (pane capture failed)',
+      none: () => 'nothing to do',
+    };
+    let actionable = false;
+    for (const rec of records.sort((x, y) => (x.resetAt || 0) - (y.resetAt || 0))) {
+      let plan;
+      try {
+        plan = await planFor(rec, {
+          mux: resolveMux(rec),
+          ...(matchesLease ? { matchesLease } : {}),
+          now,
+        });
+      } catch (err) {
+        print(`  ${rec.key.slice(0, 12)}: preview failed: ${err.message}`);
+        continue;
+      }
+      const id = rec.sessionId ? rec.sessionId.slice(0, 8) : '(no id)';
+      print(`  [${(rec.status || '?').toUpperCase().padEnd(9)}] ${id}  ${(rec.agent || 'claude').padEnd(6)} ${rec.cwd || ''}`);
+      print(`              ${(VERBS[plan.action] || (() => plan.action))(plan)}`);
+      for (const g of plan.gates) print(`              · ${g}`);
+      if (plan.message && ['inject', 'reopen'].includes(plan.action)) {
+        const m = plan.message.length > 140 ? `${plan.message.slice(0, 140)}…` : plan.message;
+        print(`              message: "${m.replace(/\n+/g, ' ⏎ ')}"`);
+      }
+      if (['inject', 'drive-menu', 'reopen'].includes(plan.action)) actionable = true;
+    }
+    print('\nNothing was typed, opened, or modified. `unsnooze resume-now <id>` wakes a session immediately.');
+    return actionable ? 2 : 0;
+  } catch (err) {
+    console.error(`unsnooze preview: ${err.message}`);
     return 1;
   }
 }

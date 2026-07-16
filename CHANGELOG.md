@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+## 1.12.0 — 2026-07-16
+
+- **Daemon PATH fix** (fix: every launchd-daemon revival on Homebrew Macs died
+  silently with `spawn tmux ENOENT` — launchd gives daemons a bare
+  `/usr/bin:/bin:/usr/sbin:/sbin` and tmux lives in `/opt/homebrew/bin`): the
+  launchd plist and systemd unit now bake the install-time `PATH`. Re-run
+  `unsnooze install --daemon` once after updating to regenerate the unit.
+  Revival `new-window` failures are now logged (they were silent), and
+  `failed` records survive the sweeper so `unsnooze status` can show *why* a
+  session gave up (age-based prune still expires them).
+- **`unsnooze preview [id]`** — a true dry-run: per session, exactly what the
+  resumer WOULD do right now (type into which pane, drive the menu, reopen in
+  which session, probe, defer) and why — every gate (paused, not due, held by
+  workspace/context guard, backoff, attempt cap) spelled out, including the
+  final wake message with any guard suffix. Sends nothing, mutates nothing.
+  Preview shares its decision code (`planFor`/`assessPane`/guard evaluators)
+  with the real dispatcher, so it cannot drift. Exit codes: `0` nothing would
+  wake now, `2` at least one actionable wake, `1` error.
+- **ntfy push notifications** (`ntfyTopic` / `ntfyServer` / `ntfyToken` /
+  `ntfyPrivacy`) — off until a topic is set; fires *alongside* the local
+  channel on limit-hit / resumed / gave-up (gave-up pushes at high priority).
+  JSON-to-root publishing (emoji-safe titles), Bearer-token support for authed
+  or self-hosted servers, bodies capped, fire-and-forget with a 5s timeout.
+  `ntfyPrivacy=terse` keeps directory paths out of pushed bodies — ntfy.sh
+  topics are a public namespace, so the docs push unguessable topic names.
+- **Trust & security docs**: a "Trust & security" section at the top of the
+  README (what unsnooze types and never types, grounded in the actual
+  mechanisms) and a full `SECURITY.md` (threat model, honest residual risks,
+  private vulnerability reporting, supported versions). Enable GitHub Private
+  Vulnerability Reporting in the repo settings to activate the report button.
+- **Release provenance**: `.github/workflows/release.yml` publishes to npm on
+  `v*` tags via trusted publishing (OIDC, token-less) with
+  `--provenance` — after a one-time trusted-publisher setup on npmjs.com
+  (repo `saaranshM/unsnooze`, workflow `release.yml`).
+- **Reproducible demo**: `demo/demo.tape` (VHS) renders `assets/demo.gif` —
+  staged fixture ledger + stub agent, but the `unsnooze status` beat is real.
+- Note: the pre-release name `claude-session-guard` was never published to
+  npm, so there is nothing to deprecate on the registry; `unsnooze doctor
+  --fix` remains the migration path for local installs.
+
 ## 1.11.0 — 2026-07-16
 
 - **`unsnooze doctor [--fix]`** — install health check + migration sweep for

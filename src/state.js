@@ -250,7 +250,10 @@ export async function sweepRecords({ resolveMux } = {}) {
   const state = readState();
   const drop = [];
   for (const rec of Object.values(state.sessions)) {
-    if (!['resumed', 'failed', 'cancelled'].includes(rec.status)) continue;
+    // 'failed' is deliberately NOT swept: its lastError is the post-mortem
+    // ("why didn't my session wake?") and a give-up was once erased within
+    // 30 seconds of happening. Age-based prune() owns failed-record expiry.
+    if (!['resumed', 'cancelled'].includes(rec.status)) continue;
     if (!rec.pane) {
       drop.push(rec.key);
       continue;

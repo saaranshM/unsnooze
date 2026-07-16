@@ -87,3 +87,25 @@ test('unsupported platform → null, never throws', () => {
   assert.equal(installDaemonAutostart({ platform: 'win32', dir: DIR, activate: () => true }), null);
   assert.equal(uninstallDaemonAutostart({ platform: 'win32', dir: DIR, activate: () => true }), null);
 });
+
+test('launchd plist carries the install-time PATH (daemon revival needs tmux)', () => {
+  // launchd gives daemons PATH=/usr/bin:/bin:/usr/sbin:/sbin — tmux lives in
+  // /opt/homebrew/bin on ARM Macs, so without this every daemon revival dies
+  // with spawn tmux ENOENT (observed live: 5 silent attempts, then give-up).
+  const xml = launchdPlist({ nodeBin: '/n/node', unsnoozeBin: '/x/bin/unsnooze.js', path: '/opt/homebrew/bin:/usr/bin:/bin' });
+  assert.match(xml, /<key>EnvironmentVariables<\/key>/);
+  assert.match(xml, /<key>PATH<\/key>\s*<string>\/opt\/homebrew\/bin:\/usr\/bin:\/bin<\/string>/);
+  // Default: bakes the installing shell's PATH (which can find tmux).
+  const dflt = launchdPlist({ nodeBin: '/n/node', unsnoozeBin: '/x/bin/unsnooze.js' });
+  assert.match(dflt, /<key>PATH<\/key>/);
+});
+
+test('systemd unit carries the install-time PATH too', () => {
+  const unit = systemdUnit({ nodeBin: '/n/node', unsnoozeBin: '/x/bin/unsnooze.js', path: '/usr/local/bin:/usr/bin:/bin' });
+  assert.match(unit, /Environment="PATH=\/usr\/local\/bin:\/usr\/bin:\/bin"/);
+});
+
+test('systemd PATH escapes percent specifiers', () => {
+  const unit = systemdUnit({ nodeBin: '/n/node', unsnoozeBin: '/x/bin/unsnooze.js', path: '/odd%dir/bin' });
+  assert.match(unit, /Environment="PATH=\/odd%%dir\/bin"/);
+});

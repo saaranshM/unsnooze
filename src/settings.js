@@ -18,6 +18,14 @@ export const DEFAULTS = {
   menuAutoAnswer: true,    // may unsnooze drive Claude's limit menu (send keys)?
   notifications: true,     // desktop notifications on detect/resume
   notifyChannel: 'auto',   // auto | native | osc | bell
+  // ntfy push (https://ntfy.sh) — ADDITIVE to notifyChannel; off until a
+  // topic is set. ntfy.sh topics are public: the name is the password —
+  // use `unsnooze config set ntfyTopic $(unsnooze doctor)`-style random
+  // names (generateNtfyTopic) or a self-hosted/authed server.
+  ntfyTopic: '',           // '' = ntfy off
+  ntfyServer: 'https://ntfy.sh',
+  ntfyToken: '',           // optional Bearer token (tk_…) for authed servers
+  ntfyPrivacy: 'full',     // full | terse (terse: never push cwd paths)
   guiWatch: true,          // daemon watches transcripts/rollouts for GUI-session stops
   updateCheck: true,       // daily registry version check + update notices/toast
   workspaceGuard: 'inform', // repo changed while stopped: off | inform | pause
@@ -40,6 +48,10 @@ const ENV_NAMES = {
   menuAutoAnswer: 'UNSNOOZE_MENU_AUTO_ANSWER',
   notifications: 'UNSNOOZE_NOTIFICATIONS',
   notifyChannel: 'UNSNOOZE_NOTIFY_CHANNEL',
+  ntfyTopic: 'UNSNOOZE_NTFY_TOPIC',
+  ntfyServer: 'UNSNOOZE_NTFY_SERVER',
+  ntfyToken: 'UNSNOOZE_NTFY_TOKEN',
+  ntfyPrivacy: 'UNSNOOZE_NTFY_PRIVACY',
   guiWatch: 'UNSNOOZE_GUI_WATCH',
   updateCheck: 'UNSNOOZE_UPDATE_CHECK',
   workspaceGuard: 'UNSNOOZE_WORKSPACE_GUARD',
@@ -72,6 +84,7 @@ const ENUMS = {
   workspaceGuard: ['off', 'inform', 'pause'],
   contextGuard: ['off', 'inform', 'pause'],
   notifyChannel: ['auto', 'native', 'osc', 'bell'],
+  ntfyPrivacy: ['full', 'terse'],
 };
 
 function parseBool(raw) {

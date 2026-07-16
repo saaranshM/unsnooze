@@ -1,7 +1,7 @@
 // dispatchOne / verifyOne decision logic with fake tmux.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,7 +13,7 @@ process.env.UNSNOOZE_VERIFY_DELAY_MS = '0';
 
 const { dispatchOne, verifyOne, routeDispatchOutcome, runResumer, probeFallback, reviveTarget } = await import('../src/resumer.js');
 const { upsertSession, readState, setStatus, updateState, sweepRecords, markStaleAbandoned } = await import('../src/state.js');
-const { RESUME_SESSION_NAME } = await import('../src/config.js');
+const { RESUME_SESSION_NAME, LOG_FILE } = await import('../src/config.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
@@ -982,4 +982,30 @@ test('stale stopped record with a dead pane is marked failed instead of revived'
   assert.equal(n, 1);
   assert.equal(readState().sessions[rec.key].status, 'failed');
   assert.match(readState().sessions[rec.key].lastError, /stale/);
+});
+
+test('sweepRecords preserves failed records (post-mortem evidence) — prune owns their expiry', async () => {
+  // Observed live: a record that gave up after 5 attempts was swept within
+  // 30s, destroying its lastError before anyone could read `unsnooze status`.
+  const failed = seed({ sessionId: 'sweep-keep-failed', pane: '%f1', status: 'stopped' });
+  setStatus(failed.key, 'failed', { lastError: 'new-window: spawn tmux ENOENT' });
+  await sweepRecords({ resolveMux: () => ({ paneAlive: async () => false }) });
+  const rec = readState().sessions[failed.key];
+  assert.ok(rec, 'failed record survives the sweep');
+  assert.equal(rec.lastError, 'new-window: spawn tmux ENOENT');
+});
+
+test('reopen logs new-window failures instead of failing silently', async () => {
+  const rec = seed({ sessionId: 'log-reopen-fail', pane: null, agent: 'codex' });
+  const mux = {
+    paneAlive: async () => false,
+    sessionExists: async () => false,
+    newWindow: async () => { throw new Error('spawn tmux ENOENT'); },
+  };
+  const before = (() => { try { return readFileSync(LOG_FILE, 'utf-8'); } catch { return ''; } })();
+  const result = await dispatchOne(rec, { mux });
+  assert.equal(result, 'retry');
+  const after = readFileSync(LOG_FILE, 'utf-8');
+  assert.match(after.slice(before.length), /new-window failed.*spawn tmux ENOENT/,
+    'the failure must be visible in the log, not only in state');
 });

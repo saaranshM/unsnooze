@@ -1,0 +1,55 @@
+# Publish to npm with provenance via trusted publishing (OIDC) on tag push.
+#
+# One-time setup on npmjs.com (package → Settings → Trusted Publisher):
+#   Organization or user: saaranshM        (exact GitHub login casing)
+#   Repository:           unsnooze
+#   Workflow filename:    release.yml      (filename only, no path)
+#   Environment name:     (leave blank)
+# The repo must be public. No NPM_TOKEN secret is used — OIDC is the auth.
+#
+# Release: bump version + CHANGELOG, commit, then
+#   git tag v<version> && git push origin v<version>
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Least privilege: only the publish job gets id-token (OIDC/provenance).
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest   # must be GitHub-hosted for provenance
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+      # Trusted publishing needs npm >= 11.5.1; setup-node ships an older npm.
+      # Pinned (not @latest): this job holds the OIDC publish credential —
+      # bump the pin deliberately, never float it.
+      - run: npm install -g npm@11.5.1
+      - run: npm ci
+      # No NODE_AUTH_TOKEN: OIDC auth is automatic. --provenance kept explicit —
+      # docs claim it is implied under trusted publishing, but real-world
+      # publishes still needed the flag as of 2026.
+      - run: npm publish --provenance --access public

@@ -159,6 +159,7 @@ function autostartDir(platform) {
 export function launchdPlist({
   nodeBin = process.execPath, unsnoozeBin = UNSNOOZE_BIN,
   logFile = join(STATE_DIR, 'daemon.log'),
+  path = process.env.PATH || '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin',
 } = {}) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -171,6 +172,13 @@ export function launchdPlist({
     <string>${xmlEscape(unsnoozeBin)}</string>
     <string>daemon</string>
   </array>
+  <!-- launchd default PATH is /usr/bin:/bin:/usr/sbin:/sbin — tmux (usually
+       /opt/homebrew/bin or /usr/local/bin) is invisible to the daemon and
+       every revival dies with spawn ENOENT. Bake the install-time PATH. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>${xmlEscape(path)}</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <!-- Without a throttle, KeepAlive + a half-installed package (npm -g
@@ -183,18 +191,24 @@ export function launchdPlist({
 `;
 }
 
-export function systemdUnit({ nodeBin = process.execPath, unsnoozeBin = UNSNOOZE_BIN } = {}) {
+export function systemdUnit({
+  nodeBin = process.execPath, unsnoozeBin = UNSNOOZE_BIN,
+  path = process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+} = {}) {
   // Restart=always, not on-failure: the version-skew guard and the
   // upgrade-window fail-safe exit 0 EXPECTING a respawn on fresh code.
   // RestartSec throttles (like launchd's ThrottleInterval); the start
   // rate-limit is disabled so a long broken-install window can never trip
-  // the unit into a permanent 'failed' state.
+  // the unit into a permanent 'failed' state. Environment PATH mirrors the
+  // launchd fix — user units get a minimal PATH that may not find tmux.
+  // systemd treats % as a specifier — escape as %%.
   return `[Unit]
 Description=unsnooze daemon — watches GUI AI-coding sessions for limit stops
 StartLimitIntervalSec=0
 
 [Service]
 ExecStart="${nodeBin}" "${unsnoozeBin}" daemon
+Environment="PATH=${path.replace(/%/g, '%%')}"
 Restart=always
 RestartSec=30
 

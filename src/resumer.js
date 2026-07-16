@@ -255,6 +255,179 @@ function rescheduleProbe(rec, now = Date.now()) {
   return 'probe';
 }
 
+// --- shared decision core (dispatchOne acts on it, planFor narrates it) -----
+// These helpers are DECISION-ONLY: no state writes, no notifications, no
+// keystrokes. `unsnooze preview` reuses them verbatim, so the dry-run cannot
+// drift from what dispatch actually does.
+
+// Workspace guard: returns the (possibly suffixed) message, or a hold.
+export function evaluateWorkspaceGuard(rec, message, { fingerprint = workspaceFingerprint } = {}) {
+  const mode = getConfig('workspaceGuard');
+  if (!rec.workspace || mode === 'off' || rec.manual) return { message, hold: null, informed: null };
+  const change = workspaceChanged(rec, fingerprint(rec.cwd));
+  if (!change) return { message, hold: null, informed: null };
+  const desc = describeChange(change);
+  if (mode === 'pause') return { message, hold: { reason: `workspace changed (${desc})`, desc }, informed: null };
+  return {
+    message: message + `\n\nHeads up: this workspace changed while the session was stopped (${desc}). Re-read the current state of the repo before continuing.`,
+    hold: null,
+    informed: desc,
+  };
+}
+
+// Context-size guard: returns a hold, an inform note, or neither.
+export function evaluateContextGuard(rec, agent, { contextTokens = null } = {}) {
+  const mode = getConfig('contextGuard');
+  if (mode === 'off' || rec.manual) return { hold: null, note: null, tokens: null };
+  const estimate = contextTokens
+    ?? (typeof agent.contextTokens === 'function' ? r => agent.contextTokens(r) : null);
+  let tokens = null;
+  try { tokens = estimate ? estimate(rec) : null; } catch { tokens = null; }
+  if (tokens == null || tokens < getConfig('contextGuardTokens')) return { hold: null, note: null, tokens };
+  const size = approxTokens(tokens);
+  if (mode === 'pause') return { hold: { reason: `context ${size} tokens`, size }, note: null, tokens };
+  return {
+    hold: null,
+    note: `${rec.cwd}: waking a ${size}-token session — its full context is re-read at full (uncached) price`,
+    tokens,
+  };
+}
+
+// Read-only live-pane classification: liveness, busy/menu/idle content, and
+// the identity/liveness ownership triad. Never sends anything.
+export async function assessPane(rec, agent, { mux, matchesLease = leaseMatches } = {}) {
+  if (!rec.pane) return { alive: false };
+  let alive = false;
+  try { alive = await mux.paneAlive(rec.pane); } catch { alive = false; }
+  if (!alive) return { alive: false };
+  let text;
+  try { text = await mux.capturePane(rec.pane, CAPTURE_LINES); }
+  catch (err) { return { alive: true, captureError: err.message }; }
+  const busy = isBusy(text, agent.patterns.busyPatterns);
+  const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
+  const menu = !!(agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES));
+  let cmd = null;
+  try { cmd = await mux.paneCurrentCommand?.(rec.pane); }
+  catch (err) { log(`${rec.key}: pane command lookup failed: ${err.message}`); }
+  const contentOwned = menu || d.hit || agent.patterns.idleRegex.test(text);
+  // Two independent questions, both required before touching the pane:
+  //   identity — is this pane still OURS? (stamp/lease; false VETOES)
+  //   liveness — is our agent still RUNNING in it? (lease pid+birth, or the
+  //     foreground command; the stamp alone never counts — it outlives the
+  //     agent and the pane may now be the user's shell.)
+  const identity = await paneOwnedByRecord(rec, { mux, matchesLease });
+  const leased = await matchesLease(rec, { mux });
+  const owned = identity !== false && (leased || agent.isForegroundCommand(cmd));
+  const authorized = owned && contentOwned;
+  return { alive: true, text, busy, d, menu, cmd, contentOwned, identity, leased, owned, authorized };
+}
+
+// Dry-run: what WOULD dispatch do with this record right now, and why.
+// Read-only pane captures only — never mutates state, types, or opens panes.
+export async function planFor(rec, {
+  mux = resolveRecordMux(rec), matchesLease = leaseMatches,
+  fingerprint = workspaceFingerprint, contextTokens = null, now = Date.now(),
+} = {}) {
+  const agent = getAgent(rec.agent);
+  const gates = [];
+  const base = { key: rec.key, sessionId: rec.sessionId, agent: agent.id, cwd: rec.cwd, status: rec.status, gates };
+
+  if (rec.status !== 'stopped') {
+    if (rec.status === 'resuming') {
+      gates.push('resume in flight — the next tick verifies the outcome');
+      return { ...base, action: 'verifying' };
+    }
+    gates.push(`status ${rec.status} — nothing to dispatch`);
+    return { ...base, action: 'none' };
+  }
+  // Gate order mirrors runResumer exactly: give-up only ever happens to
+  // records that pass dueForDispatch (due AND auto-or-manual AND not held),
+  // so paused/held/backing-off records are narrated as such even when their
+  // attempt counter is maxed — dispatch is genuinely still waiting on them.
+  if (!getConfig('autoResume') && !rec.manual) {
+    gates.push('paused — autoResume is off (`unsnooze resume-now` overrides)');
+    return { ...base, action: 'paused' };
+  }
+  if (rec.workspaceHold && !rec.manual) {
+    gates.push(`held: ${rec.holdReason ?? 'guard hold'} — \`unsnooze resume-now\` wakes it`);
+    return { ...base, action: 'held' };
+  }
+  const isProbe = rec.resetSource === 'fallback' && !rec.manual;
+  if ((rec.resetAt || 0) > now) {
+    gates.push(`not due — ${isProbe ? 'next probe' : 'resets'} ${new Date(rec.resetAt).toLocaleString()}`);
+    if (isProbe) gates.push('reset time unknown — cheap pane probes stand in for a schedule');
+    return { ...base, action: isProbe ? 'probe' : 'waiting', at: rec.resetAt };
+  }
+  if ((rec.attempts || 0) >= MAX_RESUME_ATTEMPTS) {
+    gates.push(`attempts ${rec.attempts}/${MAX_RESUME_ATTEMPTS} exhausted — would be marked failed (re-arms on a fresh detection)`);
+    return { ...base, action: 'give-up' };
+  }
+  if (isProbe) {
+    // Past the hard ceiling, rescheduleProbe deterministically stops probing
+    // and dispatch falls through to a REAL wake — narrate that, not a probe.
+    const ceiling = (rec.detectedAt || now) + FALLBACK_RESET_MS + RESET_MARGIN_MS;
+    if (now < ceiling) {
+      gates.push('reset time unknown — would probe the pane/transcript before any resume (a cleared banner resumes immediately)');
+      return { ...base, action: 'probe', at: rec.resetAt };
+    }
+    gates.push('probe ceiling reached — probing is over, a real resume follows');
+  }
+
+  // Same message precedence and guard evaluation dispatch uses.
+  let message = rec.resumeMessage ?? resolveResumeMessage(agent.id);
+  const ws = evaluateWorkspaceGuard(rec, message, { fingerprint });
+  if (ws.hold) {
+    gates.push(`would hold: ${ws.hold.reason} (workspaceGuard=pause)`);
+    return { ...base, action: 'held' };
+  }
+  message = ws.message;
+  if (ws.informed) gates.push(`workspace changed (${ws.informed}) — the wake message warns the agent`);
+  const ctx = evaluateContextGuard(rec, agent, { contextTokens });
+  if (ctx.hold) {
+    gates.push(`would hold: ${ctx.hold.reason} (contextGuard=pause)`);
+    return { ...base, action: 'held' };
+  }
+  if (ctx.note) gates.push(`big-context wake: ~${approxTokens(ctx.tokens)} tokens re-read at full (uncached) price`);
+
+  // Same live-pane classification dispatch uses.
+  const a = await assessPane(rec, agent, { mux, matchesLease });
+  if (a.alive) {
+    if (a.captureError) {
+      gates.push(`pane capture failed (${a.captureError}) — dispatch would record the error and retry with backoff`);
+      return { ...base, action: 'retry', target: { pane: rec.pane } };
+    }
+    if (a.busy) {
+      gates.push('agent is mid-work (busy footer) — dispatch defers, never interrupts');
+      return { ...base, action: 'busy', target: { pane: rec.pane } };
+    }
+    if (a.menu && a.authorized) {
+      if (!getConfig('menuAutoAnswer')) {
+        gates.push('limit menu on screen but menuAutoAnswer is off — would wait for you');
+        return { ...base, action: 'menu-held', target: { pane: rec.pane } };
+      }
+      return { ...base, action: 'drive-menu', target: { pane: rec.pane } };
+    }
+    if (a.authorized) return { ...base, action: 'inject', target: { pane: rec.pane }, message };
+    if (a.owned && !a.menu) {
+      gates.push('pane is ours but not at an idle prompt — dispatch defers');
+      return { ...base, action: 'busy', target: { pane: rec.pane } };
+    }
+    if (a.identity === false) gates.push('pane id was recycled — demonstrably not ours anymore');
+    else gates.push('pane content/ownership unproven — no keystrokes allowed');
+  } else if (rec.pane) {
+    gates.push('original pane is gone');
+  } else {
+    gates.push('no pane recorded (GUI/transcript detection)');
+  }
+
+  const target = await reviveTarget(mux, rec);
+  const resume = agent.resumeArgs(rec.sessionId, message);
+  return {
+    ...base, action: 'reopen', target: { session: target }, message,
+    argv: [agent.id, ...resume.args], messageViaPane: !!resume.messageViaPane,
+  };
+}
+
 // Ordered safety decision. Returns: busy | retry | progress | held | injected | reopen | probe.
 export async function dispatchOne(rec, {
   mux = resolveRecordMux(rec), resolveMux = null,
@@ -280,101 +453,66 @@ export async function dispatchOne(rec, {
 
   // Stale-workspace guard: another session (or a human) may have moved the
   // repo while this one slept. Manual resumes (resume-now) always proceed.
-  const guardMode = getConfig('workspaceGuard');
-  if (rec.workspace && guardMode !== 'off' && !rec.manual) {
-    const change = workspaceChanged(rec, fingerprint(rec.cwd));
-    if (change) {
-      const desc = describeChange(change);
-      if (guardMode === 'pause') {
-        setStatus(key, 'stopped', { workspaceHold: true, holdReason: `workspace changed (${desc})` });
-        notifier('unsnooze: session held', `${rec.cwd}: workspace changed while stopped (${desc}) — run: unsnooze resume-now`, { context: ctxOf(rec) });
-        log(`${key}: workspace changed (${desc}) — held (workspaceGuard=pause)`);
-        return 'held';
-      }
-      resumeMessage += `\n\nHeads up: this workspace changed while the session was stopped (${desc}). Re-read the current state of the repo before continuing.`;
-      log(`${key}: workspace changed (${desc}) — informing agent in the wake message`);
-    }
+  // Decision comes from the shared evaluator (planFor uses the same one);
+  // dispatch owns the side effects.
+  const ws = evaluateWorkspaceGuard(rec, resumeMessage, { fingerprint });
+  if (ws.hold) {
+    setStatus(key, 'stopped', { workspaceHold: true, holdReason: ws.hold.reason });
+    notifier('unsnooze: session held', `${rec.cwd}: workspace changed while stopped (${ws.hold.desc}) — run: unsnooze resume-now`, { context: ctxOf(rec) });
+    log(`${key}: workspace changed (${ws.hold.desc}) — held (workspaceGuard=pause)`);
+    return 'held';
   }
+  if (ws.informed) log(`${key}: workspace changed (${ws.informed}) — informing agent in the wake message`);
+  resumeMessage = ws.message;
 
   // Context-size guard: the prompt cache expired hours ago, so the first wake
   // message re-reads the session's entire context at full (uncached) price.
-  // Estimate the size from the agent's transcript; `pause` holds big sessions,
-  // `inform` notifies the user — but only once the wake actually lands, since
-  // dispatchOne re-runs on every busy/retry tick. Manual resumes proceed.
-  let contextNote = null;
-  const ctxGuardMode = getConfig('contextGuard');
-  if (ctxGuardMode !== 'off' && !rec.manual) {
-    const estimate = contextTokens
-      ?? (typeof agent.contextTokens === 'function' ? r => agent.contextTokens(r) : null);
-    let tokens = null;
-    try { tokens = estimate ? estimate(rec) : null; } catch { /* unknown size — skip */ }
-    if (tokens != null && tokens >= getConfig('contextGuardTokens')) {
-      const size = approxTokens(tokens);
-      if (ctxGuardMode === 'pause') {
-        setStatus(key, 'stopped', { workspaceHold: true, holdReason: `context ${size} tokens` });
-        notifier('unsnooze: session held', `${rec.cwd}: waking would re-read ${size} tokens of context at full (uncached) price — run: unsnooze resume-now`, { context: ctxOf(rec) });
-        log(`${key}: context ${size} tokens ≥ threshold — held (contextGuard=pause)`);
-        return 'held';
-      }
-      contextNote = `${rec.cwd}: waking a ${size}-token session — its full context is re-read at full (uncached) price`;
-      log(`${key}: context ${size} tokens — informing (contextGuard=inform)`);
-    }
+  // `pause` holds big sessions, `inform` notifies the user — but only once
+  // the wake actually lands, since dispatchOne re-runs on every busy/retry
+  // tick. Manual resumes proceed.
+  const ctx = evaluateContextGuard(rec, agent, { contextTokens });
+  if (ctx.hold) {
+    setStatus(key, 'stopped', { workspaceHold: true, holdReason: ctx.hold.reason });
+    notifier('unsnooze: session held', `${rec.cwd}: waking would re-read ${ctx.hold.size} tokens of context at full (uncached) price — run: unsnooze resume-now`, { context: ctxOf(rec) });
+    log(`${key}: context ${ctx.hold.size} tokens ≥ threshold — held (contextGuard=pause)`);
+    return 'held';
   }
+  const contextNote = ctx.note;
+  if (contextNote) log(`${key}: context ${approxTokens(ctx.tokens)} tokens — informing (contextGuard=inform)`);
   const notifyContext = () => {
     if (contextNote) notifier('unsnooze: big-context wake', contextNote, { context: ctxOf(rec) });
   };
   const reopenGuarded = () =>
     reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onDelivered: notifyContext });
 
-  // Live-pane path: only if the pane still exists AND the agent CLI is its
-  // foreground command (pane ids get recycled — never inject into a random
-  // program).
-  if (rec.pane && await mux.paneAlive(rec.pane)) {
-    let text;
-    try { text = await mux.capturePane(rec.pane, CAPTURE_LINES); }
-    catch (err) {
-      setStatus(key, 'stopped', { lastError: `capture: ${err.message}` });
+  // Live-pane path: classification comes from the shared assessPane (planFor
+  // narrates the identical assessment); dispatch owns every side effect.
+  const a = await assessPane(rec, agent, { mux, matchesLease });
+  if (a.alive) {
+    if (a.captureError) {
+      setStatus(key, 'stopped', { lastError: `capture: ${a.captureError}` });
       return 'retry';
     }
-    if (isBusy(text, agent.patterns.busyPatterns)) return 'busy';
-    const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
-    const menu = !!(agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES));
-    let cmd = null;
-    try { cmd = await mux.paneCurrentCommand(rec.pane); }
-    catch (err) { log(`${key}: pane command lookup failed: ${err.message}`); }
-    const contentOwned = menu || d.hit || agent.patterns.idleRegex.test(text);
-    // Two independent questions, both required before touching the pane:
-    //   identity — is this pane still OURS? (stamp/lease; false VETOES: the
-    //     pane id was recycled and no command-name match may override that)
-    //   liveness — is our agent still RUNNING in it? (lease pid+birth, or the
-    //     foreground command). The stamp alone must never satisfy this: it
-    //     survives the agent exiting (it dies with the pane), so a stamped
-    //     pane may now be the user's shell — treating that as owned would
-    //     fake 'busy' into a silent 'resumed', or type into their prompt.
-    const identity = await paneOwnedByRecord(rec, { mux, matchesLease });
-    const leased = await matchesLease(rec, { mux });
-    const owned = identity !== false && (leased || agent.isForegroundCommand(cmd));
-    const authorized = owned && contentOwned;
-
-    if (menu) {
-      if (!authorized) return reopenGuarded();
+    if (a.busy) return 'busy';
+    if (a.menu) {
+      if (!a.authorized) return reopenGuarded();
       if (!getConfig('menuAutoAnswer')) return 'held';
       try {
-        if (await driveMenu(mux, rec.pane, agent, text)) return 'progress';
+        if (await driveMenu(mux, rec.pane, agent, a.text)) return 'progress';
         setStatus(key, 'stopped', { lastError: 'menu drive: wait option unavailable' });
       } catch (err) {
         setStatus(key, 'stopped', { lastError: `menu drive: ${err.message}` });
       }
       return 'retry';
     }
-    if (authorized) {
+    if (a.authorized) {
       setStatus(key, 'resuming', { lastAttemptAt: Date.now(), lastError: null, verifyRetries: 0 });
       await mux.sendText(rec.pane, resumeMessage);
       log(`${key}: sent continue via ${rec.mux} ${rec.paneOwner ?? '-'}:${rec.pane}`);
       notifyContext();
       return 'injected';
     }
-    if (owned) return 'busy';
+    if (a.owned) return 'busy';
   }
 
   return reopenGuarded();
@@ -396,6 +534,10 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
   try {
     address = await mux.newWindow(target, rec.cwd || homedir(), launchSpec);
   } catch (err) {
+    // Log it — a revival that cannot even spawn the multiplexer (e.g. tmux
+    // ENOENT under launchd's bare PATH) otherwise fails 5 times in total
+    // silence, with the only evidence buried in a soon-swept record.
+    log(`${key}: new-window failed in session "${target}": ${err.message}`);
     setStatus(key, 'stopped', {
       attempts: (rec.attempts || 0) + 1,
       lastError: `new-window: ${err.message}`,
@@ -604,7 +746,7 @@ export async function runResumer({
         if ((s.attempts || 0) >= MAX_RESUME_ATTEMPTS) {
           setStatus(s.key, 'failed', { lastError: 'max resume attempts exceeded', verifyRetries: 0 });
           log(`${s.key}: giving up after ${s.attempts} attempts`);
-          notify('unsnooze gave up ⚠️', `${s.cwd}: ${s.attempts} resume attempts failed — check \`unsnooze status\``, { context: ctxOf(s) });
+          notify('unsnooze gave up ⚠️', `${s.cwd}: ${s.attempts} resume attempts failed — check \`unsnooze status\``, { context: ctxOf(s), priority: 4 });
         }
       }
 
