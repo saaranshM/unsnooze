@@ -16,6 +16,7 @@ import { CLAUDE_SETTINGS, STATE_DIR } from './config.js';
 import { getConfig, configFileExists } from './settings.js';
 import { xmlEscape } from './notify.js';
 import { installGrokHooks, uninstallGrokHooks } from './agents/grok.js';
+import { findCsgProcesses, findCsgAutostarts } from './doctor.js';
 import { UNSNOOZE_BIN, stopResumer } from './spawn.js';
 
 const FENCE_OPEN = '# >>> unsnooze >>>';
@@ -45,6 +46,15 @@ function atomicWrite(path, content) {
   const tmp = join(dirname(path), `.${Date.now()}.tmp`);
   writeFileSync(tmp, content);
   renameSync(tmp, path);
+}
+
+// Two backup tiers: `.unsnooze-orig` is the pristine pre-unsnooze snapshot,
+// written exactly once (a re-run must never overwrite it with an already-
+// modified file); `.unsnooze-bak` rolls forward on every run.
+function backupOnce(path) {
+  const orig = `${path}.unsnooze-orig`;
+  if (!existsSync(orig)) copyFileSync(path, orig);
+  copyFileSync(path, `${path}.unsnooze-bak`);
 }
 
 // --- settings.json hook management ---
@@ -296,7 +306,7 @@ export function cmdInstall(rest, { agents = enabledAgents() } = {}) {
   //    when installed below).
   if (agents.includes('claude')) {
     if (existsSync(opts.settings)) {
-      copyFileSync(opts.settings, `${opts.settings}.unsnooze-bak`);
+      backupOnce(opts.settings);
       const before = readFileSync(opts.settings, 'utf-8');
       atomicWrite(opts.settings, mergeHookIntoSettings(before));
       console.log(`unsnooze: StopFailure hook installed in ${opts.settings} (backup: ${opts.settings}.unsnooze-bak)`);
@@ -328,7 +338,7 @@ export function cmdInstall(rest, { agents = enabledAgents() } = {}) {
       console.log(`unsnooze: "${OLD_FENCE_OPEN}" block manually first.`);
       return 1;
     }
-    if (existsSync(rc)) copyFileSync(rc, `${rc}.unsnooze-bak`);
+    if (existsSync(rc)) backupOnce(rc);
     const { content, oldRemoved } = installZshrcBlock(rcContent, agents);
     atomicWrite(rc, content);
     console.log(`unsnooze: wrappers (${agents.join(', ')}) installed in ${rc}${oldRemoved ? ' (legacy wrapper block removed)' : ''}`);
@@ -340,6 +350,20 @@ export function cmdInstall(rest, { agents = enabledAgents() } = {}) {
     if (target) console.log(`unsnooze: daemon autostart installed (${target}) — GUI sessions are watched`);
     else console.log('unsnooze: daemon autostart is not supported on this platform');
   }
+
+  // 5. Migration sweep: an upgrade from the pre-release csg leaves its
+  //    monitors/daemon/state behind (npm cannot clean up a renamed package) —
+  //    surface it right where upgraders will see it. Detection only; the
+  //    actual retirement is `unsnooze doctor --fix`, one explicit step away.
+  try {
+    const legacy = findCsgProcesses().length > 0
+      || findCsgAutostarts().length > 0
+      || existsSync(join(homedir(), '.claude-session-guard'));
+    if (legacy) {
+      console.log('\nunsnooze: leftovers from the old claude-session-guard (csg) install detected.');
+      console.log('unsnooze: run `unsnooze doctor --fix` to stop its processes and retire its files.');
+    }
+  } catch { /* detection is best-effort — never fail an install over it */ }
 
   console.log('\nunsnooze: done. Reload your shell:');
   console.log('  exec $SHELL');

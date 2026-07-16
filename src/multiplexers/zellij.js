@@ -75,6 +75,11 @@ export function createZellij({ spawner = defaultSpawner, env = process.env } = {
   const childEnv = () => scrubZellijEnv(env);
   const run = (args, options = {}) => spawner('zellij', args, { env: childEnv(), ...options });
 
+  // dump-screen --full (scrollback) exists on zellij >= 0.35; older builds
+  // reject the flag. Shared across binds: learn once, never fail every tick.
+  // null = untested, true = supported, false = degrade to viewport-only.
+  let fullDumpSupported = null;
+
   // Sync counterpart of sessionExists, for the sync launchWrapped path. Rows can
   // carry ANSI colour and an "(EXITED …)" suffix, so only the leading name token
   // is compared. Probe failure → empty set: assume free and let zellij arbitrate.
@@ -121,10 +126,22 @@ export function createZellij({ spawner = defaultSpawner, env = process.env } = {
         return env.ZELLIJ_PANE_ID || null;
       },
 
-      // v1 limitation: dump-screen is viewport-only, so `lines` is ignored;
-      // unlike tmux, a banner/menu that scrolls away between polls is missed.
-      // `dump-screen --full` may provide a future scrollback-capable option.
+      // --full includes scrollback, so a banner/menu that scrolled away
+      // between polls is still seen; `lines` is still ignored — zellij offers
+      // no line-count bound on the dump. Pre-0.35 zellij rejects the flag:
+      // fall back to the viewport-only form (1.10.x behavior) rather than
+      // failing every capture, and remember the answer.
       async capturePane(pane, _lines = 200) {
+        if (fullDumpSupported !== false) {
+          try {
+            const out = await owned('action', 'dump-screen', '--full', '--pane-id', String(pane));
+            fullDumpSupported = true;
+            return out;
+          } catch (err) {
+            if (fullDumpSupported === true) throw err;   // flag is fine — real capture error
+            fullDumpSupported = false;
+          }
+        }
         return owned('action', 'dump-screen', '--pane-id', String(pane));
       },
 

@@ -85,3 +85,25 @@ export async function leaseMatches(rec, {
   if (!birth || birth !== stored.pidBirth) return false;
   try { return await mux.paneAlive(rec.pane); } catch { return false; }
 }
+
+// Ownership decision for anything that would TYPE INTO or CLOSE rec.pane.
+// Pane ids are recycled, so proof is required, in two layers:
+//   1. the @unsnooze_owner pane stamp (tmux; survives agent exit, dies with
+//      the pane): match → true, MISMATCH → false regardless of the lease —
+//      the pane id demonstrably belongs to a different launch now;
+//   2. the lease (pid + birth): proves the leased agent process is alive.
+// Returns true (ours), false (not ours), or null (record has no lease at all
+// and no stamp evidence — legacy/GUI record; the caller applies its own
+// last-resort heuristic).
+export async function paneOwnedByRecord(rec, { mux, matchesLease = leaseMatches } = {}) {
+  if (!rec?.pane || !mux) return rec?.leaseId ? false : null;
+  let stamp = null;
+  if (typeof mux.paneOwnerStamp === 'function') {
+    try { stamp = await mux.paneOwnerStamp(rec.pane); } catch { stamp = null; }
+  }
+  if (stamp != null && stamp !== '') {
+    return rec.leaseId != null && stamp === rec.leaseId;
+  }
+  if (await matchesLease(rec, { mux })) return true;
+  return rec.leaseId ? false : null;
+}

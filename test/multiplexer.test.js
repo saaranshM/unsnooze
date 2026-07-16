@@ -85,8 +85,10 @@ test('zellij owner-bound capture uses exact pane args and scrubs inherited ZELLI
   const mux = createZellij({ spawner, env }).bind('OWNER');
 
   assert.equal(await mux.capturePane('7'), 'screen text');
+  // --full includes scrollback: a limit banner that scrolled between polls
+  // was previously invisible on zellij (viewport-only dump-screen).
   assert.deepEqual(spawner.calls[0].args,
-    ['-s', 'OWNER', 'action', 'dump-screen', '--pane-id', '7']);
+    ['-s', 'OWNER', 'action', 'dump-screen', '--full', '--pane-id', '7']);
   assert.equal(spawner.calls[0].options.env.PATH, '/bin');
   assert.equal(spawner.calls[0].options.env.KEEP, 'yes');
   assert.equal(Object.keys(spawner.calls[0].options.env).some(key => key.startsWith('ZELLIJ')), false);
@@ -441,4 +443,76 @@ test('zellij backend does not expose tmux tty discovery methods', () => {
   assert.equal(typeof mux.clientTtys, 'undefined');
   assert.equal(typeof mux.paneTty, 'undefined');
   assert.equal(typeof mux.globalEnv, 'undefined');
+});
+
+// --- F5: launchWrapped must distinguish "tmux could not start the session"
+// (degrade to an unwatched agent) from "the session ran and ended" (return
+// the status). A silent non-zero return bricks `claude` with no explanation.
+
+test('launchWrapped throws SessionCreateError on tmux-level session failures', () => {
+  for (const message of [
+    'duplicate session: unsnooze',
+    'open terminal failed: not a terminal',
+    'error connecting to /private/tmp/tmux-501/default (No such file or directory)',
+  ]) {
+    const spawner = fakeSpawner((_file, args) => {
+      if (args[0] === 'has-session') return { status: 1 };
+      return { status: 1, stderr: `${message}\n` };
+    });
+    const tmux = createTmux({ spawner, env: { PATH: '/bin' } });
+    assert.throws(
+      () => tmux.launchWrapped({ file: 'node', args: ['agent.js'], env: {} }),
+      err => err.name === 'SessionCreateError' && err.message.includes(message.slice(0, 20)),
+      `"${message}" must raise SessionCreateError`,
+    );
+  }
+});
+
+test('launchWrapped handles Buffer stderr from spawnSync the same way', () => {
+  const spawner = fakeSpawner((_file, args) => {
+    if (args[0] === 'has-session') return { status: 1 };
+    return { status: 1, stderr: Buffer.from('duplicate session: unsnooze\n') };
+  });
+  const tmux = createTmux({ spawner, env: { PATH: '/bin' } });
+  assert.throws(() => tmux.launchWrapped({ file: 'node', args: [], env: {} }),
+    err => err.name === 'SessionCreateError');
+});
+
+test('launchWrapped still returns a plain non-zero status without a tmux error signature', () => {
+  const spawner = fakeSpawner((_file, args) => {
+    if (args[0] === 'has-session') return { status: 1 };
+    return { status: 1, stderr: 'deprecation notice: something benign\n' };
+  });
+  const tmux = createTmux({ spawner, env: { PATH: '/bin' } });
+  assert.equal(tmux.launchWrapped({ file: 'node', args: [], env: {} }), 1);
+});
+
+test('launchWrapped treats the broader pre-start failure family as SessionCreateError', () => {
+  for (const message of [
+    'sessions should be nested with care, unset $TMUX to force',
+    'create session failed: unknown reason',
+    'not a terminal',
+    'fatal: could not open socket',
+    "couldn't create socket dir: Permission denied",
+  ]) {
+    const spawner = fakeSpawner((_file, args) => {
+      if (args[0] === 'has-session') return { status: 1 };
+      return { status: 1, stderr: `${message}\n` };
+    });
+    const tmux = createTmux({ spawner, env: { PATH: '/bin' } });
+    assert.throws(() => tmux.launchWrapped({ file: 'node', args: [], env: {} }),
+      err => err.name === 'SessionCreateError', `"${message}" must degrade, not die`);
+  }
+});
+
+test('zellij capturePane falls back to viewport when --full is unsupported (pre-0.35)', async () => {
+  const spawner = fakeSpawner((_file, args) => {
+    if (args.includes('--full')) throw new Error('error: unexpected argument --full');
+    return 'viewport text';
+  });
+  const mux = createZellij({ spawner, env: {} }).bind('main');
+  assert.equal(await mux.capturePane('3'), 'viewport text', 'first call degrades in place');
+  await mux.capturePane('3');
+  const fullAttempts = spawner.calls.filter(c => c.args.includes('--full')).length;
+  assert.equal(fullAttempts, 1, 'unsupported --full is remembered, not retried every tick');
 });

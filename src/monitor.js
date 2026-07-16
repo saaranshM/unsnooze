@@ -25,7 +25,7 @@ import { upsertSession, setStatus, readState, updateState } from './state.js';
 import { latestRateLimitFromTranscript } from './watchers/claude.js';
 import { spawnResumerIfNeeded } from './spawn.js';
 import { makeLogger } from './logger.js';
-import { addressHash } from './lease.js';
+import { addressHash, readLease } from './lease.js';
 
 const log = makeLogger('monitor');
 
@@ -42,6 +42,7 @@ export function createMonitor({
   let terminalNotified = false;   // one notification per terminal-error appearance
   let running = true;
   let firstTick = true;           // §6: don't inherit a previous session's banner
+  let leaseSeen = false;          // F4: enforce lease-gone exit only after first sighting
 
   function markerPath() {
     return join(EVENTS_DIR, `${addressHash({ mux: muxName, paneOwner, pane })}.json`);
@@ -202,6 +203,22 @@ export function createMonitor({
       return;
     }
 
+    // F4: the pane can outlive the agent (in the user's own tmux the pane is
+    // their shell). The launcher removes the lease when the agent exits — a
+    // vanished lease means there is nothing left to watch, and continuing
+    // would scrape (and eventually type into) whatever now runs in the pane.
+    // The launcher writes the lease AFTER spawning us, so enforcement starts
+    // only once the lease has been seen.
+    if (leaseId) {
+      const lease = readLease({ mux: muxName, paneOwner, pane }, leaseId);
+      if (lease) leaseSeen = true;
+      else if (leaseSeen) {
+        log(`pane ${pane}: lease ${leaseId} gone — agent exited, monitor exiting`);
+        running = false;
+        return;
+      }
+    }
+
     const marker = consumeMarker();
     let text;
     try {
@@ -326,6 +343,7 @@ export function createMonitor({
     _tick: tick,   // exposed for tests
     get trackedKey() { return trackedKey; },
     get _firstTick() { return firstTick; },
+    get _running() { return running; },
   };
 }
 

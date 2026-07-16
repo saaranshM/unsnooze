@@ -30,6 +30,25 @@ function wrappedSessionName(env) {
 // calls with a pause between them, or Ink treats Enter as bracketed paste.
 export const SUBMIT_DELAY_MS = 150;
 
+// tmux stderr signatures that mean the wrapped session never started (vs the
+// session running and ending). Only these may trigger the unwatched fallback —
+// anything broader risks double-running an agent that already ran. All of
+// these are printed by the tmux client BEFORE the inner command executes
+// (name collision, tty/socket problems, nesting refusal, fatal startup).
+const SESSION_START_ERROR_RE = new RegExp([
+  'duplicate session',
+  'open terminal failed',
+  'error connecting',
+  'server exited unexpectedly',
+  'no server running',
+  'create session failed',
+  'sessions should be nested',
+  'not a terminal',
+  'permission denied',
+  "couldn'?t create",
+  '^fatal:',
+].join('|'), 'im');
+
 export { SessionCreateError };
 
 export function createTmux({ spawner = defaultSpawner, env = process.env } = {}) {
@@ -153,6 +172,30 @@ export function createTmux({ spawner = defaultSpawner, env = process.env } = {})
       }
     },
 
+    // Ownership stamp: a pane user option written at creation. It survives
+    // the agent process exiting but dies with the pane, so a recycled pane id
+    // never carries a stale stamp. Requires tmux >= 3.0 (-p pane options) —
+    // older tmux fails quietly and callers fall back to lease checks.
+    async stampPaneOwner(pane, leaseId) {
+      try {
+        await run('set-option', '-p', '-t', pane, '@unsnooze_owner', String(leaseId));
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    // Read the stamp back. Blank (unset option / missing pane) and errors are
+    // both null — trust stdout, not the exit code (tmux 3.7b blank-success).
+    async paneOwnerStamp(pane) {
+      try {
+        const out = (await run('display-message', '-t', pane, '-p', '#{@unsnooze_owner}')).trim();
+        return out || null;
+      } catch {
+        return null;
+      }
+    },
+
     async sessionExists(name) {
       try {
         await run('has-session', '-t', name);
@@ -224,14 +267,30 @@ export function createTmux({ spawner = defaultSpawner, env = process.env } = {})
       // spawned from the agent via {...process.env}).
       const args = ['new-session', '-s', name,
         ...envArgs(launchSpec.env), launchSpec.file, ...(launchSpec.args || [])];
-      const result = spawner('tmux', args, { sync: true, stdio: 'inherit', env });
+      // stderr is piped, not inherited: the tmux client draws its UI on the
+      // stdin/stdout tty; stderr carries only tmux's own error messages, and
+      // capturing them is how a session-start failure is told apart from the
+      // session simply ending (tmux exits non-zero for both us and the shell).
+      const result = spawner('tmux', args,
+        { sync: true, stdio: ['inherit', 'inherit', 'pipe'], env });
       if (result?.error) {
         throw new SessionCreateError(
           `failed to start tmux session "${name}": ${result.error.message}`,
           result.error,
         );
       }
-      return exitStatus(result);
+      const status = exitStatus(result);
+      const stderr = result?.stderr == null ? '' : String(result.stderr);
+      if (status !== 0 && SESSION_START_ERROR_RE.test(stderr)) {
+        // The session never ran the agent — safe (and required) to fall back
+        // to an unwatched launch without any double-run risk.
+        throw new SessionCreateError(
+          `tmux could not start session "${name}": ${stderr.trim()}`);
+      }
+      // Any other tmux chatter stays visible — it was headed for the user's
+      // terminal before we piped it.
+      if (stderr.trim()) process.stderr.write(stderr);
+      return status;
     },
 
     // tmux pane ids are server-global, so owner binding is intentionally inert.

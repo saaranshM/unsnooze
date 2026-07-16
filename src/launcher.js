@@ -74,6 +74,11 @@ export function runLauncher(args, agentId = 'claude') {
     : null;
   const leaseId = process.env.UNSNOOZE_LEASE_ID || createLeaseId();
   if (pane) {
+    // Stamp our own pane (best-effort, tmux only): the identity every later
+    // close/inject decision verifies against — pane ids get recycled.
+    if (typeof mux.stampPaneOwner === 'function') {
+      mux.stampPaneOwner(pane, leaseId).catch(() => { /* legacy tmux */ });
+    }
     spawnDetached(['_monitor', mux.name, paneOwner || '', pane, agent.id, leaseId],
       { UNSNOOZE_CWD: process.cwd() });
     log(`launching ${agent.id} in ${mux.name} ${paneOwner ?? '-'}:${pane}, monitor spawned`);

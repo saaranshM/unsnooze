@@ -5,7 +5,7 @@
 // quarantine. All synchronous — callers are short-lived or infrequent.
 
 import {
-  mkdirSync, rmdirSync, readFileSync, writeFileSync, renameSync,
+  mkdirSync, rmSync, readFileSync, writeFileSync, renameSync,
   existsSync, statSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -27,30 +27,51 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(buf), 0, 0, ms);
 }
 
+const LOCK_TIMEOUT_MS = (() => {
+  const v = parseInt(process.env.UNSNOOZE_LOCK_TIMEOUT_MS ?? '', 10);
+  return Number.isFinite(v) ? v : 5_000;
+})();
+
+// Is the pid recorded inside the lock dir still alive? Old-version locks have
+// no pid file — unknown (null) so age-based stealing still applies to them.
+function lockHolderAlive() {
+  try {
+    const pid = parseInt(readFileSync(join(LOCK_DIR, 'pid'), 'utf-8'), 10);
+    if (!Number.isFinite(pid)) return null;
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code === 'ESRCH' ? false : null;   // dead vs unreadable/no-permission
+  }
+}
+
 function acquireLock() {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
   for (;;) {
     try {
       mkdirSync(LOCK_DIR);
+      // Record the holder so a slow-but-alive writer is never robbed — age
+      // alone can't tell a hung process from a busy one.
+      try { writeFileSync(join(LOCK_DIR, 'pid'), String(process.pid)); } catch { /* best-effort */ }
       return;
     } catch (err) {
       if (err.code !== 'EEXIST') { mkdirSync(STATE_DIR, { recursive: true }); continue; }
       try {
         const age = Date.now() - statSync(LOCK_DIR).mtimeMs;
-        if (age > STALE_LOCK_MS) {
-          rmdirSync(LOCK_DIR);   // steal stale lock from a killed process
+        if (age > STALE_LOCK_MS && lockHolderAlive() !== true) {
+          rmSync(LOCK_DIR, { recursive: true, force: true });   // steal from a dead/unknown holder
           log(`stole stale lock (age ${Math.round(age)}ms)`);
           continue;
         }
       } catch { /* lock vanished between check and stat — retry */ }
-      if (Date.now() > deadline) throw new Error('unsnooze: state lock timeout after 5s');
+      if (Date.now() > deadline) throw new Error(`unsnooze: state lock timeout after ${LOCK_TIMEOUT_MS}ms`);
       sleepSync(50);
     }
   }
 }
 
 function releaseLock() {
-  try { rmdirSync(LOCK_DIR); } catch { /* already gone */ }
+  try { rmSync(LOCK_DIR, { recursive: true, force: true }); } catch { /* already gone */ }
 }
 
 export function readState() {
@@ -191,10 +212,14 @@ function findDuplicate(state, record) {
   return null;
 }
 
-export function setStatus(key, status, extra = {}) {
+// `expect`: compare-and-set — apply only while the record is still in one of
+// the listed statuses. Sweepers that decide from a snapshot (markStaleAbandoned)
+// must not clobber a record that moved on (e.g. to 'resumed') mid-decision.
+export function setStatus(key, status, extra = {}, { expect = null } = {}) {
   return updateState(state => {
     const s = state.sessions[key];
     if (!s) return state;
+    if (expect && !expect.includes(s.status)) return state;
     Object.assign(s, extra, { status });
     return state;
   });
@@ -267,10 +292,12 @@ export async function markStaleAbandoned({
       }
     }
     if (!dead) continue;
+    // CAS: the async liveness probe races real resumes — only mark failed if
+    // the record is still where the snapshot saw it.
     setStatus(rec.key, 'failed', {
       lastError: rec.pane ? 'stale: pane dead' : 'stale: pane absent',
       verifyRetries: 0,
-    });
+    }, { expect: ['stopped', 'resuming'] });
     marked += 1;
     log(`${rec.key}: marked failed (stale abandoned, detectedAt ${new Date(rec.detectedAt || 0).toISOString()})`);
   }

@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+## 1.11.0 — 2026-07-16
+
+- **`unsnooze doctor [--fix]`** — install health check + migration sweep for
+  the pre-release claude-session-guard (csg) install. Detects zombie csg
+  monitors/resumers, old launchd/systemd units, the orphaned
+  `~/.claude-session-guard` state dir, and the stale global package (even when
+  its `csg` bin symlink dangles). `--fix` stops the processes, unloads and
+  removes the units, and archives the state dir (never deletes data, never
+  runs npm — the `npm rm -g claude-session-guard` step stays yours).
+  `unsnooze install` now runs the detection and points at doctor when
+  leftovers exist.
+- **Pane identity & ownership** (fix: tmux pane ids are server-global and
+  recycled — a stale monitor or reap could type into or close somebody
+  else's pane): managed panes are stamped with a `@unsnooze_owner` pane
+  option at launch and revival; every message-injection, menu-drive, reap,
+  and auto-reap decision now answers two independent questions first —
+  *is this pane ours* (stamp/lease; a mismatched stamp vetoes even a
+  matching foreground command) and *is our agent still running in it*
+  (lease pid+birth or foreground command; the stamp alone never counts,
+  since it outlives the agent and the pane may now be the user's shell).
+  Monitors exit once their lease disappears instead of scraping whatever the
+  pane becomes. Legacy records without leases are never force-closed.
+- **Launch failures degrade instead of dying** (fix: a tmux-level
+  session-start failure — `duplicate session`, `open terminal failed`, dead
+  socket, nesting refusal, socket permission errors — used to exit with
+  tmux's status and no agent): launchWrapped now reads tmux's stderr,
+  distinguishes "session never started" from "session ran and ended", and
+  falls back to the unwatched agent CLI with a message.
+- **Zellij detection fix**: `capturePane` now dumps scrollback
+  (`dump-screen --full`) — a limit banner that scrolled between polls was
+  previously invisible on Zellij. Pre-0.35 zellij rejects the flag; capture
+  learns that once and degrades to the viewport-only form instead of
+  failing every poll.
+- **Reset-time correctness**: weekly "resets Tuesday 9am" wakes land on the
+  exact wall-clock time across DST boundaries (day-stepping used to drift
+  ±1h); a mangled banner clock ("resets 45:99") is rejected instead of
+  throwing; "wait <duration>" only parses when a duration actually follows
+  (no more summing stray durations out of prose).
+- **State safety**: sweepers use compare-and-set so `markStaleAbandoned` can
+  no longer clobber a record that resumed mid-sweep; the state lock records
+  its holder pid and is only ever stolen from a dead process; user-invoked
+  `reap` skips `resumed` panes that were active within `reapIdleAfter`
+  (closing a live working agent contradicted its own contract).
+- **Install backups**: the first-ever run snapshots your pristine
+  settings/rc as `.unsnooze-orig` (kept forever); `.unsnooze-bak` keeps
+  rolling per run.
+
 ## 1.10.1 — 2026-07-16
 
 - **Upgrade-window fail-safe** (fix: `npm install -g` briefly leaves `bin/`

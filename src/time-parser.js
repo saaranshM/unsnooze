@@ -22,7 +22,7 @@ const TRY_AT_DATE_REGEX = /try again at\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|o
 // Capture the duration phrase and sum every token via parseGoDuration.
 const RELATIVE_IN_REGEX = /(?:try again|resets?|refreshes|retry|wait)\s+in[:\s]+(.+?)(?:\.\s|\.\s*$|attempt\s*#?\d+|$)/i;
 // "wait 5 minutes" / "wait for 5 minutes" without a leading "in".
-const WAIT_DURATION_REGEX = /\bwait\s+(?:for\s+)?(?!in\b)(.+?)(?:\.\s|\.\s*$|$)/i;
+const WAIT_DURATION_REGEX = /\bwait\s+(?:for\s+)?(?!in\b)(?=~?\s*\d)(.+?)(?:\.\s|\.\s*$|$)/i;
 // opencode status line: "Rate Limited [retrying in 2h5m attempt #4]" — the
 // duration is Go-style ("2h5m", "2m 5s", "~2 days").
 const RETRY_BANNER_REGEX = /retrying in\s+([^\]\n]*?)\s*attempt\s*#?\d+/i;
@@ -67,6 +67,14 @@ function to24h(hour, ampm) {
   return h;
 }
 
+// A mangled banner can regex-match a nonsense clock ("resets 45:99"); letting
+// it through builds an Invalid Date whose Intl formatting throws RangeError.
+// Reject at parse time so callers degrade to the probe/fallback ladder.
+function validClock(hour, minute) {
+  return Number.isFinite(hour) && hour >= 0 && hour <= 23
+    && Number.isFinite(minute) && minute >= 0 && minute <= 59;
+}
+
 function toMs(t) {
   if (t instanceof Date) return t.getTime();
   return Number(t);
@@ -97,11 +105,10 @@ export function parseResetTime(text) {
 
   const tryAtMatch = text.match(TRY_AT_TIME_REGEX);
   if (tryAtMatch) {
-    return {
-      hour: to24h(parseInt(tryAtMatch[1], 10), tryAtMatch[3].toLowerCase()),
-      minute: tryAtMatch[2] ? parseInt(tryAtMatch[2], 10) : 0,
-      timezone: null, ambiguous: false, day: null,
-    };
+    const hour = to24h(parseInt(tryAtMatch[1], 10), tryAtMatch[3].toLowerCase());
+    const minute = tryAtMatch[2] ? parseInt(tryAtMatch[2], 10) : 0;
+    if (!validClock(hour, minute)) return null;
+    return { hour, minute, timezone: null, ambiguous: false, day: null };
   }
 
   const resetDateMatch = text.match(RESET_DATE_REGEX);
@@ -111,11 +118,13 @@ export function parseResetTime(text) {
     let hour = parseInt(hourRaw, 10);
     if (ampm === 'pm' && hour !== 12) hour += 12;
     if (ampm === 'am' && hour === 12) hour = 0;
+    const minute = minuteRaw ? parseInt(minuteRaw, 10) : 0;
+    if (!validClock(hour, minute)) return null;
     return {
       month: MONTH_INDEX[mon.toLowerCase()],
       dayOfMonth: parseInt(dayOfMonth, 10),
       hour,
-      minute: minuteRaw ? parseInt(minuteRaw, 10) : 0,
+      minute,
       timezone: timezone || null,
       ambiguous: !ampm && hour >= 1 && hour <= 12,
       day: null,
@@ -134,6 +143,7 @@ export function parseResetTime(text) {
     if (ampm === 'am' && hour === 12) hour = 0;
 
     const ambiguous = !ampm && hour >= 1 && hour <= 12;
+    if (!validClock(hour, minute)) return null;
     return {
       hour, minute, timezone, ambiguous,
       day: dayMatch ? DAY_INDEX[dayMatch[1].toLowerCase()] : null,
@@ -245,15 +255,21 @@ export function resetAtMs(parsed, {
   function nextOccurrence(h, m) {
     let t = targetTimestamp(h, m, anchorDate);
     if (parsed.day != null) {
-      if (t <= anchor) t += 86_400_000;
-      // Roll forward to the named weekday (in the target tz).
-      for (let i = 0; i < 7; i++) {
-        const wd = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' })
-          .format(new Date(t)).toLowerCase().slice(0, 3);
-        if (DAY_INDEX[wd] === parsed.day) break;
-        t += 86_400_000;
+      // Roll the REFERENCE day forward and re-derive h:m for each candidate
+      // day: stepping the timestamp itself by fixed 24h units drifts by ±1h
+      // when the roll crosses a DST boundary (observed: "resets Tuesday 9am"
+      // landing at 10am after a spring-forward weekend).
+      const weekdayOf = ts => new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' })
+        .format(new Date(ts)).toLowerCase().slice(0, 3);
+      let ref = anchor;
+      for (let i = 0; i < 9; i++) {
+        const candidate = targetTimestamp(h, m, new Date(ref));
+        if (DAY_INDEX[weekdayOf(candidate)] === parsed.day && candidate > anchor) {
+          return candidate;
+        }
+        ref += 86_400_000;
       }
-      return t;
+      return t;   // unreachable in practice — 9 steps cover a week + DST repeat
     }
     if (t <= anchor) {
       // Dated banner, or ambiguous (need both am/pm candidates as real

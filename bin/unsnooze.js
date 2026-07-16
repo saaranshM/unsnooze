@@ -48,7 +48,7 @@ function runAgentFallback(agentId, args) {
 
 // Only human-facing commands may print update notices — never the wrapper
 // passthrough, hooks, or daemons (their output lands in agent panes/logs).
-const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'help', '-h', '--help', '--help-unsnooze']);
+const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'doctor', 'help', '-h', '--help', '--help-unsnooze']);
 
 // Every named subcommand; anything else (or no args) is an agent launch.
 const NAMED_COMMANDS = new Set([
@@ -137,6 +137,10 @@ async function main() {
     case 'reap': {
       const { cmdReap } = await import('../src/cli.js');
       return cmdReap(rest);
+    }
+    case 'doctor': {
+      const { cmdDoctor } = await import('../src/doctor.js');
+      return cmdDoctor(rest);
     }
     case 'install': {
       const { cmdInstall } = await import('../src/install.js');
@@ -234,6 +238,9 @@ Usage:
   unsnooze sessions                list unsnooze-owned mux sessions + panes
   unsnooze reap [--dry-run|--yes]  close terminal-record panes / empty sessions
                                    (default: dry-run; pass --yes to apply)
+  unsnooze doctor [--fix]          check install health; find (and with --fix
+                                   retire) leftovers of the old
+                                   claude-session-guard install
   unsnooze logs [-f]               show (or follow) the unsnooze log
   unsnooze update                  update unsnooze itself to the latest version
   unsnooze daemon                  persistent watcher for GUI sessions (VS Code

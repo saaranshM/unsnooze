@@ -28,7 +28,7 @@ import { workspaceFingerprint, workspaceChanged, describeChange } from './worksp
 import { notify } from './notify.js';
 import { UNSNOOZE_BIN } from './spawn.js';
 import { makeLogger } from './logger.js';
-import { createLeaseId, leaseMatches } from './lease.js';
+import { createLeaseId, leaseMatches, paneOwnedByRecord } from './lease.js';
 import { autoReapIfEnabled, attachHint } from './reap.js';
 
 const log = makeLogger('resumer');
@@ -343,8 +343,17 @@ export async function dispatchOne(rec, {
     try { cmd = await mux.paneCurrentCommand(rec.pane); }
     catch (err) { log(`${key}: pane command lookup failed: ${err.message}`); }
     const contentOwned = menu || d.hit || agent.patterns.idleRegex.test(text);
+    // Two independent questions, both required before touching the pane:
+    //   identity — is this pane still OURS? (stamp/lease; false VETOES: the
+    //     pane id was recycled and no command-name match may override that)
+    //   liveness — is our agent still RUNNING in it? (lease pid+birth, or the
+    //     foreground command). The stamp alone must never satisfy this: it
+    //     survives the agent exiting (it dies with the pane), so a stamped
+    //     pane may now be the user's shell — treating that as owned would
+    //     fake 'busy' into a silent 'resumed', or type into their prompt.
+    const identity = await paneOwnedByRecord(rec, { mux, matchesLease });
     const leased = await matchesLease(rec, { mux });
-    const owned = leased || agent.isForegroundCommand(cmd);
+    const owned = identity !== false && (leased || agent.isForegroundCommand(cmd));
     const authorized = owned && contentOwned;
 
     if (menu) {
@@ -393,6 +402,11 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
       verifyRetries: 0,
     });
     return 'retry';
+  }
+  // Stamp the fresh pane as ours (best-effort; tmux only) so later close /
+  // inject decisions can prove identity even after the agent process exits.
+  if (address?.pane && typeof mux.stampPaneOwner === 'function') {
+    try { await mux.stampPaneOwner(address.pane, leaseId); } catch { /* legacy tmux */ }
   }
   // Persist the revival target as muxSession so future joins and attach hints
   // name the session the pane actually lives in.

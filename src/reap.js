@@ -5,6 +5,7 @@ import { MUX_SESSION_NAME, RESUME_SESSION_NAME } from './config.js';
 import { getMultiplexer } from './multiplexer.js';
 import { readState, setStatus, updateState } from './state.js';
 import { getConfig } from './settings.js';
+import { paneOwnedByRecord } from './lease.js';
 import { makeLogger } from './logger.js';
 
 const log = makeLogger('reap');
@@ -84,10 +85,24 @@ export async function reap({
   const terminal = Object.values(state.sessions).filter(s =>
     ['resumed', 'failed', 'cancelled'].includes(s.status) && s.pane);
 
+  const reapIdleAfter = getConfig('reapIdleAfter');
+  const now = Date.now();
   for (const rec of terminal) {
+    // 'resumed' is not really terminal — the agent may be mid-task in that
+    // pane right now. Honor the module contract ("never kill a live agent")
+    // by requiring the same idle threshold as auto-reap before closing.
+    if (rec.status === 'resumed') {
+      const ts = rec.lastAttemptAt || rec.detectedAt || 0;
+      if (ts > now - reapIdleAfter) {
+        actions.push({ kind: 'skip-active', key: rec.key, pane: rec.pane,
+          reason: `resumed and active within reapIdleAfter — not closing` });
+        continue;
+      }
+    }
     let alive = false;
+    let mux = null;
     try {
-      const mux = resolveMux(rec);
+      mux = resolveMux(rec);
       alive = await mux.paneAlive(rec.pane);
     } catch { alive = false; }
     if (!alive) {
@@ -95,6 +110,24 @@ export async function reap({
       if (!dryRun) {
         updateState(s => { delete s.sessions[rec.key]; return s; });
       }
+      continue;
+    }
+    // Pane ids get recycled — closing by bare id could kill someone else's
+    // pane. Positive ownership (stamp or lease) is required to close; a
+    // demonstrably foreign pane means the record is stale, so drop it.
+    let owned = null;
+    try { owned = await paneOwnedByRecord(rec, { mux }); } catch { owned = null; }
+    if (owned === false) {
+      actions.push({ kind: 'drop-record', key: rec.key, reason: 'pane recycled — not ours' });
+      if (!dryRun) {
+        updateState(s => { delete s.sessions[rec.key]; return s; });
+      }
+      continue;
+    }
+    if (owned === null) {
+      // Legacy record with no lease: no proof either way — never close.
+      actions.push({ kind: 'skip-unowned', key: rec.key, pane: rec.pane,
+        reason: 'ownership unprovable (pre-lease record) — close it manually' });
       continue;
     }
     actions.push({
@@ -107,7 +140,6 @@ export async function reap({
     });
     if (!dryRun) {
       try {
-        const mux = resolveMux(rec);
         if (typeof mux.closePane === 'function') await mux.closePane(rec.pane);
         setStatus(rec.key, rec.status, { pane: null });
         updateState(s => { delete s.sessions[rec.key]; return s; });
@@ -171,6 +203,15 @@ export async function autoReapIfEnabled({
       const mux = resolveMux(rec);
       if (!(await mux.paneAlive(rec.pane))) {
         updateState(s => { delete s.sessions[rec.key]; return s; });
+        continue;
+      }
+      // Same recycled-pane rule as reap(): positive ownership or no close.
+      const owned = await paneOwnedByRecord(rec, { mux });
+      if (owned !== true) {
+        if (owned === false) {
+          updateState(s => { delete s.sessions[rec.key]; return s; });
+          log(`${rec.key}: auto-reap skipped — pane ${rec.pane} recycled, record dropped`);
+        }
         continue;
       }
       if (typeof mux.closePane === 'function') {
