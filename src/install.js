@@ -244,6 +244,28 @@ export function installDaemonAutostart({ platform = process.platform, dir = null
   return null;   // native Windows: no supported multiplexer to revive into
 }
 
+// One-time self-heal for units written before 1.12.0: they carry no PATH, so
+// the daemon cannot find tmux (launchd gives daemons /usr/bin:/bin:… only) and
+// every revival dies with spawn ENOENT. npm updates never touch the unit file,
+// so the daemon repairs it on startup: regenerate + reload. Reloading kills
+// the calling daemon — by design; the supervisor restarts it under the fixed
+// unit. Returns the healed target, or null when nothing needed healing.
+export function healDaemonAutostart({ platform = process.platform, dir = null, activate = defaultActivate } = {}) {
+  const marker = platform === 'darwin' ? 'EnvironmentVariables' : 'Environment="PATH=';
+  const target = platform === 'darwin'
+    ? join(dir || autostartDir(platform), `${DAEMON_LABEL}.plist`)
+    : platform === 'linux'
+      ? join(dir || autostartDir(platform), 'unsnooze.service')
+      : null;
+  if (!target || !existsSync(target)) return null;   // not a daemon-autostart user
+  try {
+    if (readFileSync(target, 'utf-8').includes(marker)) return null;   // already current
+  } catch {
+    return null;   // unreadable — leave it alone
+  }
+  return installDaemonAutostart({ platform, dir, activate });
+}
+
 export function uninstallDaemonAutostart({ platform = process.platform, dir = null, activate = defaultActivate } = {}) {
   if (platform === 'darwin') {
     const target = join(dir || autostartDir(platform), `${DAEMON_LABEL}.plist`);

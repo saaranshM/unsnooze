@@ -199,6 +199,21 @@ async function main() {
       const controller = new AbortController();
       process.on('SIGTERM', () => controller.abort());
       process.on('SIGINT', () => controller.abort());
+      // Self-heal pre-1.12 autostart units: they lack PATH, so this daemon
+      // cannot find tmux and every revival dies. Healing rewrites the unit
+      // and reloads it — which intentionally kills THIS process; the
+      // supervisor restarts us under the fixed unit. One-time: healed units
+      // pass the check forever after.
+      const installMod = await safeImport('../src/install.js');
+      if (installMod?.healDaemonAutostart) {
+        try {
+          const healed = installMod.healDaemonAutostart();
+          if (healed) {
+            const lm = await safeImport('../src/logger.js');
+            lm?.log('daemon', `autostart unit lacked PATH — regenerated ${healed}, reloading (self-heal)`);
+          }
+        } catch { /* heal is best-effort — a broken unit must not block the daemon */ }
+      }
       // daemon.log is launchd/systemd-captured stdout+stderr. launchd holds
       // an open fd on it for our whole lifetime, so rotation must be
       // copy-truncate: renaming would leave launchd appending to the renamed

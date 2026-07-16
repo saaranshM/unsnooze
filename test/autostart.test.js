@@ -1,11 +1,11 @@
 // Daemon autostart: launchd plist / systemd user unit generation + install.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  launchdPlist, systemdUnit, installDaemonAutostart, uninstallDaemonAutostart, DAEMON_LABEL,
+  launchdPlist, systemdUnit, installDaemonAutostart, uninstallDaemonAutostart, healDaemonAutostart, DAEMON_LABEL,
 } from '../src/install.js';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-autostart-test-'));
@@ -108,4 +108,46 @@ test('systemd unit carries the install-time PATH too', () => {
 test('systemd PATH escapes percent specifiers', () => {
   const unit = systemdUnit({ nodeBin: '/n/node', unsnoozeBin: '/x/bin/unsnooze.js', path: '/odd%dir/bin' });
   assert.match(unit, /Environment="PATH=\/odd%%dir\/bin"/);
+});
+
+test('healDaemonAutostart regenerates a PATH-less unit and reloads it (one-time self-heal)', () => {
+  // Users who update via npm never re-run `install --daemon`, so the old
+  // PATH-less plist (the daemon-cant-find-tmux bug) would persist forever.
+  // The daemon self-heals on startup instead.
+  const calls = [];
+  const dir = join(DIR, 'heal-la');
+  // Plant an OLD-style plist: no EnvironmentVariables block.
+  installDaemonAutostart({ platform: 'darwin', dir, activate: () => true });
+  const target = join(dir, `${DAEMON_LABEL}.plist`);
+  const stripped = readFileSync(target, 'utf-8')
+    .replace(/ {2}<!-- launchd default PATH[\s\S]*?<\/dict>\n/, '');
+  writeFileSync(target, stripped);
+  assert.doesNotMatch(readFileSync(target, 'utf-8'), /EnvironmentVariables/, 'fixture is the old shape');
+
+  const healed = healDaemonAutostart({ platform: 'darwin', dir, activate: (cmd, args) => calls.push([cmd, ...args]) });
+  assert.equal(healed, target, 'reports the healed unit');
+  assert.match(readFileSync(target, 'utf-8'), /<key>PATH<\/key>/, 'unit now carries PATH');
+  assert.ok(calls.some(c => c[0] === 'launchctl'), 'unit reloaded so the fix takes effect');
+});
+
+test('healDaemonAutostart is a no-op on a current unit or when autostart is not installed', () => {
+  const dir = join(DIR, 'heal-la2');
+  installDaemonAutostart({ platform: 'darwin', dir, activate: () => true });
+  assert.equal(healDaemonAutostart({ platform: 'darwin', dir, activate: () => true }), null,
+    'unit already has PATH → untouched');
+  assert.equal(healDaemonAutostart({ platform: 'darwin', dir: join(DIR, 'nowhere'), activate: () => true }), null,
+    'no unit file → no daemon-autostart user → nothing to heal');
+});
+
+test('healDaemonAutostart heals the Linux systemd unit the same way', () => {
+  const dir = join(DIR, 'heal-sys');
+  installDaemonAutostart({ platform: 'linux', dir, activate: () => true });
+  const target = join(dir, 'unsnooze.service');
+  writeFileSync(target, readFileSync(target, 'utf-8').split('\n')
+    .filter(l => !l.startsWith('Environment="PATH=')).join('\n'));
+  const calls = [];
+  const healed = healDaemonAutostart({ platform: 'linux', dir, activate: (cmd, args) => calls.push([cmd, ...args]) });
+  assert.equal(healed, target);
+  assert.match(readFileSync(target, 'utf-8'), /Environment="PATH=/);
+  assert.ok(calls.some(c => c[0] === 'systemctl'));
 });

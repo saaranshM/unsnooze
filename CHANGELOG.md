@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 1.12.2 — 2026-07-16
+
+- **Daemon autostart self-heal**: updating via npm never touches the
+  launchd/systemd unit file, so pre-1.12 users would keep the PATH-less unit
+  (daemon can't find tmux → every revival dies) until they manually re-ran
+  `unsnooze install --daemon`. The daemon now detects a PATH-less unit on
+  startup, regenerates it, and reloads itself — every affected user is fixed
+  automatically on their first daemon restart after updating (at the latest,
+  the next reboot). Manual `unsnooze install --daemon` still works and is no
+  longer required.
+
 ## 1.12.1 — 2026-07-16
 
 - CI-only: pin the platform in a doctor test whose `launchctl` assertion
