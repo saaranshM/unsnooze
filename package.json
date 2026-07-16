@@ -1,6 +1,6 @@
 {
   "name": "unsnooze",
-  "version": "1.12.2",
+  "version": "1.13.0",
   "description": "Auto-resume Claude Code, Codex CLI, Grok, Qwen Code, Kimi CLI, OpenCode & Antigravity when the 5-hour/weekly usage limit resets — tmux, Zellij, VS Code & desktop apps. Wakes every limit-stopped AI coding session automatically.",
   "keywords": [
     "claude",

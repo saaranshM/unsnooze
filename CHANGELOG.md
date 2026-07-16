@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## 1.13.0 — 2026-07-17
+
+- **`unsnooze usage` — know the wall before you hit it**: burn-rate &
+  time-to-limit forecast per agent × window. Every figure carries its
+  provenance — `(exact)` from Codex rollouts or the opt-in Claude statusline
+  shim, `(calibrated from N stops)` learned from unsnooze's own recorded
+  limit stops, or `(estimated)` while calibrating. Weighted token burn
+  (cache reads ×0.1) over active minutes, account-wide including subagent
+  transcripts, per Opus/Sonnet bucket on Max plans. ETA shown as a band,
+  cross-checked against the observed reset time — never a false-precision
+  minute, never a blind now+5h.
+- **Pre-wall warnings from the daemon**: hybrid thresholds (80/95% and
+  ≤30/≤10 min to the wall at current pace), deduped per window instance,
+  with a `/compact now` nudge sized from the same context estimator as
+  `unsnooze status`. Notify-only — unsnooze still never types anything you
+  didn't configure.
+- **`unsnooze usage --install-statusline`**: opt-in shim that persists
+  Claude's exact server-side percentages; chains your existing statusline
+  command (backed up once, restored on uninstall).
+- **Live dashboard**: `unsnooze dashboard` (also `status`/`usage` on an
+  interactive TTY) — full-screen Ink TUI with Status, Usage, Sessions,
+  Doctor and Logs tabs, animated ❯ z z z brand mark, help overlay (`?`),
+  and a compact layout down to 80×24. Pipes and `--json` stay plain.
+- **Fix**: undated limit banners crossing midnight ("resets 12:04am" seen
+  at 9pm) parsed as already-past and were dropped or resumed due-now into a
+  still-live limit; they now roll to tomorrow when the announced time is
+  within a window's reach, while genuinely stale banners still resolve
+  due-now.
+- Codex windows are labeled from `window_minutes` everywhere (300 → 5h,
+  10080 → weekly, 43200 → 30d on the go plan) — stop records no longer
+  conflate the monthly window with the weekly bucket.
+
 ## 1.12.2 — 2026-07-16
 
 - **Daemon autostart self-heal**: updating via npm never touches the
