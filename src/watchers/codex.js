@@ -15,13 +15,13 @@
 import { openSync, readSync, closeSync } from 'node:fs';
 import { basename } from 'node:path';
 import { ROLLOUT_RE } from '../agents/codex.js';
-
-const WEEK_MINUTES = 7 * 1440;
-
-function windowLimitType(windowMinutes) {
-  if (!Number.isFinite(windowMinutes)) return 'unknown';
-  return windowMinutes >= WEEK_MINUTES ? 'weekly' : '5h';
-}
+// Usage extractor lives in usage.js (shared cold path + daemon); re-exported
+// here so the plan's watcher surface is the documented import site.
+export { extractCodexUsage } from '../usage.js';
+// Label from window_minutes (300/10080/43200 → 5h/weekly/30d) — never assume
+// 5h/weekly: the go plan's 43200-min window is monthly, and calibration keys
+// must not conflate it with the weekly bucket.
+import { labelWindow } from '../usage.js';
 
 // One rollout JSONL line → limit-stop candidate or null. A window binds when
 // its used_percent hits 100 (or rate_limit_reached_type says the model was
@@ -52,7 +52,7 @@ export function parseRolloutLine(line) {
 
   const ts = entry.timestamp ? Date.parse(entry.timestamp) : NaN;
   return {
-    limitType: windowLimitType(binding.window_minutes),
+    limitType: labelWindow(binding.window_minutes),
     resetAt: binding.resets_at ? binding.resets_at * 1000 : null,
     reachedType: rl.rate_limit_reached_type || null,
     timestampMs: Number.isFinite(ts) ? ts : null,

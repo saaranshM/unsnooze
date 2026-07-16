@@ -22,6 +22,7 @@ import { getConfig } from './settings.js';
 import { notify } from './notify.js';
 import { parseResetTime, resetAtMs, sourceRank } from './time-parser.js';
 import { upsertSession, setStatus, readState, updateState } from './state.js';
+import { prepareCalibrationSample, applyCalibrationToState } from './usage.js';
 import { latestRateLimitFromTranscript } from './watchers/claude.js';
 import { spawnResumerIfNeeded } from './spawn.js';
 import { makeLogger } from './logger.js';
@@ -136,6 +137,17 @@ export function createMonitor({
     if (typeof mux.sessionForPane === 'function') {
       try { muxSession = await mux.sessionForPane(pane); } catch { muxSession = null; }
     }
+    // Calibration sample prepared outside the lock; applied in the same
+    // updateState as the stop upsert (usage ladder ground-truth, 1.13).
+    let calSample = null;
+    try {
+      calSample = prepareCalibrationSample({
+        agent: agent.id,
+        limitType: resolved.limitType,
+        resetAtMs: Number.isFinite(at) ? at - RESET_MARGIN_MS : null,
+        now: resolved.detectedAt,
+      });
+    } catch { /* best-effort */ }
     const state = upsertSession({
       sessionId: resolved.sessionId, cwd, pane, mux: muxName, paneOwner, leaseId,
       agent: agent.id, muxSession,
@@ -145,6 +157,8 @@ export function createMonitor({
       resetAt: at, resetSource: source,
       attempts: 0, lastAttemptAt: null, lastError: null,
       ...(source === 'fallback' ? { probeCount: 0 } : {}),
+    }, {
+      after: calSample ? (s) => applyCalibrationToState(s, calSample) : null,
     });
     trackedKey = resolved.sessionId
       || Object.values(state.sessions).find(s => s.mux === muxName

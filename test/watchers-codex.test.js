@@ -147,7 +147,7 @@ test('unified-app exhausted window parses with epoch reset and long-window type'
   const c = parseRolloutLine(UNIFIED_EXHAUSTED);
   assert.ok(c);
   assert.equal(c.resetAt, 1786462931 * 1000);
-  assert.equal(c.limitType, 'weekly');   // 30-day window classifies as weekly-scale
+  assert.equal(c.limitType, '30d');   // label from minutes — go-plan 43200 is monthly, not weekly
 });
 
 test('unified-app session_meta head still yields id/cwd/originator', async () => {

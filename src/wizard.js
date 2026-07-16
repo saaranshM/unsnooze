@@ -7,6 +7,7 @@ import * as p from '@clack/prompts';
 import { listAgents } from './agents/index.js';
 import { isCommunityGrokCli } from './agents/grok.js';
 import { DEFAULTS, writeConfig, readFileConfig } from './settings.js';
+import { logoLine } from './tui.js';
 
 export function detectInstalledAgents({ which = defaultWhich } = {}) {
   return listAgents().map(agent => ({ agent, installed: which(agent.bin) }));
@@ -22,7 +23,7 @@ function defaultWhich(bin) {
 }
 
 export async function runWizard() {
-  p.intro('unsnooze — wake every limit-stopped AI coding session automatically');
+  p.intro(logoLine('setup') + ' — wake every limit-stopped AI coding session automatically');
 
   const { getMultiplexer } = await import('./multiplexer.js');
   const mux = getMultiplexer();

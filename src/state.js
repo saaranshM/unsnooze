@@ -20,7 +20,7 @@ import { addressHash } from './lease.js';
 
 const log = makeLogger('state');
 
-const EMPTY = () => ({ version: 1, resumerPid: null, sessions: {} });
+const EMPTY = () => ({ version: 1, resumerPid: null, sessions: {}, calibration: {} });
 
 function sleepSync(ms) {
   const buf = new SharedArrayBuffer(4);
@@ -92,6 +92,10 @@ export function readState() {
 function normalizeState(state) {
   if (!state || typeof state !== 'object') return EMPTY();
   state.sessions ||= {};
+  // Calibration ring buffers (usage forecast) — never pruned with sessions.
+  if (!state.calibration || typeof state.calibration !== 'object' || Array.isArray(state.calibration)) {
+    state.calibration = {};
+  }
   for (const rec of Object.values(state.sessions)) normalizeRecord(rec);
   return state;
 }
@@ -142,10 +146,14 @@ export function updateState(mutator) {
 // Insert or update a session record. Dedupes hook-vs-scrape double detection:
 // if a record for the same pane was created within DEDUPE_WINDOW_MS, merge into
 // it (a record WITH a sessionId wins over one without).
-export function upsertSession(record) {
+//
+// `after(state, appliedRecord)` runs inside the same lock — used by usage
+// calibration snapshots so stop + ceiling sample never race (1.13).
+export function upsertSession(record, { after = null } = {}) {
   record = normalizeRecord({ ...record });
   return updateState(state => {
     prune(state);
+    let applied = null;
     const existingKey = findDuplicate(state, record);
     if (existingKey) {
       const existing = state.sessions[existingKey];
@@ -166,16 +174,23 @@ export function upsertSession(record) {
         key: existingKey,
       };
       state.sessions[existingKey] = merged;
+      applied = merged;
       log(`merged duplicate detection for pane ${record.pane} into ${existingKey}`);
-      return state;
+    } else {
+      // Baseline for the stale-workspace guard, captured once at stop time.
+      // (Merged duplicates above keep the ORIGINAL baseline — spread semantics.)
+      if (record.status === 'stopped' && record.workspace === undefined) {
+        record.workspace = workspaceFingerprint(record.cwd);
+      }
+      const key = record.sessionId || `pane:${addressHash(record)}:${record.detectedAt}`;
+      applied = { ...record, key };
+      state.sessions[key] = applied;
     }
-    // Baseline for the stale-workspace guard, captured once at stop time.
-    // (Merged duplicates above keep the ORIGINAL baseline — spread semantics.)
-    if (record.status === 'stopped' && record.workspace === undefined) {
-      record.workspace = workspaceFingerprint(record.cwd);
+    if (typeof after === 'function' && applied) {
+      try { after(state, applied); } catch (err) {
+        log(`upsertSession after-hook failed: ${err.message}`);
+      }
     }
-    const key = record.sessionId || `pane:${addressHash(record)}:${record.detectedAt}`;
-    state.sessions[key] = { ...record, key };
     return state;
   });
 }

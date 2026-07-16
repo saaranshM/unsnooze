@@ -48,7 +48,7 @@ function runAgentFallback(agentId, args) {
 
 // Only human-facing commands may print update notices — never the wrapper
 // passthrough, hooks, or daemons (their output lands in agent panes/logs).
-const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'doctor', 'preview', 'help', '-h', '--help', '--help-unsnooze']);
+const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'doctor', 'preview', 'usage', 'dashboard', 'help', '-h', '--help', '--help-unsnooze']);
 
 // Every named subcommand; anything else (or no args) is an agent launch.
 const NAMED_COMMANDS = new Set([
@@ -145,6 +145,14 @@ async function main() {
     case 'preview': {
       const { cmdPreview } = await import('../src/cli.js');
       return cmdPreview(rest);
+    }
+    case 'dashboard': {
+      const { cmdDashboard } = await import('../src/dashboard/run.js');
+      return cmdDashboard(rest);
+    }
+    case 'usage': {
+      const { cmdUsage } = await import('../src/usage.js');
+      return cmdUsage(rest);
     }
     case 'install': {
       const { cmdInstall } = await import('../src/install.js');
@@ -263,6 +271,10 @@ Usage:
   unsnooze preview [id]            dry-run: what WOULD happen right now, and
                                    why — nothing is typed or opened (exit 2
                                    when a wake is actionable, else 0)
+  unsnooze dashboard [tab]         live TUI (status|usage|sessions|doctor|logs) — q to quit
+  unsnooze usage [--json]          account burn rate & time-to-limit forecast
+                                   (--install-statusline for exact Claude %,
+                                    --uninstall-statusline to remove it)
   unsnooze logs [-f]               show (or follow) the unsnooze log
   unsnooze update                  update unsnooze itself to the latest version
   unsnooze daemon                  persistent watcher for GUI sessions (VS Code

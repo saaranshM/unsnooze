@@ -13,6 +13,9 @@ import { detectLimit } from '../patterns.js';
 import { patterns } from '../agents/claude.js';
 import { PANE_SCAN_LINES, WATCH_FRESHNESS_MS } from '../config.js';
 import { transcriptPath } from '../sessions.js';
+// Usage extractor lives in usage.js (shared cold path + daemon); re-exported
+// here so the plan's watcher surface is the documented import site.
+export { extractClaudeUsage } from '../usage.js';
 
 // One transcript JSONL line → limit-stop candidate or null. Sidechain
 // (subagent) entries are skipped — the resume target is the parent session,

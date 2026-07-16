@@ -31,6 +31,9 @@ export const DEFAULTS = {
   workspaceGuard: 'inform', // repo changed while stopped: off | inform | pause
   contextGuard: 'inform',   // wake re-reads a big cold context: off | inform | pause
   contextGuardTokens: 100_000, // contextGuard notify/hold threshold (tokens)
+  // Pre-wall usage warnings (1.13): daemon notifies at % bands + ETA tiers.
+  usageWarn: 'notify',     // off | notify
+  usageWarnAt: '80,95',    // % thresholds (comma-separated); garbage → default
   // Opt-in: auto-close `resumed` panes idle longer than reapIdleAfter (ms).
   // Off by default — an idle revived TUI is indistinguishable from one the
   // user will return to. Explicit cleanup: `unsnooze reap --yes`.
@@ -57,6 +60,8 @@ const ENV_NAMES = {
   workspaceGuard: 'UNSNOOZE_WORKSPACE_GUARD',
   contextGuard: 'UNSNOOZE_CONTEXT_GUARD',
   contextGuardTokens: 'UNSNOOZE_CONTEXT_GUARD_TOKENS',
+  usageWarn: 'UNSNOOZE_USAGE_WARN',
+  usageWarnAt: 'UNSNOOZE_USAGE_WARN_AT',
   reapResumed: 'UNSNOOZE_REAP_RESUMED',
   reapIdleAfter: 'UNSNOOZE_REAP_IDLE_AFTER',
   resumeMessage: 'UNSNOOZE_RESUME_MESSAGE',
@@ -85,6 +90,7 @@ const ENUMS = {
   contextGuard: ['off', 'inform', 'pause'],
   notifyChannel: ['auto', 'native', 'osc', 'bell'],
   ntfyPrivacy: ['full', 'terse'],
+  usageWarn: ['off', 'notify'],
 };
 
 function parseBool(raw) {

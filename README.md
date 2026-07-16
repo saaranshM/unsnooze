@@ -196,32 +196,84 @@ StopFailure hook (claude, grok) ──────────────┤
 </details>
 
 Limit events are never persisted by the CLIs themselves; the reset time is
-parsed from the banner text, DST-safe, with a 5-hour fallback when unparseable
-— and every resume is verified afterwards (banner came back → reschedule from
-the fresh banner, capped at 5 attempts).
+parsed from the banner text, DST-safe. Unparseable banners are never guessed
+at — unsnooze probes the pane on a backoff schedule until a real reset time
+appears. Every resume is verified afterwards (banner came back → reschedule
+from the fresh banner, capped at 5 attempts).
+
+## Know the wall before you hit it
+
+Recovery (auto-resume) is only half the job. **Prevention** is knowing when the
+wall is coming — so you can `/compact`, pause, or switch models *before* a stop.
+
+```sh
+unsnooze usage                         # burn rate, % used, time-to-limit
+unsnooze usage --json                  # stable machine shape (exit 2 past warn %)
+unsnooze usage --install-statusline    # opt-in: exact Claude % via statusline
+unsnooze usage --uninstall-statusline  # remove the shim, restore your statusLine
+```
+
+```text
+$ unsnooze usage
+unsnooze usage — account burn & time-to-limit  (daemon: running · warnings at 80,95%)
+
+  claude  5h      [█████████████░░░░░░░]  ~64%  (calibrated from 4 stops)
+          burn    ~31k weighted tok/min over last 42 active min
+          wall    ~1h 10m at this pace · window resets 8:00 pm (absolute)
+
+  codex   5h      [███░░░░░░░░░░░░░░░░░]  5% used  (exact)
+          monthly [██░░░░░░░░░░░░░░░░░░]  5% used  (exact) · resets Aug 11
+          burn    idle — no active burn
+
+  Estimates are a lower bound: Claude quotas are account-pooled with claude.ai/Desktop.
+  Exact Claude percentages available via: unsnooze usage --install-statusline
+```
+
+| What you get | How |
+|---|---|
+| **Honest labels** | Every figure is tagged `(exact)`, `(calibrated from N stops)`, or `(estimated — calibrating…)`. Never a bare %. |
+| **Account-wide burn** | Sums all active sessions **and** subagents (the limit is per-account, not per-pane). Idle gaps >5 min are excluded so a quiet hour doesn't hide a fast burn. |
+| **Time-to-wall** | ETA as a band (not a false-precision minute), cross-checked against known reset times. Weekly shown info-only — no unstable weekly ETA. |
+| **Pre-wall warnings** | Daemon notifies at `%` bands (`usageWarnAt`, default `80,95`) **and** time tiers (30 / 10 min). Deduped once per window. |
+| **`/compact` nudge only** | Warnings may *suggest* `/compact` so the eventual wake is cheap. unsnooze **never auto-types it** (same security rule as resume: types only your configured message). |
+
+**Provenance ladder** (why this isn't another guessed-quota dashboard):
+
+1. **`(exact)`** — Codex always (local `used_percent` + epoch reset). Claude only with the opt-in statusline shim (server-authoritative `rate_limits` from [Claude Code's statusline JSON](https://code.claude.com/docs/en/statusline)).
+2. **`(calibrated from N stops)`** — Claude token burn vs a ceiling learned from **your** limit-stop ledger (the same stops unsnooze already records for resume). Not plan presets, not circular P90-of-history.
+3. **`(estimated)`** — used tokens + burn shown; ceiling unknown until the first observed stop.
+
+**Honest limits:** Claude transcript sums are a **lower bound** — subscription quotas are account-pooled with claude.ai and the Desktop app. Without the statusline shim, Claude tops out at calibrated/estimated. Exact Claude % needs Pro/Max after the first API response of a session (absent after `/clear` and on API auth).
 
 ## Usage
 
+On an interactive TTY, `status` / `usage` / `sessions` open a **live dashboard**
+(`unsnooze dashboard`) with the brand logo (`❯` + rising `zzz`), tabs, and live
+refresh until you press **`q`**. Pipes, `NO_COLOR`, `CI`, and `--json` stay plain.
+
 ```sh
-claude / codex / grok           # normal usage — wrapped automatically
-unsnooze status                 # tracked sessions + reset countdowns
-unsnooze resume-now [id|--all]  # don't wait for the reset time
-unsnooze cancel [id|--all]      # stop tracking a session
-unsnooze message <id> "text"    # per-session wake message (--clear to reset)
-unsnooze preview [id]           # dry-run: what WOULD happen right now, and why —
-                                # nothing is typed or opened
-unsnooze sessions               # list unsnooze-owned mux sessions + panes
-unsnooze reap [--dry-run|--yes] # close finished panes / empty sessions (default dry-run)
-unsnooze doctor [--fix]         # install health check + retire old csg leftovers
-unsnooze config list            # settings (see below)
-unsnooze config set <k> <v>     # e.g. autoResume off
-unsnooze logs [-f]              # what unsnooze has been doing
-unsnooze update                 # update unsnooze itself
-unsnooze daemon                 # persistent GUI-session watcher (usually run
-                                # by launchd/systemd via `install --daemon`)
-unsnooze report [agent]         # capture a pane to report an undetected banner
-unsnooze uninstall [--purge]    # remove wrappers + hooks (+ state with --purge)
-unsnooze help                   # full command list (also -h / --help)
+claude / codex / grok                  # normal usage — wrapped automatically
+unsnooze status                        # tracked sessions + reset countdowns
+unsnooze dashboard [tab]               # live TUI (status|usage|sessions|doctor|logs)
+unsnooze usage [--json]                # account burn & time-to-limit forecast
+unsnooze usage --install-statusline    # opt-in exact Claude % (chains your statusLine)
+unsnooze resume-now [id|--all]         # don't wait for the reset time
+unsnooze cancel [id|--all]             # stop tracking a session
+unsnooze message <id> "text"           # per-session wake message (--clear to reset)
+unsnooze preview [id]                  # dry-run: what WOULD happen right now, and why —
+                                       # nothing is typed or opened
+unsnooze sessions                      # list unsnooze-owned mux sessions + panes
+unsnooze reap [--dry-run|--yes]        # close finished panes / empty sessions (default dry-run)
+unsnooze doctor [--fix]                # install health check + retire old csg leftovers
+unsnooze config list                   # settings (see below)
+unsnooze config set <k> <v>            # e.g. autoResume off
+unsnooze logs [-f]                     # what unsnooze has been doing
+unsnooze update                        # update unsnooze itself
+unsnooze daemon                        # persistent GUI-session watcher (usually run
+                                       # by launchd/systemd via `install --daemon`)
+unsnooze report [agent]                # capture a pane to report an undetected banner
+unsnooze uninstall [--purge]           # remove wrappers + hooks (+ state with --purge)
+unsnooze help                          # full command list (also -h / --help)
 ```
 
 ## Settings
@@ -244,6 +296,8 @@ unsnooze help                   # full command list (also -h / --help)
 | `workspaceGuard` | `inform` | Repo changed while a session slept? `inform` wakes it with a heads-up in the message; `pause` holds it (desktop notification, diff shown on `resume-now`); `off` disables. |
 | `contextGuard` | `inform` | Big cold context at wake? Waking a session re-reads its **entire context at full uncached price** ([why](#why-did-resuming-a-big-session-eat-so-much-of-my-quota)). `inform` resumes and notifies you of the size; `pause` holds sessions above the threshold for `unsnooze resume-now`; `off` disables. Claude Code only for now. |
 | `contextGuardTokens` | `100000` | Context-size threshold (tokens) at which `contextGuard` notifies or holds. |
+| `usageWarn` | `notify` | Pre-wall usage warnings from the daemon (`unsnooze usage`): `notify` or `off`. Needs `notifications` on and the daemon running. Env: `UNSNOOZE_USAGE_WARN`. |
+| `usageWarnAt` | `80,95` | Percent thresholds for usage warnings (comma-separated). Non-numeric values fall back to the default — never silently disable. Time tiers (30 / 10 min) are constants, not config keys. Env: `UNSNOOZE_USAGE_WARN_AT`. |
 | `reapResumed` | `false` | Opt-in: auto-close `resumed` panes idle longer than `reapIdleAfter`. Off by default — use `unsnooze reap --yes` for explicit cleanup. |
 | `reapIdleAfter` | `604800000` (7d) | Idle age (ms) before an opt-in auto-reap closes a `resumed` pane. |
 | `updateCheck` | `true` | Daily new-version check (a plain GET to the npm registry, nothing identifying is sent). Notices after commands + one desktop toast per version. |

@@ -18,6 +18,7 @@ import { xmlEscape } from './notify.js';
 import { installGrokHooks, uninstallGrokHooks } from './agents/grok.js';
 import { findCsgProcesses, findCsgAutostarts } from './doctor.js';
 import { UNSNOOZE_BIN, stopResumer } from './spawn.js';
+import { uninstallStatuslineShim } from './usage.js';
 
 const FENCE_OPEN = '# >>> unsnooze >>>';
 const FENCE_CLOSE = '# <<< unsnooze <<<';
@@ -441,6 +442,14 @@ export function cmdUninstall(rest) {
 
   const autostart = uninstallDaemonAutostart();
   if (autostart) console.log(`unsnooze: daemon autostart removed (${autostart})`);
+
+  // Restore Claude statusLine if our usage shim was chained in.
+  try {
+    const r = uninstallStatuslineShim({ settingsPath: opts.settings });
+    if (r.removed) console.log('unsnooze: statusline usage shim removed');
+  } catch (err) {
+    console.log(`unsnooze: could not remove statusline shim (${err.message})`);
+  }
 
   if (opts.purge) {
     rmSync(STATE_DIR, { recursive: true, force: true });

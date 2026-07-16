@@ -13,6 +13,7 @@ import { join, dirname } from 'node:path';
 import { CLAUDE_SETTINGS, RESUMER_LOCK } from './config.js';
 import { getMultiplexer } from './multiplexer.js';
 import { makeLogger } from './logger.js';
+import { shouldUseTui, formatDoctorTui } from './tui.js';
 
 const log = makeLogger('doctor');
 
@@ -269,25 +270,30 @@ export async function cmdDoctor(rest = [], deps = {}) {
   const health = report.findings.filter(f => f.kind === 'health');
   const info = report.findings.filter(f => f.kind === 'info');
 
-  if (legacy.length) {
-    print('unsnooze doctor — leftovers from the old claude-session-guard (csg) install:');
-    for (const f of legacy) {
-      print(`  ✗ ${f.title}`);
-      if (f.detail) print(f.detail);
+  if (shouldUseTui() && print === console.log) {
+    print(formatDoctorTui(report, { color: true }));
+    if (report.healthy) return 0;
+  } else {
+    if (legacy.length) {
+      print('unsnooze doctor — leftovers from the old claude-session-guard (csg) install:');
+      for (const f of legacy) {
+        print(`  ✗ ${f.title}`);
+        if (f.detail) print(f.detail);
+      }
     }
-  }
-  if (health.length) {
-    print('unsnooze doctor — install health:');
-    for (const f of health) {
-      print(`  ✗ ${f.title}`);
-      if (f.detail) print(f.detail);
+    if (health.length) {
+      print('unsnooze doctor — install health:');
+      for (const f of health) {
+        print(`  ✗ ${f.title}`);
+        if (f.detail) print(f.detail);
+      }
     }
-  }
-  for (const f of info) print(`  · ${f.title}`);
+    for (const f of info) print(`  · ${f.title}`);
 
-  if (report.healthy) {
-    print('unsnooze doctor: all clear — install is healthy.');
-    return 0;
+    if (report.healthy) {
+      print('unsnooze doctor: all clear — install is healthy.');
+      return 0;
+    }
   }
 
   if (wantFix) {

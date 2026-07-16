@@ -30,6 +30,7 @@ import { UNSNOOZE_BIN } from './spawn.js';
 import { makeLogger } from './logger.js';
 import { createLeaseId, leaseMatches, paneOwnedByRecord } from './lease.js';
 import { autoReapIfEnabled, attachHint } from './reap.js';
+import { tickUsageWarnings } from './usage.js';
 
 const log = makeLogger('resumer');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -722,6 +723,13 @@ export async function runResumer({
     for (;;) {
       if (signal?.aborted) { log('shutdown requested — resumer exiting'); return 0; }
       await tickWatcher();
+
+      // Pre-wall usage warnings (1.13) — after watcher so samples are fresh.
+      try {
+        await tickUsageWarnings();
+      } catch (err) {
+        log(`usage warn tick failed: ${err.message}`);
+      }
 
       // Scheduled cleanup: age prune + pane-aware sweep + abandon stale stops.
       try {

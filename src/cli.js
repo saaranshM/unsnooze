@@ -11,6 +11,10 @@ import { spawnResumerIfNeeded } from './spawn.js';
 import { getMultiplexer } from './multiplexer.js';
 import { listOwnedSessions, reap, attachHint } from './reap.js';
 import { planFor } from './resumer.js';
+import {
+  shouldUseTui, formatStatusTui, formatSessionsTui, formatPreviewTui, logoBlock,
+} from './tui.js';
+import { shouldUseDashboard, runDashboard } from './dashboard/run.js';
 
 function fmtCountdown(ms) {
   if (ms <= 0) return 'due now';
@@ -34,14 +38,55 @@ export function fmtResetProvenance(s) {
 }
 
 export async function cmdStatus() {
+  // Interactive TTY → live dashboard (until q). Pipes stay plain.
+  if (shouldUseDashboard()) return runDashboard({ tab: 'status' });
+
   const state = readState();
   const sessions = Object.values(state.sessions);
   const paused = !getConfig('autoResume');
+  const now = Date.now();
+  const useTui = shouldUseTui();
+
+  async function attachHintFor(s) {
+    if (!s.muxSession) return null;
+    try {
+      const mux = getMultiplexer(s.mux || 'tmux');
+      if (typeof mux.sessionExists === 'function' && await mux.sessionExists(s.muxSession)) {
+        return attachHint(s.mux, s.muxSession) || null;
+      }
+    } catch { /* omit */ }
+    return null;
+  }
+  function contextTokensFor(s) {
+    return getAgent(s.agent).contextTokens?.(s);
+  }
+
+  if (useTui) {
+    // Pre-resolve attach hints (async) for TUI cards.
+    const attachMap = new Map();
+    for (const s of sessions) {
+      const h = await attachHintFor(s);
+      if (h) attachMap.set(s.key, h);
+    }
+    console.log(formatStatusTui({
+      sessions,
+      resumerPid: state.resumerPid,
+      paused,
+      now,
+      fmtCountdown,
+      fmtResetProvenance,
+      approxTokens,
+      contextTokensFor,
+      attachHintFor: s => attachMap.get(s.key) || null,
+      color: true,
+    }));
+    return 0;
+  }
+
   if (sessions.length === 0) {
     console.log(`unsnooze: no tracked sessions.${paused ? '  (PAUSED — auto-resume off)' : ''}`);
     return 0;
   }
-  const now = Date.now();
   const pausedNote = paused ? '  PAUSED — auto-resume off (`unsnooze config set autoResume on`)' : '';
   console.log(`unsnooze: ${sessions.length} tracked session(s)  (resumer pid: ${state.resumerPid ?? 'not running'})${pausedNote}\n`);
   for (const s of sessions.sort((a, b) => (a.resetAt || 0) - (b.resetAt || 0))) {
@@ -58,25 +103,16 @@ export async function cmdStatus() {
     const hold = s.workspaceHold
       ? ` · held: ${s.holdReason ?? '?'} — resume-now to wake`
       : '';
-    // The price of waking: estimated context tokens the API re-reads cold.
     let ctx = '';
     if (s.status === 'stopped') {
       try {
-        const t = getAgent(s.agent).contextTokens?.(s);
+        const t = contextTokensFor(s);
         if (t != null) ctx = ` · ctx ${approxTokens(t)} tok`;
       } catch { /* estimate unavailable — omit */ }
     }
-    // Attach hint when the mux session the record points at is still live.
     let attach = '';
-    if (s.muxSession) {
-      try {
-        const mux = getMultiplexer(s.mux || 'tmux');
-        if (typeof mux.sessionExists === 'function' && await mux.sessionExists(s.muxSession)) {
-          const hint = attachHint(s.mux, s.muxSession);
-          if (hint) attach = ` · attach: ${hint}`;
-        }
-      } catch { /* mux unavailable — omit */ }
-    }
+    const hint = await attachHintFor(s);
+    if (hint) attach = ` · attach: ${hint}`;
     console.log(`  [${s.status.toUpperCase().padEnd(9)}] ${id}  ${(s.agent || 'claude').padEnd(6)} ${s.limitType?.padEnd(7) ?? 'unknown'} ${s.cwd}`);
     console.log(`              mux ${s.mux ?? '-'} · pane ${pane} · session ${s.muxSession ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}${msg}${ctx}${hold}${attach}`);
   }
@@ -228,7 +264,6 @@ export async function cmdPreview(rest = [], {
       print(idOrAll ? `unsnooze preview: no session matching "${idOrAll}".` : 'unsnooze preview: no tracked sessions.');
       return 0;
     }
-    print('unsnooze preview — what WOULD happen right now (nothing is sent)\n');
     const VERBS = {
       inject: p => `would TYPE the wake message into pane ${p.target?.pane}`,
       'drive-menu': p => `would SELECT "Stop and wait for limit to reset" in pane ${p.target?.pane}`,
@@ -245,6 +280,9 @@ export async function cmdPreview(rest = [], {
       none: () => 'nothing to do',
     };
     let actionable = false;
+    const tuiEntries = [];
+    const useTui = shouldUseTui() && print === console.log;
+    if (!useTui) print('unsnooze preview — what WOULD happen right now (nothing is sent)\n');
     for (const rec of records.sort((x, y) => (x.resetAt || 0) - (y.resetAt || 0))) {
       let plan;
       try {
@@ -254,20 +292,29 @@ export async function cmdPreview(rest = [], {
           now,
         });
       } catch (err) {
-        print(`  ${rec.key.slice(0, 12)}: preview failed: ${err.message}`);
+        if (useTui) tuiEntries.push({ status: rec.status, id: rec.key.slice(0, 12), agent: rec.agent, cwd: rec.cwd, verb: `preview failed: ${err.message}`, gates: [] });
+        else print(`  ${rec.key.slice(0, 12)}: preview failed: ${err.message}`);
         continue;
       }
       const id = rec.sessionId ? rec.sessionId.slice(0, 8) : '(no id)';
-      print(`  [${(rec.status || '?').toUpperCase().padEnd(9)}] ${id}  ${(rec.agent || 'claude').padEnd(6)} ${rec.cwd || ''}`);
-      print(`              ${(VERBS[plan.action] || (() => plan.action))(plan)}`);
-      for (const g of plan.gates) print(`              · ${g}`);
+      const verb = (VERBS[plan.action] || (() => plan.action))(plan);
+      let message = null;
       if (plan.message && ['inject', 'reopen'].includes(plan.action)) {
-        const m = plan.message.length > 140 ? `${plan.message.slice(0, 140)}…` : plan.message;
-        print(`              message: "${m.replace(/\n+/g, ' ⏎ ')}"`);
+        message = plan.message.length > 140 ? `${plan.message.slice(0, 140)}…` : plan.message;
+        message = message.replace(/\n+/g, ' ⏎ ');
+      }
+      if (useTui) {
+        tuiEntries.push({ status: rec.status, id, agent: rec.agent, cwd: rec.cwd, verb, gates: plan.gates || [], message });
+      } else {
+        print(`  [${(rec.status || '?').toUpperCase().padEnd(9)}] ${id}  ${(rec.agent || 'claude').padEnd(6)} ${rec.cwd || ''}`);
+        print(`              ${verb}`);
+        for (const g of plan.gates) print(`              · ${g}`);
+        if (message) print(`              message: "${message}"`);
       }
       if (['inject', 'drive-menu', 'reopen'].includes(plan.action)) actionable = true;
     }
-    print('\nNothing was typed, opened, or modified. `unsnooze resume-now <id>` wakes a session immediately.');
+    if (useTui) print(formatPreviewTui(tuiEntries, { color: true }));
+    else print('\nNothing was typed, opened, or modified. `unsnooze resume-now <id>` wakes a session immediately.');
     return actionable ? 2 : 0;
   } catch (err) {
     console.error(`unsnooze preview: ${err.message}`);
@@ -277,7 +324,12 @@ export async function cmdPreview(rest = [], {
 
 // `unsnooze sessions` — list unsnooze-owned mux sessions with panes + records.
 export async function cmdSessions() {
+  if (shouldUseDashboard()) return runDashboard({ tab: 'sessions' });
   const owned = await listOwnedSessions();
+  if (shouldUseTui()) {
+    console.log(formatSessionsTui(owned, { color: true }));
+    return 0;
+  }
   if (owned.length === 0) {
     console.log('unsnooze: no unsnooze-owned mux sessions found.');
     return 0;

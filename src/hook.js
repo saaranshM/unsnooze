@@ -19,6 +19,7 @@ import { getMultiplexer } from './multiplexer.js';
 import { spawnResumerIfNeeded } from './spawn.js';
 import { makeLogger } from './logger.js';
 import { addressHash } from './lease.js';
+import { prepareCalibrationSample, applyCalibrationToState } from './usage.js';
 
 const log = makeLogger('hook');
 
@@ -114,6 +115,20 @@ export async function runHook(rest = []) {
       try { muxSession = await mux.sessionForPane(pane); } catch { muxSession = null; }
     }
 
+    // Raw reset (no margin) for calibration window math; `at` keeps the resume margin.
+    const rawResetMs = Number.isFinite(at) ? at - RESET_MARGIN_MS : null;
+    let calSample = null;
+    try {
+      calSample = prepareCalibrationSample({
+        agent: agent.id,
+        limitType,
+        resetAtMs: rawResetMs,
+        now: detectedAt,
+      });
+    } catch (err) {
+      log(`calibration prepare failed: ${err.message}`);
+    }
+    // Stop record + calibration sample in ONE locked update (plan §6).
     upsertSession({
       sessionId: sessionId || null,
       cwd,
@@ -135,6 +150,10 @@ export async function runHook(rest = []) {
       lastAttemptAt: null,
       lastError: null,
       ...(source === 'fallback' ? { probeCount: 0 } : {}),
+    }, {
+      after: calSample
+        ? (state) => applyCalibrationToState(state, calSample)
+        : null,
     });
     log(`recorded limit stop: session=${sessionId} resetAt=${new Date(at).toISOString()} (${source})`);
     spawnResumerIfNeeded();

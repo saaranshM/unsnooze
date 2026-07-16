@@ -19,6 +19,18 @@ test('defaults apply when no config file exists', () => {
   assert.equal(getConfig('agents.claude'), true);
   assert.equal(getConfig('agents.grok'), false);
   assert.equal(typeof getConfig('resumeMessage'), 'string');
+  assert.equal(getConfig('usageWarn'), 'notify');
+  assert.equal(getConfig('usageWarnAt'), '80,95');
+});
+
+test('usageWarn enum + env override', () => {
+  setConfigValue('usageWarn', 'off');
+  assert.equal(getConfig('usageWarn'), 'off');
+  process.env.UNSNOOZE_USAGE_WARN = 'notify';
+  assert.equal(getConfig('usageWarn'), 'notify');
+  delete process.env.UNSNOOZE_USAGE_WARN;
+  setConfigValue('usageWarn', 'notify');
+  assert.throws(() => setConfigValue('usageWarn', 'maybe'), /must be one of/i);
 });
 
 test('config file overrides defaults', () => {

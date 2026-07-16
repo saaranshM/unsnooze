@@ -29,6 +29,12 @@ import { upsertSession, readState, updateState } from './state.js';
 import { getConfig } from './settings.js';
 import { notify } from './notify.js';
 import { makeLogger } from './logger.js';
+import {
+  extractClaudeUsage, extractCodexUsage,
+  readUsageStore, writeUsageStore, accumulateUsageSamples,
+  prepareCalibrationSample, applyCalibrationToState,
+  collectClaudeSamples, collectCodexSamples,
+} from './usage.js';
 
 const log = makeLogger('watcher');
 
@@ -42,9 +48,16 @@ export function claudeSource({ roots }) {
     agent: 'claude',
     roots,
     enabled: () => getConfig('agents.claude'),
-    // Subagent transcripts live under <session>/subagents/ — their limit
-    // entries duplicate the parent session's own entry.
+    // Limit-stop detection still skips subagents (duplicate parent entry).
+    // Usage accumulation uses a separate match that INCLUDES subagents
+    // (account-pooled burn — see usage.js collectClaudeSamples).
     match: p => p.endsWith('.jsonl') && !p.split(sep).includes('subagents'),
+    // Also walk subagent files for usage-only extraction (no stop candidates).
+    usageMatch: p => p.endsWith('.jsonl') && (
+      !p.split(sep).includes('subagents')
+        ? /^[0-9a-f-]{36}\.jsonl$/i.test(basename(p))
+        : /agent-.*\.jsonl$/i.test(basename(p))
+    ),
     parse(lines) {
       return lines
         .map(parseTranscriptLine)
@@ -59,6 +72,9 @@ export function claudeSource({ roots }) {
           origin: rec.entrypoint,
           timestampMs: rec.timestampMs,
         }));
+    },
+    usage(lines) {
+      return lines.map(extractClaudeUsage).filter(Boolean);
     },
   };
 }
@@ -84,6 +100,9 @@ export function codexSource({ roots }) {
         origin: meta.originator,
         timestampMs: last.timestampMs,
       }];
+    },
+    usage(lines) {
+      return lines.map(extractCodexUsage).filter(Boolean);
     },
   };
 }
@@ -198,7 +217,24 @@ export function dispatchCandidate(c) {
     lastError: null,
   };
   if (c.env) record.env = c.env;   // e.g. CLAUDE_CONFIG_DIR for sandboxed desktop sessions
-  upsertSession(record);
+  // Raw reset without margin for calibration window math.
+  const rawResetMs = c.resetAt != null
+    ? c.resetAt
+    : (Number.isFinite(at) ? at - RESET_MARGIN_MS : null);
+  let calSample = null;
+  try {
+    calSample = prepareCalibrationSample({
+      agent: c.agent,
+      limitType: record.limitType,
+      resetAtMs: rawResetMs,
+      now: detectedAt,
+    });
+  } catch (err) {
+    log(`calibration prepare failed: ${err.message}`);
+  }
+  upsertSession(record, {
+    after: calSample ? (state) => applyCalibrationToState(state, calSample) : null,
+  });
   log(`limit stop via transcript: agent=${c.agent} session=${c.sessionId || '?'} origin=${c.origin || '?'} resetAt=${new Date(at).toISOString()} (${source})`);
   notify('limit hit 😴', `${c.cwd || c.agent}: tracked — resumes when the limit resets`);
 }
@@ -306,24 +342,59 @@ export function createWatcher({
     async tick() {
       const seen = new Set();
       const candidates = [];
+      const usageSamples = [];
       for (const source of sources) {
         if (source.enabled && !source.enabled()) continue;
         for (const root of source.roots) {
           walk(root, 0, path => {
-            if (!source.match(path)) return;
+            // Stop detection match (excludes Claude subagents).
+            const stopMatch = source.match(path);
+            // Usage match may include subagents; falls back to stop match.
+            const usageMatch = source.usageMatch ? source.usageMatch(path) : stopMatch;
+            if (!stopMatch && !usageMatch) return;
             seen.add(path);
             const lines = readAppended(path);
             if (!lines || lines.length === 0) return;
-            try {
-              candidates.push(...source.parse(lines, path));
-            } catch (err) {
-              log(`parse error in ${path}: ${err.message}`);
+            if (stopMatch) {
+              try {
+                candidates.push(...source.parse(lines, path));
+              } catch (err) {
+                log(`parse error in ${path}: ${err.message}`);
+              }
+            }
+            if (usageMatch && typeof source.usage === 'function') {
+              try {
+                usageSamples.push(...source.usage(lines, path));
+              } catch (err) {
+                log(`usage parse error in ${path}: ${err.message}`);
+              }
             }
           });
         }
       }
+      // Cold start seeds offsets at EOF → accumulator would see zero history.
+      // One mtime-filtered tail-read pass fills the current-window baseline.
+      const wasCold = coldStart;
       coldStart = false;
       saveOffsets(seen);
+
+      try {
+        const store = readUsageStore();
+        if (wasCold && (store.samples || []).length === 0) {
+          const seeded = [
+            ...collectClaudeSamples({ now: now() }),
+            ...collectCodexSamples({ now: now() }),
+          ];
+          if (seeded.length > 0) accumulateUsageSamples(store, seeded, { now: now() });
+        }
+        if (usageSamples.length > 0) {
+          accumulateUsageSamples(store, usageSamples, { now: now() });
+        }
+        if (wasCold || usageSamples.length > 0) writeUsageStore(store);
+      } catch (err) {
+        log(`usage accumulate failed: ${err.message}`);
+      }
+
       // Strict freshness: a candidate without a parseable timestamp cannot be
       // dated, and dispatching it risks reviving a long-finished session (the
       // offsets can legitimately replay old lines after a file reappears).

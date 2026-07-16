@@ -12,13 +12,28 @@ export const LOCK_DIR = join(STATE_DIR, 'state.lock');
 export const LOG_FILE = join(STATE_DIR, 'unsnooze.log');
 export const EVENTS_DIR = join(STATE_DIR, 'events');
 export const RESUMER_LOCK = join(STATE_DIR, 'resumer.lock');
+// High-frequency burn accumulator + warn-dedup (daemon single-writer).
+export const USAGE_FILE = join(STATE_DIR, 'usage.json');
 
 export const CLAUDE_DIR = process.env.UNSNOOZE_CLAUDE_DIR || join(homedir(), '.claude');
 export const CLAUDE_SETTINGS = join(CLAUDE_DIR, 'settings.json');
 export const CODEX_DIR = process.env.UNSNOOZE_CODEX_DIR || join(homedir(), '.codex');
+// Opt-in statusline shim drop dir for exact Claude rate_limits.
+export const USAGE_STATUSLINE_DIR = join(CLAUDE_DIR, 'unsnooze');
 
 // Transcript/rollout watcher (GUI detection channel)
 export const WATCH_OFFSETS_FILE = join(STATE_DIR, 'watch-offsets.json');
+
+// Usage forecast (1.13)
+export const USAGE_BURN_LOOKBACK_MS = envInt('UNSNOOZE_USAGE_BURN_LOOKBACK_MS', 60 * 60_000);
+export const USAGE_BURN_MIN_COVERAGE_MS = envInt('UNSNOOZE_USAGE_BURN_MIN_MS', 10 * 60_000);
+export const USAGE_IDLE_GAP_MS = envInt('UNSNOOZE_USAGE_IDLE_GAP_MS', 5 * 60_000);
+export const USAGE_WINDOW_IDLE_MS = envInt('UNSNOOZE_USAGE_WINDOW_IDLE_MS', 5 * 3_600_000);
+export const USAGE_CALIBRATION_RING = envInt('UNSNOOZE_USAGE_CAL_RING', 20);
+export const USAGE_CALIBRATION_MEDIAN_N = envInt('UNSNOOZE_USAGE_CAL_N', 5);
+// Time-to-wall warn tiers (minutes); comma-separated, not a config-file key.
+export const USAGE_ETA_WARN_MIN = (process.env.UNSNOOZE_USAGE_ETA_WARN_MIN || '30,10')
+  .split(',').map(Number).filter(n => Number.isFinite(n) && n > 0);
 
 // Interactive launcher base session name. The daemon never CREATES this name
 // (see RESUME_SESSION_NAME); it may only join it when already live.
