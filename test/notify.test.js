@@ -81,6 +81,11 @@ test('zellij intentionally has no statusline notification fallback', () => {
   const calls = [];
   const oldTmux = process.env.TMUX;
   const oldZellij = process.env.ZELLIJ;
+  // UNSNOOZE_MUX leaks in when the test suite itself runs inside an
+  // unsnooze-managed pane (the author's daily setup) — it would override the
+  // ZELLIJ detection under test and fire the tmux fallback.
+  const oldMux = process.env.UNSNOOZE_MUX;
+  delete process.env.UNSNOOZE_MUX;
   process.env.TMUX = '/tmp/tmux';
   process.env.ZELLIJ = '0';
   try {
@@ -88,6 +93,7 @@ test('zellij intentionally has no statusline notification fallback', () => {
   } finally {
     if (oldTmux === undefined) delete process.env.TMUX; else process.env.TMUX = oldTmux;
     if (oldZellij === undefined) delete process.env.ZELLIJ; else process.env.ZELLIJ = oldZellij;
+    if (oldMux !== undefined) process.env.UNSNOOZE_MUX = oldMux;
   }
   assert.deepEqual(calls, []);
 });

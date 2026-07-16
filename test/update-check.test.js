@@ -11,6 +11,7 @@ process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 const {
   isNewer, updateNotice, whatsNewNotice, changelogSection,
   fetchLatest, runUpdateCheck, runSelfUpdate, readCache, writeCache, PKG_VERSION,
+  launchExitNotice,
 } = await import('../src/update-check.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
@@ -108,4 +109,32 @@ test('runSelfUpdate: surfaces npm failure with a hint, non-zero exit', () => {
   });
   assert.notEqual(code, 0);
   assert.match(lines.join('\n'), /npm install -g unsnooze/);
+});
+
+// --- post-session-exit notice (wrapper-only users never run `unsnooze status`,
+// so the launch path is the one place a notice reliably reaches them) ---
+
+test('launchExitNotice: fires for a newer version and stamps lastNoticeAt', () => {
+  writeCache({ lastCheckedAt: Date.now(), latest: '999.0.0' });
+  const now = Date.now();
+  const notice = launchExitNotice({ now });
+  assert.match(notice, /999\.0\.0 is available/);
+  assert.equal(readCache().lastNoticeAt, now, 'must stamp so the next launch stays quiet');
+});
+
+test('launchExitNotice: at most once per day', () => {
+  const now = Date.now();
+  writeCache({ lastCheckedAt: now, latest: '999.0.0', lastNoticeAt: now - 3_600_000 });
+  assert.equal(launchExitNotice({ now }), null, 'an hour-old notice suppresses');
+  writeCache({ lastNoticeAt: now - 25 * 3_600_000 });
+  assert.match(launchExitNotice({ now }), /999\.0\.0/, 'a day-old notice fires again');
+});
+
+test('launchExitNotice: silent when current, unchecked, or updateCheck is off', () => {
+  assert.equal(launchExitNotice(), null, 'no cache → silent');
+  writeCache({ lastCheckedAt: Date.now(), latest: PKG_VERSION });
+  assert.equal(launchExitNotice(), null, 'up to date → silent');
+  writeCache({ latest: '999.0.0' });
+  process.env.UNSNOOZE_UPDATE_CHECK = 'off';
+  assert.equal(launchExitNotice(), null, 'updateCheck off → silent');
 });

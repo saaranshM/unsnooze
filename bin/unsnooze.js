@@ -2,11 +2,85 @@
 // unsnooze — subcommand router; anything unrecognized is treated as claude
 // args and passed through the launcher (back-compat with the zsh wrapper).
 
+import { spawnSync } from 'node:child_process';
+
 const [, , cmd, ...rest] = process.argv;
+
+// --- upgrade-window fail-safe -----------------------------------------------
+// During `npm install -g` the package dir is briefly half-written: bin/ can
+// exist while src/ is missing, so the zsh wrapper's file guard passes but the
+// dynamic imports below throw ERR_MODULE_NOT_FOUND. That window once produced
+// an instantly-dying wrapped tmux session for every `claude` (and 12,989
+// launchd daemon crash-loops). Rules: agent-launch paths degrade to the plain
+// CLI; background paths (hook/monitor/resumer/daemon) exit 0 quietly. Only
+// module LOAD failures are caught — a runtime error after the module loaded
+// must not re-run an agent that may already have run.
+
+// Mirrors each adapter's bin resolution without importing src/. Codex loses
+// its PATH walk here — plain `codex` is the correct degraded answer.
+const AGENT_FALLBACK_BINS = {
+  claude: () => process.env.UNSNOOZE_CLAUDE_BIN || 'claude',
+  codex: () => process.env.UNSNOOZE_CODEX_BIN || 'codex',
+  grok: () => process.env.UNSNOOZE_GROK_BIN || 'grok',
+  qwen: () => process.env.UNSNOOZE_QWEN_BIN || 'qwen',
+  kimi: () => process.env.UNSNOOZE_KIMI_BIN || 'kimi',
+  opencode: () => process.env.UNSNOOZE_OPENCODE_BIN || 'opencode',
+  agy: () => process.env.UNSNOOZE_AGY_BIN || 'agy',
+};
+
+async function safeImport(specifier) {
+  try {
+    return await import(specifier);
+  } catch {
+    return null;   // missing/half-written module — caller picks the degraded path
+  }
+}
+
+function runAgentFallback(agentId, args) {
+  const bin = (AGENT_FALLBACK_BINS[agentId] || AGENT_FALLBACK_BINS.claude)();
+  process.stderr.write('unsnooze: install incomplete (upgrade in progress?) — running without limit-watch.\n');
+  const r = spawnSync(bin, args, {
+    stdio: 'inherit',
+    env: { ...process.env, UNSNOOZE_ACTIVE: '1' },
+  });
+  return r.status ?? 1;
+}
 
 // Only human-facing commands may print update notices — never the wrapper
 // passthrough, hooks, or daemons (their output lands in agent panes/logs).
 const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'help', '-h', '--help', '--help-unsnooze']);
+
+// Every named subcommand; anything else (or no args) is an agent launch.
+const NAMED_COMMANDS = new Set([
+  ...USER_FACING, 'setup', 'install', 'uninstall', 'update', 'daemon',
+  '_hook-stopfailure', '_monitor', '_run', '_resumer', '_update-check',
+]);
+const isLaunchPath = cmd === '_run' || cmd === undefined || !NAMED_COMMANDS.has(cmd);
+const launchArgs = cmd === '_run' ? rest.slice(1) : (cmd === undefined ? [] : [cmd, ...rest]);
+
+// Post-session update notice (update-notifier pattern): wrapper-only users
+// never run `unsnooze status`, so the moment the agent exits — screen
+// restored, user at their prompt — is where a notice reliably reaches them.
+// Outer process only: inside any multiplexer our stderr is a pane that may be
+// about to close (wrapped sessions die with the agent); the outer wrapper
+// prints on the real terminal after tmux/zellij hands the screen back.
+async function maybeLaunchExitNotice(args) {
+  try {
+    if (process.env.TMUX || process.env.ZELLIJ || process.env.UNSNOOZE_ACTIVE === '1') return;
+    if (!process.stderr.isTTY) return;                            // pipes, CI, scripts
+    if (args.includes('-p') || args.includes('--print')) return;  // non-interactive runs
+    const mod = await safeImport('../src/update-check.js');
+    if (!mod) return;
+    const notice = mod.launchExitNotice();
+    if (notice) process.stderr.write(`\n${notice}\n`);
+    // Keep the cache fresh for users who only ever launch agents — without
+    // this, no daemon and no user-facing command means no check ever runs.
+    if (mod.isCacheStale()) {
+      const spawnMod = await safeImport('../src/spawn.js');
+      spawnMod?.spawnDetached(['_update-check']);
+    }
+  } catch { /* notices must never break the launch path */ }
+}
 
 async function maybeUpdateNotices() {
   try {
@@ -73,43 +147,73 @@ async function main() {
       return cmdUninstall(rest);
     }
     case '_hook-stopfailure': {
-      const { runHook } = await import('../src/hook.js');
-      return runHook(rest);
+      const mod = await safeImport('../src/hook.js');
+      if (!mod) return 0;   // never fail (or pollute) an agent turn
+      return mod.runHook(rest);
     }
     case '_monitor': {
       if (!rest[0] || !rest[2]) { console.error('unsnooze _monitor: mux owner pane required'); return 2; }
-      const { runMonitor } = await import('../src/monitor.js');
-      return runMonitor(rest[0], rest[1], rest[2], rest[3], rest[4]);
+      const mod = await safeImport('../src/monitor.js');
+      if (!mod) return 0;   // detached — nothing useful to report
+      return mod.runMonitor(rest[0], rest[1], rest[2], rest[3], rest[4]);
     }
     case '_run': {
       if (!rest[0]) { console.error('unsnooze _run: agent id required'); return 2; }
-      const { runLauncher } = await import('../src/launcher.js');
-      return runLauncher(rest.slice(1), rest[0]);
+      const mod = await safeImport('../src/launcher.js');
+      if (!mod) return runAgentFallback(rest[0], rest.slice(1));
+      return mod.runLauncher(rest.slice(1), rest[0]);
     }
     case '_resumer': {
-      const { runResumer } = await import('../src/resumer.js');
-      return runResumer();
+      const mod = await safeImport('../src/resumer.js');
+      if (!mod) return 0;
+      return mod.runResumer();
     }
     case 'update': {
       const { runSelfUpdate } = await import('../src/update-check.js');
       return runSelfUpdate();
     }
     case '_update-check': {
-      const { runUpdateCheck } = await import('../src/update-check.js');
-      return runUpdateCheck();
+      const mod = await safeImport('../src/update-check.js');
+      if (!mod) return 0;
+      return mod.runUpdateCheck();
     }
     case 'daemon': {
       // Persistent resumer + transcript watcher: detects and revives limit
       // stops from GUI surfaces (VS Code extension, desktop apps) where no
       // shell wrapper or multiplexer pane exists. Run via launchd/systemd or a shell.
-      const { runResumer } = await import('../src/resumer.js');
-      const { createWatcher } = await import('../src/watcher.js');
+      // Exit 0 on load failure: with launchd KeepAlive a crash here means an
+      // instant-respawn crash-loop for the whole upgrade window.
+      const resumerMod = await safeImport('../src/resumer.js');
+      const watcherMod = await safeImport('../src/watcher.js');
+      if (!resumerMod || !watcherMod) return 0;
+      const { runResumer } = resumerMod;
+      const { createWatcher } = watcherMod;
       const controller = new AbortController();
       process.on('SIGTERM', () => controller.abort());
       process.on('SIGINT', () => controller.abort());
+      // daemon.log is launchd/systemd-captured stdout+stderr. launchd holds
+      // an open fd on it for our whole lifetime, so rotation must be
+      // copy-truncate: renaming would leave launchd appending to the renamed
+      // inode forever, with no fresh daemon.log until the next respawn.
+      const loggerMod = await safeImport('../src/logger.js');
+      const configMod = await safeImport('../src/config.js');
+      if (loggerMod && configMod) {
+        const { join } = await import('node:path');
+        loggerMod.copyTruncateIfLarge(join(configMod.STATE_DIR, 'daemon.log'));
+      }
+      // Version-skew guard: when npm swaps the package underneath us, exit
+      // cleanly so launchd/systemd restart the daemon on the fresh code.
+      const updMod = await safeImport('../src/update-check.js');
+      if (updMod?.hasVersionSkew) {
+        setInterval(() => {
+          if (updMod.hasVersionSkew()) controller.abort();
+        }, 15 * 60_000).unref();
+      }
       // Daily update check from the daemon: GUI-only users never run CLI
       // commands, so this is what gets them the "new version" desktop toast.
-      const { spawnDetached } = await import('../src/spawn.js');
+      const spawnMod = await safeImport('../src/spawn.js');
+      if (!spawnMod) return 0;
+      const { spawnDetached } = spawnMod;
       spawnDetached(['_update-check']);
       setInterval(() => spawnDetached(['_update-check']), 24 * 3_600_000).unref();
       return runResumer({ persistent: true, watcher: createWatcher(), signal: controller.signal });
@@ -148,14 +252,16 @@ Usage:
     default: {
       // Everything else (including no args, --resume, -c, plain prompts) is a
       // claude invocation — back-compat for the plain wrapper.
-      const { runLauncher } = await import('../src/launcher.js');
       const args = cmd === undefined ? [] : [cmd, ...rest];
-      return runLauncher(args, 'claude');
+      const mod = await safeImport('../src/launcher.js');
+      if (!mod) return runAgentFallback('claude', args);
+      return mod.runLauncher(args, 'claude');
     }
   }
 }
 
 main().then(async code => {
   if (USER_FACING.has(cmd)) await maybeUpdateNotices();
+  else if (isLaunchPath) await maybeLaunchExitNotice(launchArgs);
   process.exitCode = typeof code === 'number' ? code : 0;
 }).catch(err => { console.error(`unsnooze: ${err.stack || err}`); process.exitCode = 1; });

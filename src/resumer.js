@@ -6,6 +6,7 @@
 
 import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { getMultiplexer } from './multiplexer.js';
 import {
   RESUMER_LOCK, STATE_DIR, POLL_INTERVAL_MS, STAGGER_MS, VERIFY_DELAY_MS,
@@ -39,14 +40,46 @@ function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-export function acquireSingleton() {
-  mkdirSync(STATE_DIR, { recursive: true });
+// Is the lock-holder pid actually an unsnooze resumer? Pids get recycled: a
+// lock naming a live-but-unrelated program would otherwise be honored forever
+// and stops would never dispatch. Lock acquirers are only ever `_resumer` or
+// `daemon` processes, so require both tokens — a bare /unsnooze/ substring
+// would let any process that merely mentions the name squat the lock.
+// No evidence (empty/failed ps) → true: never steal on doubt.
+export function looksLikeResumerCommand(cmd) {
+  const c = String(cmd || '').trim();
+  if (c === '') return true;
+  return /unsnooze/i.test(c) && /(?:^|\s)(?:_resumer|daemon)(?:\s|$)/.test(c);
+}
+
+function defaultIsResumer(pid) {
   try {
-    const pid = parseInt(readFileSync(RESUMER_LOCK, 'utf-8'), 10);
-    if (Number.isFinite(pid) && pid !== process.pid && pidAlive(pid)) return false;
-  } catch { /* no lock */ }
-  writeFileSync(RESUMER_LOCK, String(process.pid));
-  return true;
+    const r = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8' });
+    if (r.error || r.status !== 0) return true;
+    return looksLikeResumerCommand(r.stdout);
+  } catch {
+    return true;
+  }
+}
+
+// Atomic acquire: `wx` create wins or loses the race outright — no
+// read-check-write window. A held lock is honored only when its pid is alive
+// AND looks like a resumer; stale/garbage/recycled locks are replaced.
+export function acquireSingleton({ isResumer = defaultIsResumer } = {}) {
+  mkdirSync(STATE_DIR, { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(RESUMER_LOCK, String(process.pid), { flag: 'wx' });
+      return true;
+    } catch { /* lock exists — inspect the holder below */ }
+    let pid = NaN;
+    try { pid = parseInt(readFileSync(RESUMER_LOCK, 'utf-8'), 10); }
+    catch { /* vanished between wx and read — retry the create */ }
+    if (pid === process.pid) return true;   // we already hold it
+    if (Number.isFinite(pid) && pidAlive(pid) && isResumer(pid)) return false;
+    try { unlinkSync(RESUMER_LOCK); } catch { /* raced with another cleaner */ }
+  }
+  return false;   // lost the post-cleanup race to another acquirer
 }
 
 export function releaseSingleton() {
@@ -54,6 +87,23 @@ export function releaseSingleton() {
     const pid = parseInt(readFileSync(RESUMER_LOCK, 'utf-8'), 10);
     if (pid === process.pid) unlinkSync(RESUMER_LOCK);
   } catch { /* already gone */ }
+}
+
+// Exponential backoff between failed resume attempts: 1m, 2m, 4m, 8m … capped
+// at 30m. Without it, a due record whose resetAt already passed retries every
+// poll tick and burns all MAX_RESUME_ATTEMPTS in ~2 minutes (observed).
+// A transient hook-spawned resumer keeps holding the singleton lock through
+// the backoff window — intentional, and consistent with it holding the lock
+// through a multi-hour reset wait (the daemon politely waits either way).
+export function retryBackoffMs(attempts, { baseMs = 60_000, maxMs = 1_800_000 } = {}) {
+  return Math.min(baseMs * 2 ** Math.max(0, attempts - 1), maxMs);
+}
+
+// Waiting behind a legitimately-held lock is normal (a transient hook-spawned
+// resumer riding out a long reset); logging it every 30s tick for hours is
+// not. First tick, then every 30th (~15 min).
+export function shouldLogLockWait(n) {
+  return n === 1 || n % 30 === 0;
 }
 
 // Due sessions that are actually allowed to dispatch: everything when
@@ -388,8 +438,11 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
 function recordVerifyRetry(rec, lastError) {
   const verifyRetries = (rec.verifyRetries || 0) + 1;
   if (verifyRetries >= MAX_VERIFY_RETRIES) {
+    const attempts = (rec.attempts || 0) + 1;
     setStatus(rec.key, 'stopped', {
-      attempts: (rec.attempts || 0) + 1,
+      attempts,
+      // Same backoff (and same manual exemption) as routed retries.
+      resetAt: rec.manual ? Date.now() : Date.now() + retryBackoffMs(attempts),
       lastError,
       verifyRetries: 0,
     });
@@ -449,7 +502,7 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
   return 'resumed';
 }
 
-export function routeDispatchOutcome(result, rec, deferCounts, { maxBusyDefers = MAX_BUSY_DEFERS } = {}) {
+export function routeDispatchOutcome(result, rec, deferCounts, { maxBusyDefers = MAX_BUSY_DEFERS, now = Date.now() } = {}) {
   if (result === 'busy') {
     const n = (deferCounts.get(rec.key) || 0) + 1;
     deferCounts.set(rec.key, n);
@@ -460,8 +513,14 @@ export function routeDispatchOutcome(result, rec, deferCounts, { maxBusyDefers =
     return { verify: false, waitBusy: true };
   }
   if (result === 'retry') {
+    const attempts = (rec.attempts || 0) + 1;
     setStatus(rec.key, 'stopped', {
-      attempts: (rec.attempts || 0) + 1,
+      attempts,
+      // Back off before the next attempt — a due record retried on every poll
+      // tick exhausts MAX_RESUME_ATTEMPTS in minutes. Manual records are
+      // exempt: `resume-now` promised an immediate wake, so a transient error
+      // must not silently defer it.
+      resetAt: rec.manual ? now : now + retryBackoffMs(attempts),
       lastError: readState().sessions[rec.key]?.lastError,
       verifyRetries: 0,
     });
@@ -490,11 +549,13 @@ export async function runResumer({
     if (!watcher || !getConfig('guiWatch')) return;
     try { await watcher.tick(); } catch (err) { log(`watcher tick failed: ${err.message}`); }
   };
+  let lockWaits = 0;
   while (!acquireSingleton()) {
     if (!persistent) { log('another resumer is running — exiting'); return 0; }
     if (signal?.aborted) return 0;
     await tickWatcher();
-    log('another resumer holds the lock — daemon waiting');
+    lockWaits += 1;
+    if (shouldLogLockWait(lockWaits)) log('another resumer holds the lock — daemon waiting');
     await sleep(pollInterval);
   }
   updateState(state => { state.resumerPid = process.pid; });

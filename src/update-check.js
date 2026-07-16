@@ -52,6 +52,24 @@ export function isCacheStale(now = Date.now()) {
   return now - (readCache().lastCheckedAt || 0) > CHECK_INTERVAL_MS;
 }
 
+// Version-skew guard for long-lived processes: after `npm i -g` swaps the
+// package out underneath a running daemon, the loaded code (PKG_VERSION,
+// read at module load) no longer matches the on-disk package.json. The
+// daemon exits cleanly on skew so launchd/systemd restart it on fresh code —
+// never again a zombie daemon running deleted code.
+//
+// A missing/unreadable/garbage package.json is NOT skew: mid-upgrade the file
+// may briefly not exist, and exiting then would race the installer. Only a
+// readable, *different* version is proof the upgrade finished.
+export function hasVersionSkew({ root = ROOT, current = PKG_VERSION } = {}) {
+  try {
+    const disk = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8')).version;
+    return typeof disk === 'string' && /^\d+\.\d+\.\d+$/.test(disk) && disk !== current;
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchLatest({ fetcher = globalThis.fetch, timeoutMs = 3000 } = {}) {
   try {
     const ctrl = new AbortController();
@@ -77,6 +95,22 @@ export function updateNotice(pkgVersion = PKG_VERSION) {
   const { latest } = readCache();
   if (!latest || !isNewer(latest, pkgVersion)) return null;
   return `unsnooze ${latest} is available (you have ${pkgVersion}) — run: unsnooze update · ${RELEASES_URL}`;
+}
+
+// Post-session-exit notice for the agent-launch path (the update-notifier
+// pattern: non-blocking, from cache, AFTER the run — never a pre-launch
+// prompt, which the tmux alt-screen would wipe anyway). Wrapper-only users
+// never run `unsnooze status`, so the moment the agent exits and the screen
+// is restored is the one moment a notice reliably reaches them. Throttled to
+// once per day via lastNoticeAt; stamps only when it actually fires.
+const NOTICE_INTERVAL_MS = 24 * 3_600_000;
+
+export function launchExitNotice({ now = Date.now(), pkgVersion = PKG_VERSION } = {}) {
+  const notice = updateNotice(pkgVersion);
+  if (!notice) return null;
+  if (now - (readCache().lastNoticeAt || 0) < NOTICE_INTERVAL_MS) return null;
+  writeCache({ lastNoticeAt: now });
+  return notice;
 }
 
 // The "## <version>" block from the CHANGELOG.md that ships in the tarball.

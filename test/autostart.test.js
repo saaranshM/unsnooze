@@ -26,11 +26,30 @@ test('launchdPlist escapes XML-special path characters', () => {
   assert.match(xml, /\/odd &amp; path\/node/);
 });
 
-test('systemdUnit execs the daemon and restarts on failure', () => {
+test('launchdPlist throttles KeepAlive respawns (upgrade-window crash-loop guard)', () => {
+  // Without ThrottleInterval, KeepAlive + a half-installed package =
+  // instant-respawn crash-loop (observed: 12,989 MODULE_NOT_FOUND crashes).
+  const xml = launchdPlist({ nodeBin: '/usr/local/bin/node', unsnoozeBin: '/x/bin/unsnooze.js' });
+  assert.match(xml, /<key>ThrottleInterval<\/key>\s*<integer>30<\/integer>/);
+});
+
+test('systemdUnit execs the daemon and always restarts (clean exits included)', () => {
   const unit = systemdUnit({ nodeBin: '/usr/bin/node', unsnoozeBin: '/x/bin/unsnooze.js' });
   assert.match(unit, /ExecStart="\/usr\/bin\/node" "\/x\/bin\/unsnooze\.js" daemon/);
-  assert.match(unit, /Restart=on-failure/);
+  // The version-skew guard and upgrade fail-safe exit 0 EXPECTING a respawn
+  // on fresh code — Restart=on-failure would leave the daemon dead on Linux.
+  assert.match(unit, /Restart=always/);
+  assert.doesNotMatch(unit, /Restart=on-failure/);
   assert.match(unit, /WantedBy=default\.target/);
+});
+
+test('systemdUnit throttles respawns without ever bricking the unit', () => {
+  const unit = systemdUnit({ nodeBin: '/usr/bin/node', unsnoozeBin: '/x/bin/unsnooze.js' });
+  // RestartSec is the throttle (like launchd ThrottleInterval); the start
+  // rate-limit is disabled so a long broken-install window can never trip
+  // the unit into a permanent 'failed' state.
+  assert.match(unit, /RestartSec=30/);
+  assert.match(unit, /StartLimitIntervalSec=0/);
 });
 
 test('darwin install writes the plist into the target dir and loads it', () => {

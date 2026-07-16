@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+## 1.10.1 — 2026-07-16
+
+- **Upgrade-window fail-safe** (fix: `npm install -g` briefly leaves `bin/`
+  present with `src/` missing; the router then died with `MODULE_NOT_FOUND`
+  *inside* the freshly-wrapped tmux session — a visible open/close flash with
+  terminal-probe garbage — and the launchd daemon crash-looped thousands of
+  times into `daemon.log`): agent-launch paths (`_run`, bare `claude` args)
+  now degrade to the plain agent CLI when the package can't load; background
+  paths (hook, monitor, resumer, daemon, update-check) exit 0 quietly. Only
+  module *load* failures are caught — runtime errors still surface, and an
+  agent that already ran is never re-run.
+- **Daemon crash-loop guards**: launchd plist gains `ThrottleInterval 30`;
+  the systemd unit moves to `Restart=always` + `RestartSec=30` (a clean
+  exit-0 must also respawn — `on-failure` would leave the daemon dead after
+  an intentional exit) with the start rate-limit disabled so a long broken
+  install can never trip the unit into a permanent `failed` state. A
+  version-skew watch makes a long-lived daemon exit cleanly (and get
+  restarted on fresh code) when `npm -g` swaps the package underneath it —
+  no more zombie daemons running deleted code.
+- **Log rotation**: `unsnooze.log` and `daemon.log` are capped at 5 MB with
+  one rotated generation (`.1`) — a crash-loop can no longer grow a log
+  without bound. `daemon.log` is rotated copy-truncate style because launchd
+  holds its fd open for the daemon's whole lifetime.
+- **Resume-retry backoff** (fix: five resume attempts burned in ~2 minutes
+  when a revival kept failing): failed attempts now back off exponentially
+  (1m, 2m, 4m… capped at 30m). Manual `resume-now` records are exempt — an
+  explicit immediate wake is never silently deferred. After `unsnooze` gives
+  up, a session re-arms only on a fresh limit detection.
+- **Singleton-lock hygiene**: the resumer lock is acquired atomically
+  (`wx`), a lock held by a recycled pid that is not actually an unsnooze
+  process is taken over instead of honored forever, and the daemon's
+  "another resumer holds the lock" log line is throttled to ~once per 15
+  minutes instead of every 30 s tick.
+- **Update notice on the launch path**: wrapper-only users (who never run
+  `unsnooze status`) now get the one-line "new version available" notice on
+  stderr right after their agent session ends — outer terminal only, TTY
+  only, never in `-p/--print` runs, at most once per day. The launch path
+  also refreshes the daily version-check cache.
+
 ## 1.10.0 — 2026-07-14
 
 - **Session-name ownership** (fix: interactive `claude` dying with

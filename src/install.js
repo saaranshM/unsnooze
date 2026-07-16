@@ -163,6 +163,9 @@ export function launchdPlist({
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <!-- Without a throttle, KeepAlive + a half-installed package (npm -g
+       upgrade window) = instant-respawn crash-loop into the log. -->
+  <key>ThrottleInterval</key><integer>30</integer>
   <key>StandardOutPath</key><string>${xmlEscape(logFile)}</string>
   <key>StandardErrorPath</key><string>${xmlEscape(logFile)}</string>
 </dict>
@@ -171,13 +174,19 @@ export function launchdPlist({
 }
 
 export function systemdUnit({ nodeBin = process.execPath, unsnoozeBin = UNSNOOZE_BIN } = {}) {
+  // Restart=always, not on-failure: the version-skew guard and the
+  // upgrade-window fail-safe exit 0 EXPECTING a respawn on fresh code.
+  // RestartSec throttles (like launchd's ThrottleInterval); the start
+  // rate-limit is disabled so a long broken-install window can never trip
+  // the unit into a permanent 'failed' state.
   return `[Unit]
 Description=unsnooze daemon — watches GUI AI-coding sessions for limit stops
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart="${nodeBin}" "${unsnoozeBin}" daemon
-Restart=on-failure
-RestartSec=10
+Restart=always
+RestartSec=30
 
 [Install]
 WantedBy=default.target
