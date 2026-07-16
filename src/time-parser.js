@@ -8,6 +8,11 @@ const RESET_TIME_REGEX = /resets?\s+(?:at\s+)?(?:on\s+)?(?:(?:mon|tue|wed|thu|fr
 // "resets Tuesday 3pm" / "resets on Mon" — weekly limits carry a day name.
 const DAY_REGEX = /resets?\s+(?:on\s+)?(mon|tue|wed|thu|fri|sat|sun)[a-z]*/i;
 const DAY_INDEX = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+
+// Undated past clock times may roll +24h only when tomorrow's occurrence is
+// within this lead — the longest bare-clock announcement a limit window makes
+// (5h) plus slack. Anything further past is stale text, kept past → due-now.
+const MIDNIGHT_ROLL_MAX_MS = 6 * 3_600_000;
 // Month-date weekly form (transcript/API error text):
 //   "resets Jul 4 at 12:30am (Asia/Calcutta)"
 const RESET_DATE_REGEX = /resets?\s+(?:on\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+\d{4})?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(([^)]+)\))?/i;
@@ -277,6 +282,13 @@ export function resetAtMs(parsed, {
       // past clock times stay past so the outer guard returns due-now
       // instead of a blind +24h.
       if (bannerAt != null || parsed.ambiguous) t += 86_400_000;
+      // Midnight cross on an undated live scrape: "resets 12:04am" seen at
+      // 9pm parses ~21h past. A limit banner only announces times inside its
+      // own window, so when tomorrow's occurrence is within that short lead
+      // it IS tomorrow — a stale banner rolled here would have to be ≥18h
+      // old, far beyond any window. Leaving it past would fire a due-now
+      // resume straight into a still-live limit.
+      else if (t + 86_400_000 - anchor <= MIDNIGHT_ROLL_MAX_MS) t += 86_400_000;
     }
     return t;
   }

@@ -248,3 +248,20 @@ test('sourceRank orders absolute > relative > fallback', () => {
   assert.ok(sourceRank('absolute') > sourceRank('relative'));
   assert.ok(sourceRank('relative') > sourceRank('fallback'));
 });
+
+test('undated banner crossing midnight rolls to tomorrow (live scrape)', () => {
+  // Seen at 9pm UTC, announcing 12:04am — 3h ahead across midnight. Must NOT
+  // stay past (that fires a due-now resume into a still-live limit).
+  const now = new Date('2026-07-16T21:00:00Z');
+  const { at, source } = resetAtMs(parseResetTime('resets 12:04am (UTC)'), { now, marginMs: 0 });
+  assert.equal(source, 'absolute');
+  assert.equal(new Date(at).toISOString(), '2026-07-17T00:04:00.000Z');
+});
+
+test('undated banner hours-stale stays past → due-now (no blind +24h)', () => {
+  // Seen at 6pm, announcing 3pm — 3h stale. Tomorrow's occurrence is 21h out,
+  // far beyond any window lead: keep it past so the caller dues-now.
+  const now = new Date('2026-07-16T18:00:00Z');
+  const { at } = resetAtMs(parseResetTime('resets 3pm (UTC)'), { now, marginMs: 0 });
+  assert.ok(at <= now.getTime(), `expected past, got ${new Date(at).toISOString()}`);
+});
