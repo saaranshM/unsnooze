@@ -119,6 +119,7 @@ test('applyFixes kills csg processes, unloads+removes units, archives the state 
   const ran = [];
   const report = await runDoctor({
     runner: () => ({ status: 0, stdout: '  42 node /x/bin/csg.js _monitor %1' }),
+    platform: 'darwin',            // pin: applyFixes picks launchctl vs systemctl by this
     launchAgentsDir: la,
     csgStateDir: csgState,
     csgBinPath: '/x/bin/csg',
