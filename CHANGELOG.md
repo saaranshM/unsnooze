@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.12.1 — 2026-07-16
+
+- CI-only: pin the platform in a doctor test whose `launchctl` assertion
+  failed on Linux runners. No runtime changes — this is 1.12.0 plus a green
+  release pipeline (1.12.0 was tagged but never published).
+
 ## 1.12.0 — 2026-07-16
 
 - **Daemon PATH fix** (fix: every launchd-daemon revival on Homebrew Macs died
