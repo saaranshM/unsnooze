@@ -236,10 +236,10 @@ function Dashboard({ initialTab = 'status' } = {}) {
   let main;
   switch (active?.id) {
     case 'usage': main = h(UsageTab, { data: usageData }); break;
-    case 'sessions': main = h(SessionsTab, { data: sessionsData, selected: sel }); break;
+    case 'sessions': main = h(SessionsTab, { data: sessionsData, selected: sel, onSelect: setSelected }); break;
     case 'doctor': main = h(DoctorTab, { data: doctorData }); break;
     case 'logs': main = h(LogsTab, { data: logsData, maxRows: bodyRows - 2, scroll: logScroll }); break;
-    default: main = h(StatusTab, { data: statusWithNow, selected: sel });
+    default: main = h(StatusTab, { data: statusWithNow, selected: sel, onSelect: setSelected });
   }
 
   const daemon = statusData?.daemonRunning

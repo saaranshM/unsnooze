@@ -2,10 +2,11 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import { fmtCountdown, bar, countdownPct } from '../data.js';
 import { theme, statusGlyph, gaugeColor } from '../theme.js';
+import { Clickable } from '../mouse.js';
 
 const h = React.createElement;
 
-export function StatusTab({ data, selected = 0 }) {
+export function StatusTab({ data, selected = 0, onSelect } = {}) {
   if (!data) return h(Text, { color: theme.muted }, 'Loading…');
   const { sessions, paused, now } = data;
   const sorted = [...sessions].sort((a, b) => (a.resetAt || 0) - (b.resetAt || 0));
@@ -24,7 +25,7 @@ export function StatusTab({ data, selected = 0 }) {
         const glyph = statusGlyph(s.status);
         const pct = countdownPct(s.resetAt, now);
         const cd = s.resetAt != null ? fmtCountdown(s.resetAt - now) : '?';
-        return h(Box, { key: s.key || i, flexDirection: 'column', marginBottom: 1 },
+        return h(Clickable, { key: s.key || i, onClick: () => onSelect?.(i), flexDirection: 'column', marginBottom: 1 },
           h(Text, null,
             h(Text, { color: theme.accent, bold: true }, sel ? '❯ ' : '  '),
             h(Text, { color: glyph.color }, `${glyph.dot} ${(s.status || '?').toUpperCase().padEnd(9)}`),

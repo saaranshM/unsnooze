@@ -1,10 +1,11 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../theme.js';
+import { Clickable } from '../mouse.js';
 
 const h = React.createElement;
 
-export function SessionsTab({ data, selected = 0 }) {
+export function SessionsTab({ data, selected = 0, onSelect } = {}) {
   if (!data) return h(Text, { color: theme.muted }, 'Loading…');
   if (data.length === 0) return h(Text, { color: theme.muted }, 'No unsnooze-owned mux sessions.');
 
@@ -13,7 +14,7 @@ export function SessionsTab({ data, selected = 0 }) {
     h(Text, null, ' '),
     ...data.map((s, i) => {
       const sel = i === selected;
-      return h(Box, { key: s.name + s.mux, flexDirection: 'column', marginBottom: 1 },
+      return h(Clickable, { key: s.name + s.mux, onClick: () => onSelect?.(i), flexDirection: 'column', marginBottom: 1 },
         h(Text, null,
           h(Text, { color: theme.accent, bold: true }, sel ? '❯ ' : '  '),
           h(Text, { color: s.exited ? theme.muted : theme.ok }, s.exited ? '○ exited' : '● live  '),
