@@ -1,6 +1,6 @@
 // Fleet primitives: host validation, ssh argv hardening, framing, sanitization.
 import { test, after } from 'node:test';
-import assert from 'node:assert';
+import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -78,10 +78,10 @@ test('KEY_RE accepts real session keys, rejects shell metachars', () => {
 
 test('hosts registry: add/list/rm round-trip, atomic file, invalid rejected', async () => {
   const { readHosts, writeHosts, cmdHosts } = await import('../src/fleet.js');
-  assert.deepEqual(readHosts(), {});
+  assert.deepEqual({ ...readHosts() }, {});
   assert.equal(await cmdHosts(['add', 'build1']), 0);                    // dest defaults to name
   assert.equal(await cmdHosts(['add', 'gpu', 'ubuntu@10.0.0.7']), 0);
-  assert.deepEqual(readHosts(), { build1: 'build1', gpu: 'ubuntu@10.0.0.7' });
+  assert.deepEqual({ ...readHosts() }, { build1: 'build1', gpu: 'ubuntu@10.0.0.7' });
   assert.equal(await cmdHosts(['add', 'bad', '-oProxyCommand=x']), 1);  // invalid dest
   assert.equal(await cmdHosts(['rm', 'build1']), 0);
   assert.deepEqual(Object.keys(readHosts()), ['gpu']);
