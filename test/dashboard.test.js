@@ -68,3 +68,22 @@ test('fmtCountdown / bar / countdownPct', () => {
   assert.equal(bar(50, 10).length, 10);
   assert.equal(countdownPct(Date.now() - 1000, Date.now()), 100);
 });
+
+test('FleetTab renders host states, sessions, and attach hints', async () => {
+  const { renderToString } = await import('ink');
+  const React = (await import('react')).default;
+  const { FleetTab } = await import('../src/dashboard/tabs/FleetTab.js');
+  const data = [
+    { host: 'gpu', state: 'online', latencyMs: 200, at: Date.now(), dest: 'ubuntu@10.0.0.7',
+      envelope: { sessions: [{ key: 'k1', agent: 'claude', status: 'stopped', resetAt: Date.now() + 3_600_000, mux: 'tmux', muxSession: 'unsnooze', cwd: '/w' }] } },
+    { host: 'dead', state: 'unreachable', at: Date.now(), dest: 'dead', error: 'timeout' },
+    { host: 'old', state: 'skew', at: Date.now(), dest: 'old' },
+  ];
+  const out = renderToString(React.createElement(FleetTab, { data, selected: 0 }));
+  assert.match(out, /gpu/);
+  assert.match(out, /online/);
+  assert.match(out, /STOPPED|stopped/);
+  assert.match(out, /ssh -t ubuntu@10\.0\.0\.7/);
+  assert.match(out, /unreachable/);
+  assert.match(out, /skew/);
+});

@@ -12,6 +12,7 @@ import {
 } from '../usage.js';
 import { listOwnedSessions } from '../reap.js';
 import { runDoctor } from '../doctor.js';
+import { fetchFleet, readHosts } from '../fleet.js';
 
 function pidAlive(pid) {
   if (!pid) return false;
@@ -70,6 +71,30 @@ export async function loadSessionsSnapshot() {
 
 export async function loadDoctorSnapshot() {
   return runDoctor({});
+}
+
+// Thin wrapper over fetchFleet() — ssh fan-out is per-host timeout-bounded
+// there, so this can just be awaited like loadUsageSnapshot. `dest` is
+// stitched back onto each result (fetchHost doesn't carry it) so tabs can
+// build ssh -t attach hints without re-reading the hosts file.
+export async function loadFleetSnapshot() {
+  const hosts = readHosts();
+  const results = await fetchFleet({ hosts });
+  return results.map(r => ({ ...r, dest: hosts[r.host] }));
+}
+
+// Flat (host, dest, session) rows for every stopped session across the
+// fleet, in host order — the single source of truth for row ordering so
+// FleetTab's rendered list and App's selection/keybinding math never drift
+// apart.
+export function flattenFleetStopped(fleetData) {
+  if (!fleetData) return [];
+  const out = [];
+  for (const r of fleetData) {
+    const sessions = (r.envelope?.sessions ?? []).filter(s => s.status === 'stopped');
+    for (const s of sessions) out.push({ host: r.host, dest: r.dest || r.host, session: s });
+  }
+  return out;
 }
 
 export function loadLogsSnapshot({ maxLines = 40 } = {}) {

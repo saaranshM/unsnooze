@@ -7,16 +7,20 @@ import { UsageTab } from './tabs/UsageTab.js';
 import { SessionsTab } from './tabs/SessionsTab.js';
 import { DoctorTab } from './tabs/DoctorTab.js';
 import { LogsTab } from './tabs/LogsTab.js';
+import { FleetTab } from './tabs/FleetTab.js';
 import {
   loadStatusSnapshot,
   loadUsageSnapshot,
   loadSessionsSnapshot,
   loadDoctorSnapshot,
   loadLogsSnapshot,
+  loadFleetSnapshot,
+  flattenFleetStopped,
 } from './data.js';
 import { TAGLINE } from './mark.js';
 import { MouseProvider, useMouse, useMouseWheel, Clickable } from './mouse.js';
 import { isMouseNoise } from './mouse-protocol.js';
+import { remoteAction } from '../fleet.js';
 
 const h = React.createElement;
 
@@ -26,13 +30,15 @@ const TABS = [
   { id: 'sessions', label: 'Sessions', key: '3' },
   { id: 'doctor', label: 'Doctor', key: '4' },
   { id: 'logs', label: 'Logs', key: '5' },
+  { id: 'fleet', label: 'Fleet', key: '6' },
 ];
 
 const HELP_ROWS = [
-  ['1–5', 'switch tab'],
+  ['1–6', 'switch tab'],
   ['tab / shift-tab', 'next / prev tab'],
   ['j k / ↓ ↑', 'move selection'],
   ['r', 'refresh now'],
+  ['R / C', 'fleet: resume / cancel selected remote session'],
   ['m', 'toggle mouse (click tabs/rows, wheel scroll)'],
   ['shift+click', 'select text while mouse is on (Option in iTerm2)'],
   ['?', 'toggle this help'],
@@ -98,7 +104,9 @@ function Dashboard({ initialTab = 'status' } = {}) {
   const [sessionsData, setSessionsData] = useState(null);
   const [doctorData, setDoctorData] = useState(null);
   const [logsData, setLogsData] = useState(null);
+  const [fleetData, setFleetData] = useState(null);
   const [usageBusy, setUsageBusy] = useState(false);
+  const [fleetBusy, setFleetBusy] = useState(false);
   const [err, setErr] = useState(null);
   const tabRef = useRef(tab);
   tabRef.current = tab;
@@ -153,6 +161,23 @@ function Dashboard({ initialTab = 'status' } = {}) {
     }
   }, []);
 
+  // ssh fan-out — timeout-bounded per host inside fetchFleet, but still a
+  // real network round trip. Awaited like loadUsageSnapshot; a busy flag
+  // keeps the header honest without blocking other tabs (the interval below
+  // only fires this on the fleet tab, every 15 ticks, or on-demand via `r`).
+  const refreshFleet = useCallback(async () => {
+    setFleetBusy(true);
+    try {
+      setFleetData(await loadFleetSnapshot());
+      setLastRefresh(Date.now());
+      setErr(null);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setFleetBusy(false);
+    }
+  }, []);
+
   const refreshActive = useCallback(() => {
     refreshStatus();
     const id = TABS[tabRef.current]?.id;
@@ -160,7 +185,8 @@ function Dashboard({ initialTab = 'status' } = {}) {
     else if (id === 'sessions') refreshSessions();
     else if (id === 'doctor') refreshDoctor();
     else if (id === 'logs') refreshLogs();
-  }, [refreshStatus, refreshUsage, refreshSessions, refreshDoctor, refreshLogs]);
+    else if (id === 'fleet') refreshFleet();
+  }, [refreshStatus, refreshUsage, refreshSessions, refreshDoctor, refreshLogs, refreshFleet]);
 
   useEffect(() => {
     refreshStatus();
@@ -169,6 +195,7 @@ function Dashboard({ initialTab = 'status' } = {}) {
     else if (id === 'sessions') refreshSessions();
     else if (id === 'doctor') refreshDoctor();
     else if (id === 'logs') refreshLogs();
+    else if (id === 'fleet') refreshFleet();
     setSelected(0);
     setLogScroll(0);
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -183,11 +210,31 @@ function Dashboard({ initialTab = 'status' } = {}) {
       if (tid === 'logs' && n % 2 === 0) refreshLogs();
       if (tid === 'usage' && n % 5 === 0) refreshUsage();
       if (tid === 'sessions' && n % 3 === 0) refreshSessions();
+      if (tid === 'fleet' && n % 15 === 0) refreshFleet();
     }, 1000);
     return () => clearInterval(id);
-  }, [refreshStatus, refreshUsage, refreshSessions, refreshLogs]);
+  }, [refreshStatus, refreshUsage, refreshSessions, refreshLogs, refreshFleet]);
 
   const mouse = useMouse();
+
+  // Fire-and-forget: remote resume/cancel act on marks only (the remote's
+  // own daemon does the typing under its own gates — see src/fleet.js).
+  // Result surfaces in the header error slot like any other dashboard error.
+  const handleFleetAction = useCallback((verb) => {
+    const rows = flattenFleetStopped(fleetData);
+    if (rows.length === 0) return;
+    const row = rows[Math.min(selected, rows.length - 1)];
+    if (!row) return;
+    const { host, dest, session } = row;
+    const id8 = session.key ? session.key.slice(0, 8) : (session.sessionId || '').slice(0, 8);
+    remoteAction(host, dest, verb, session.key)
+      .then((res) => {
+        setErr(res.ok
+          ? `fleet: ${verb} ${host}/${id8} ok`
+          : `fleet: ${verb} ${host}/${id8} failed — ${res.error}`);
+      })
+      .catch((e) => setErr(`fleet: ${verb} ${host}/${id8} failed — ${e.message}`));
+  }, [fleetData, selected]);
 
   useInput((input, key) => {
     if (isMouseNoise(input)) return;   // leaked SGR fragments are not keys
@@ -200,7 +247,9 @@ function Dashboard({ initialTab = 'status' } = {}) {
       setTab(t => (key.shift ? (t + TABS.length - 1) % TABS.length : (t + 1) % TABS.length));
       return;
     }
-    if (input >= '1' && input <= '5') { setTab(Number(input) - 1); return; }
+    if (input >= '1' && input <= '6') { setTab(Number(input) - 1); return; }
+    if (TABS[tabRef.current]?.id === 'fleet' && input === 'R') { handleFleetAction('resume'); return; }
+    if (TABS[tabRef.current]?.id === 'fleet' && input === 'C') { handleFleetAction('cancel'); return; }
     if (input === 'j' || key.downArrow) { setSelected(s => s + 1); return; }
     if (input === 'k' || key.upArrow) { setSelected(s => Math.max(0, s - 1)); }
   });
@@ -208,7 +257,7 @@ function Dashboard({ initialTab = 'status' } = {}) {
   useMouseWheel((ev) => {
     if (!ev.wheel) return;
     const id = TABS[tabRef.current]?.id;
-    if (id === 'status' || id === 'sessions') {
+    if (id === 'status' || id === 'sessions' || id === 'fleet') {
       if (ev.wheel === 'down') setSelected(s => s + 1);
       else setSelected(s => Math.max(0, s - 1));
     } else if (id === 'logs') {
@@ -220,7 +269,9 @@ function Dashboard({ initialTab = 'status' } = {}) {
     ? (statusData?.sessions?.length || 0)
     : TABS[tab]?.id === 'sessions'
       ? (sessionsData?.length || 0)
-      : 0;
+      : TABS[tab]?.id === 'fleet'
+        ? flattenFleetStopped(fleetData).length
+        : 0;
   const sel = listLen ? Math.min(selected, listLen - 1) : 0;
   const ago = Math.max(0, Math.round((nowTick - lastRefresh) / 1000));
   const active = TABS[tab];
@@ -240,6 +291,7 @@ function Dashboard({ initialTab = 'status' } = {}) {
     case 'sessions': main = h(SessionsTab, { data: sessionsData, selected: sel, onSelect: setSelected }); break;
     case 'doctor': main = h(DoctorTab, { data: doctorData }); break;
     case 'logs': main = h(LogsTab, { data: logsData, maxRows: bodyRows - 2, scroll: logScroll }); break;
+    case 'fleet': main = h(FleetTab, { data: fleetData, selected: sel, onSelect: setSelected }); break;
     default: main = h(StatusTab, { data: statusWithNow, selected: sel, onSelect: setSelected });
   }
 
@@ -264,7 +316,7 @@ function Dashboard({ initialTab = 'status' } = {}) {
         ),
         daemon,
         h(Text, { color: theme.muted, dimColor: true },
-          `refreshed ${ago}s ago${usageBusy ? ' · scanning…' : ''}`),
+          `refreshed ${ago}s ago${usageBusy || fleetBusy ? ' · scanning…' : ''}`),
       ),
     ),
     showWordmark
@@ -285,7 +337,7 @@ function Dashboard({ initialTab = 'status' } = {}) {
     h(Text, { color: theme.muted, dimColor: true }, '─'.repeat(Math.max(0, cols - 2))),
     h(Box, { flexDirection: 'row', justifyContent: 'space-between' },
       h(Box, { flexDirection: 'row' },
-        h(Text, { color: theme.muted }, ' 1-5 tabs · j/k move · '),
+        h(Text, { color: theme.muted }, ' 1-6 tabs · j/k move · '),
         h(Clickable, { onClick: refreshActive }, h(Text, { color: theme.muted }, 'r refresh')),
         h(Text, { color: theme.muted }, ' · '),
         h(Clickable, { onClick: () => setShowHelp(s => !s) },
