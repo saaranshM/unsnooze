@@ -48,7 +48,7 @@ function runAgentFallback(agentId, args) {
 
 // Only human-facing commands may print update notices — never the wrapper
 // passthrough, hooks, or daemons (their output lands in agent panes/logs).
-const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'doctor', 'preview', 'usage', 'dashboard', 'help', '-h', '--help', '--help-unsnooze']);
+const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'doctor', 'preview', 'usage', 'dashboard', 'hosts', 'fleet', 'help', '-h', '--help', '--help-unsnooze']);
 
 // Every named subcommand; anything else (or no args) is an agent launch.
 const NAMED_COMMANDS = new Set([
@@ -153,6 +153,10 @@ async function main() {
     case 'usage': {
       const { cmdUsage } = await import('../src/usage.js');
       return cmdUsage(rest);
+    }
+    case 'hosts': {
+      const { cmdHosts } = await import('../src/fleet.js');
+      return cmdHosts(rest);
     }
     case 'install': {
       const { cmdInstall } = await import('../src/install.js');
@@ -273,6 +277,7 @@ Usage:
                                    when a wake is actionable, else 0)
   unsnooze dashboard [tab]         live TUI (status|usage|sessions|doctor|logs) — q to quit,
                                    mouse: click/wheel (m toggles)
+  unsnooze hosts [add|rm|list]     register ssh hosts for the fleet view
   unsnooze usage [--json]          account burn rate & time-to-limit forecast
                                    (--install-statusline for exact Claude %,
                                     --uninstall-statusline to remove it)

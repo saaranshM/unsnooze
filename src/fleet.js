@@ -5,6 +5,7 @@
 // allowlisted host tokens, closed verb set, sentinel-framed JSON, and
 // control-char-stripped ingest.
 import { join } from 'node:path';
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { STATE_DIR } from './config.js';
 
 export const SCHEMA = 1;
@@ -92,4 +93,69 @@ export function validateEnvelope(obj) {
     return { ok: false, reason: `version skew (remote schema ${obj.schema}, local ${SCHEMA})` };
   }
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Host registry — ~/.unsnooze/hosts.json  { "<name>": "<ssh destination>" }
+// A separate single-purpose file (not config.json): settings.js has no
+// dynamic-key support and the config surface stays small.
+// ---------------------------------------------------------------------------
+
+const HOSTS_FILE = join(STATE_DIR, 'hosts.json');
+
+export function readHosts() {
+  const out = Object.create(null);
+  try {
+    const raw = JSON.parse(readFileSync(HOSTS_FILE, 'utf-8'));
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const [name, dest] of Object.entries(raw)) {
+        if (validHostToken(name) && validHostToken(dest)) out[name] = dest;
+      }
+    }
+  } catch { /* absent or unreadable → empty */ }
+  return out;
+}
+
+export function writeHosts(hosts) {
+  mkdirSync(STATE_DIR, { recursive: true });
+  const tmp = HOSTS_FILE + `.tmp.${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(hosts, null, 2) + '\n');
+  renameSync(tmp, HOSTS_FILE);
+}
+
+export async function cmdHosts(args = []) {
+  const [verb, name, dest] = args;
+  const hosts = readHosts();
+  if (verb === 'list' || verb === undefined) {
+    const names = Object.keys(hosts);
+    if (names.length === 0) {
+      console.log('unsnooze: no hosts registered. Add one: unsnooze hosts add <name> [ssh-destination]');
+      return 0;
+    }
+    for (const n of names) console.log(`  ${n.padEnd(16)} ${hosts[n]}`);
+    return 0;
+  }
+  if (verb === 'add') {
+    const d = dest ?? name;
+    if (!validHostToken(name) || !validHostToken(d)) {
+      console.error('unsnooze: invalid host name/destination (letters, digits, . _ @ - only; no leading -).');
+      return 1;
+    }
+    hosts[name] = d;
+    writeHosts(hosts);
+    console.log(`unsnooze: host ${name} → ${d}. It needs unsnooze installed and ssh key access.`);
+    return 0;
+  }
+  if (verb === 'rm') {
+    if (!(name in hosts)) {
+      console.error(`unsnooze: no such host: ${name}`);
+      return 1;
+    }
+    delete hosts[name];
+    writeHosts(hosts);
+    console.log(`unsnooze: removed ${name}.`);
+    return 0;
+  }
+  console.error('usage: unsnooze hosts [list | add <name> [ssh-destination] | rm <name>]');
+  return 2;
 }
