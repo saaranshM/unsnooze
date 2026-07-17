@@ -206,6 +206,7 @@ function Dashboard({ initialTab = 'status' } = {}) {
   });
 
   useMouseWheel((ev) => {
+    if (!ev.wheel) return;
     const id = TABS[tabRef.current]?.id;
     if (id === 'status' || id === 'sessions') {
       if (ev.wheel === 'down') setSelected(s => s + 1);

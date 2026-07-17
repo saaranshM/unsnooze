@@ -183,8 +183,10 @@ test('installMouseCleanup: SIGTERM clears mouse modes and exits 143', { skip: SK
   try {
     await ready;
     child.kill('SIGTERM');
+    // 'close' (not 'exit') guarantees stdio streams have finished emitting
+    // 'data' before we assert on the accumulated output.
     const [code] = await new Promise((resolve) => {
-      child.on('exit', (exitCode, signal) => resolve([exitCode, signal]));
+      child.on('close', (exitCode, signal) => resolve([exitCode, signal]));
     });
     assert.equal(code, 143);
     assert.match(output.text, /\x1b\[\?1002l/);

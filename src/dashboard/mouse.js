@@ -51,6 +51,7 @@ export function MouseProvider({ initialEnabled = true, children }) {
 
   useEffect(() => {
     if (!enabled || !supported) return undefined;
+    carry.current = '';
     stdout.write(MOUSE_ENABLE);
     const onData = (chunk) => {
       const { events, rest } = parseSgrEvents(carry.current + String(chunk));
