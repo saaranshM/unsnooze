@@ -35,7 +35,8 @@ export function MouseProvider({ initialEnabled = true, children }) {
 
   const dispatch = useCallback((ev) => {
     if (ev.type === 'press' && ev.button === 'left') {
-      const hit = hitTest(zonesToRects([...zones.current.values()]), ev.x, ev.y);
+      const withClick = [...zones.current.values()].filter(z => z.onClick);
+      const hit = hitTest(zonesToRects(withClick), ev.x, ev.y);
       if (hit?.onClick) hit.onClick(ev);
       return;
     }
@@ -108,6 +109,8 @@ export function Clickable({ onClick, onWheel, children, ...boxProps }) {
   if (idRef.current == null) idRef.current = `zone-${++zoneSeq}`;
   const cbs = useRef({ onClick, onWheel });
   cbs.current = { onClick, onWheel };
+  // Handler presence is fixed at mount (undefined→function post-mount is a no-op; remount to change).
+  // Handler identity stays fresh via cbs ref, so onClick/onWheel changes do not require re-registration.
   useEffect(() => {
     if (!ctx) return undefined;
     return ctx.registerZone({

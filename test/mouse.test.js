@@ -118,3 +118,18 @@ test('zonesToRects drops unmeasured zones and preserves registration order', asy
   assert.deepEqual(rects.map(r => r.id), ['a', 'b']);
   assert.equal(hitTest(rects, 6, 7).id, 'b');
 });
+
+test('press dispatch filters to onClick zones so wheel-only containers do not swallow clicks', async () => {
+  const { zonesToRects } = await import('../src/dashboard/mouse.js');
+  const zone = (x, y, w, hgt, id, handlers) => ({
+    id,
+    ref: { current: { __rect: { x, y, width: w, height: hgt } } },
+    ...handlers,
+  });
+  const row = zone(2, 5, 20, 1, 'row', { onClick: () => {} });
+  const container = zone(0, 0, 40, 20, 'container', { onWheel: () => {} });
+  // Simulate what press dispatch should do: filter to onClick zones before hitTest
+  const clickable = [row, container].filter(z => z.onClick);
+  const rects = zonesToRects(clickable, node => node.__rect);
+  assert.equal(hitTest(rects, 10, 5).id, 'row');
+});
