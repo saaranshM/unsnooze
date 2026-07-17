@@ -16,12 +16,19 @@ export function installMouseCleanup(stdout = process.stdout) {
   if (cleanupInstalled) return () => {};
   cleanupInstalled = true;
   let done = false;
+  const writeDisable = () => {
+    try { stdout.write(MOUSE_DISABLE_ALL); } catch { /* stream gone */ }
+  };
   const off = () => {
     if (done) return;
     done = true;
-    try { stdout.write(MOUSE_DISABLE_ALL); } catch { /* stream gone */ }
+    writeDisable();
   };
   const onExit = () => off();
+  // process.exit() here routes through signal-exit's patched reallyExit
+  // (installed by Ink), which runs Ink's unmount — restoring the alt-screen —
+  // before the process actually terminates. Fragile coupling: if Ink ever
+  // stops patching reallyExit, exit() would terminate before unmount runs.
   const onSignal = (sig) => () => {
     off();
     process.exit(sig === 'SIGINT' ? 130 : 143);
@@ -30,7 +37,15 @@ export function installMouseCleanup(stdout = process.stdout) {
   const onTerm = onSignal('SIGTERM');
   const onTstp = () => {
     // Write mouse-off before ink suspends; MouseProvider re-enables on SIGCONT.
-    try { stdout.write(MOUSE_DISABLE_ALL); } catch { /* stream gone */ }
+    // Bypasses the `done` gate intentionally: SIGTSTP can fire repeatedly
+    // (stop/cont/stop) across a single process lifetime, unlike exit/INT/TERM.
+    writeDisable();
+    // Installing a SIGTSTP listener removes Node's default stop disposition,
+    // so an external `kill -TSTP` would otherwise no-op instead of suspending
+    // the process. Re-raise with SIGSTOP (uncatchable) to restore that
+    // behavior; SIGCONT resume re-enables the mouse via the provider's
+    // existing handler.
+    if (process.platform !== 'win32') process.kill(process.pid, 'SIGSTOP');
   };
   process.on('exit', onExit);
   process.on('SIGINT', onInt);

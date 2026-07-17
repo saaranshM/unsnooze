@@ -1,6 +1,7 @@
 // SGR-1006 mouse protocol: parsing, chunk reassembly, hit-testing.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn, execFileSync } from 'node:child_process';
 import {
   MOUSE_ENABLE,
   MOUSE_DISABLE_ALL,
@@ -8,6 +9,36 @@ import {
   isMouseNoise,
   hitTest,
 } from '../src/dashboard/mouse-protocol.js';
+
+// SIGTERM/SIGTSTP semantics below are unix process-signal behavior; native
+// Windows has no SIGSTOP/SIGTSTP and ps -o stat= doesn't exist there.
+const SKIP_WIN32 = process.platform === 'win32' ? 'unix signal semantics (SIGTSTP/SIGSTOP, ps -o stat=)' : false;
+
+// Child prints 'ready' once the cleanup handlers are installed, then idles
+// via setInterval so the process stays alive to receive a signal.
+const CLEANUP_CHILD_SCRIPT = `
+  const { installMouseCleanup } = await import(process.cwd() + '/src/dashboard/run.js');
+  installMouseCleanup(process.stdout);
+  process.stdout.write('ready\\n');
+  setInterval(() => {}, 1000);
+`;
+
+// Returns { child, output, ready } — `output` accumulates for the child's
+// whole life (so post-signal writes like the mouse-disable sequence are
+// captured too); `ready` resolves once the child has installed its handlers.
+function spawnCleanupChild() {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', CLEANUP_CHILD_SCRIPT], {
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const output = { text: '' };
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  child.stdout.on('data', (chunk) => {
+    output.text += chunk.toString();
+    if (output.text.includes('ready')) resolveReady();
+  });
+  return { child, output, ready };
+}
 
 test('mode strings: enable 1002+1006, disable everything defensively', () => {
   assert.equal(MOUSE_ENABLE, '\x1b[?1002h\x1b[?1006h');
@@ -145,4 +176,44 @@ test('installMouseCleanup writes disable-all on process exit exactly once', asyn
   assert.equal((out.match(/\x1b\[\?1003l/g) || []).length, 1);
   assert.match(out, /\x1b\[\?1002l/);
   assert.match(out, /\x1b\[\?1006l/);
+});
+
+test('installMouseCleanup: SIGTERM clears mouse modes and exits 143', { skip: SKIP_WIN32 }, async () => {
+  const { child, output, ready } = spawnCleanupChild();
+  try {
+    await ready;
+    child.kill('SIGTERM');
+    const [code] = await new Promise((resolve) => {
+      child.on('exit', (exitCode, signal) => resolve([exitCode, signal]));
+    });
+    assert.equal(code, 143);
+    assert.match(output.text, /\x1b\[\?1002l/);
+    assert.match(output.text, /\x1b\[\?1006l/);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }
+  }
+});
+
+test('installMouseCleanup: SIGTSTP actually suspends the process (does not swallow the stop)', { skip: SKIP_WIN32 }, async () => {
+  const { child, ready } = spawnCleanupChild();
+  try {
+    await ready;
+    child.kill('SIGTSTP');
+    const deadline = Date.now() + 2000;
+    let stat = '';
+    while (Date.now() < deadline) {
+      try {
+        stat = execFileSync('ps', ['-o', 'stat=', '-p', String(child.pid)], { encoding: 'utf-8' }).trim();
+      } catch {
+        stat = ''; // process already gone — treat as failure below, loop will time out
+      }
+      if (stat.startsWith('T')) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(stat.startsWith('T'), `expected suspended ('T') state within 2s, got "${stat}"`);
+  } finally {
+    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+  }
 });
