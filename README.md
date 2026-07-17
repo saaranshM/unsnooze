@@ -68,6 +68,22 @@ your agent handles permissions.
 - **Reversible install.** The settings hook and rc-file wrappers are backed up
   first (`*.unsnooze-orig` pristine + `*.unsnooze-bak` rolling); `unsnooze
   uninstall` removes every change. Releases are published with npm provenance.
+- **Fleet adds no network surface.** No listening ports, no custom auth, no
+  tokens. Transport is your own OpenSSH (`~/.ssh/config`, keys, agent);
+  unsnooze never sets `StrictHostKeyChecking=no` and fails fast on unknown
+  hosts instead of auto-trusting them.
+- **The remote is the authority.** Fleet resume only marks a session due —
+  the remote daemon types under its own gates (foreground, idle, your
+  configured message only). A compromised viewer cannot make a remote type
+  anything else.
+- **Remote output is untrusted.** Everything a host returns is
+  control-character-stripped and length-capped before it touches your
+  terminal (ANSI-injection defense), and parsed fields are extracted —
+  never merged — into fresh objects.
+- **Lock a key to unsnooze (optional, recommended for automation):**
+  `command="unsnooze _remote",restrict ssh-ed25519 AAAA… unsnooze-fleet`
+  in the remote `authorized_keys` confines that key to the fleet
+  entrypoint — it can never open a shell.
 
 **Honest limits:** unsnooze *does* inject keystrokes into your live terminal on
 your behalf, and it does not sandbox your agent or defend against prompt
@@ -276,6 +292,37 @@ unsnooze report [agent]                # capture a pane to report an undetected 
 unsnooze uninstall [--purge]           # remove wrappers + hooks (+ state with --purge)
 unsnooze help                          # full command list (also -h / --help)
 ```
+
+## Fleet: sessions on every machine
+
+See and act on unsnooze sessions on other machines from one terminal — over
+your own SSH, no new service to run.
+
+```sh
+unsnooze hosts add work you@work-box.local   # register an ssh destination
+unsnooze hosts list                          # registered hosts
+unsnooze hosts rm work                       # forget a host
+unsnooze fleet [--json]                      # every host's sessions, fanned out over ssh
+unsnooze dashboard fleet                     # live Fleet tab — r resumes a selected stopped session
+```
+
+A registered host needs **unsnooze installed** and **ssh key auth** (no
+passwords) — nothing new to open or configure; fleet rides your existing
+`~/.ssh/config`, keys, and agent. **Before adding a host, connect to it the
+normal way once** (`ssh <host>`) so OpenSSH pins the host key itself —
+unsnooze never weakens host-key checking to skip that step, so an unknown or
+changed host fails fast instead of being silently trusted.
+
+Fleet is *see and mark*, not *type remotely*: `unsnooze fleet` and the
+dashboard's **Fleet** tab list every reachable host's tracked sessions
+(state, reset countdown, attach hint). Selecting a stopped remote session and
+pressing **`r`** only marks it due — the remote's own daemon does the actual
+keystrokes, under the same ownership/liveness/menu gates as a local session.
+Resumed and stopped sessions print an attach hint
+(`ssh -t <host> 'tmux new -A -s <session>'` / `zellij attach <session>`) so
+you can hop over and watch. An unreachable or out-of-date host shows
+`unreachable`/`skew` rather than blocking the rest of the fleet, and falls
+back to its last-known state (marked `stale`) for up to 24h.
 
 ## Settings
 

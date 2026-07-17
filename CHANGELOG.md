@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Fleet — sessions on every machine, over your own SSH**: `unsnooze hosts
+  [add|rm|list]` registers ssh destinations; `unsnooze fleet [--json]` and
+  the dashboard's new **Fleet** tab fan out to every host in parallel and
+  show each one's tracked sessions (state, reset countdown, attach hint),
+  with a bounded-concurrency ssh pool, per-host timeouts, and a 24h stale
+  cache so one dead box never blocks the rest. `unsnooze _remote` is the
+  single remote entrypoint (`status`/`resume`/`cancel`), safe to lock to an
+  `authorized_keys` forced command; `unsnooze status --json` and a shared
+  resume core back both the local and remote paths. Security posture: no
+  listening ports, no custom auth, no tokens — transport is plain OpenSSH
+  with host-key checking never weakened; the remote is always the one that
+  types, under its own gates; and every field a remote returns is
+  control-character-stripped, length-capped, and extracted into fresh
+  objects before it touches your terminal or state.
 - **Dashboard mouse support**: click tabs and session rows, wheel-scroll the
   status/sessions lists and a real scrollback window in Logs, clickable
   footer hints (refresh / help / quit). Full keyboard parity kept; `m` (or
