@@ -190,7 +190,6 @@ function collectChild(child, timeoutMs) {
       timedOut = true;
       try { child.kill('SIGKILL'); } catch { /* already gone */ }
     }, timeoutMs);
-    if (typeof timer.unref === 'function') timer.unref();
     child.stdout?.on('data', (chunk) => {
       if (capped) return;
       out = Buffer.concat([out, chunk]);
@@ -332,7 +331,7 @@ export async function fetchFleet({ hosts = readHosts(), concurrency = 4, spawnFn
     const cached = cacheByHost.get(r.host);
     if ((r.state === 'unreachable' || r.state === 'error') && cached?.envelope
       && Number.isFinite(cached.at) && (Date.now() - cached.at) < STALE_WINDOW_MS) {
-      return { host: r.host, state: 'stale', at: r.at, cachedAt: cached.at, envelope: cached.envelope, error: r.error };
+      return { host: r.host, state: 'stale', at: r.at, cachedAt: cached.at, envelope: sanitizeEnvelope(cached.envelope), error: r.error };
     }
     return r;
   });

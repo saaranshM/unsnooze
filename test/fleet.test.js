@@ -185,3 +185,54 @@ test('attachHintRemote wraps the local hint in ssh -t', async () => {
   assert.equal(attachHintRemote('gpu', 'tmux', 'unsnooze'), `ssh -t gpu 'tmux new -A -s unsnooze'`);
   assert.equal(attachHintRemote('gpu', 'zellij', 'unsnooze'), `ssh -t gpu 'zellij attach unsnooze'`);
 });
+
+test('collectChild timeout is self-contained (not unref\'d) so safety net always works', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  // Test that a timeout still kills the process even without external keep-alive
+  const slow = () => {
+    const p = new EventEmitter();
+    p.stdout = new EventEmitter();
+    p.stderr = new EventEmitter();
+    p.kill = () => { p.killed = true; p.emit('close', null, 'SIGKILL'); };
+    // Never emit close, simulating a hung process
+    setTimeout(() => {
+      if (!p.killed) p.emit('close', 0); // only close if not killed
+    }, 10_000);
+    return p;
+  };
+  const r = await fetchHost('h', 'h', { spawnFn: slow, timeoutMs: 50 });
+  assert.equal(r.state, 'unreachable');
+  assert.match(r.error, /timeout/);
+});
+
+test('fetchHost with prompt close does not delay due to cleared timeout', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  const start = Date.now();
+  const r = await fetchHost('h', 'h', { spawnFn: fakeSsh({ stdout: GOOD, delayMs: 5 }), timeoutMs: 5_000 });
+  const elapsed = Date.now() - start;
+  assert.equal(r.state, 'online');
+  // Should resolve quickly (within ~100ms), not wait for the 5s timeout
+  assert.ok(elapsed < 500, `should resolve promptly, took ${elapsed}ms`);
+});
+
+test('fetchFleet re-sanitizes cached envelope to strip injected escapes', async () => {
+  const { fetchFleet, writeFleetCache, sanitizeEnvelope } = await import('../src/fleet.js');
+  // Write a tampered cache entry with ESC in cwd
+  const evilEnvelope = {
+    schema: S, minSchema: 1, cli: '9.9.9', host: 'evil', caps: [],
+    sessions: [{ key: 'k1', agent: 'claude', status: 'stopped', cwd: '/tmp/\x1b]0;x\x07evil', resetAt: Date.now() + 60_000, mux: 'tmux', muxSession: 'unsnooze' }],
+  };
+  writeFleetCache([{ host: 'evil', state: 'online', at: Date.now() - 60_000, envelope: evilEnvelope }]);
+
+  // Force stale path: host unreachable (exit 255), cache is <24h old
+  const spawns = { evil: fakeSsh({ code: 255 }) };
+  const results = await fetchFleet({
+    hosts: { evil: 'evil' },
+    spawnFn: (cmd, args) => spawns[args[args.indexOf('-T') + 1]](),
+  });
+
+  const evil = results.find(r => r.host === 'evil');
+  assert.equal(evil.state, 'stale');
+  // Envelope should be re-sanitized: ESC stripped from cwd
+  assert.equal(evil.envelope.sessions[0].cwd, '/tmp/evil');
+});
