@@ -183,3 +183,10 @@ test('notifyChannel: default auto, env override, enum rejection', () => {
   assert.throws(() => setConfigValue('notifyChannel', 'bogus'), /one of/i);
   setConfigValue('notifyChannel', 'auto');
 });
+
+test('mouse config key: boolean, default on, env override', () => {
+  assert.equal(getConfig('mouse'), true);
+  process.env.UNSNOOZE_MOUSE = 'off';
+  assert.equal(getConfig('mouse'), false);
+  delete process.env.UNSNOOZE_MOUSE;
+});
