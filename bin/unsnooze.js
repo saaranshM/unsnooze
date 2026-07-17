@@ -100,7 +100,7 @@ async function main() {
   switch (cmd) {
     case 'status': {
       const { cmdStatus } = await import('../src/cli.js');
-      return cmdStatus();
+      return cmdStatus(rest);
     }
     case 'resume-now': {
       const { cmdResumeNow } = await import('../src/cli.js');

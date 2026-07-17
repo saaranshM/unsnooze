@@ -1,7 +1,7 @@
 // Fleet primitives: host validation, ssh argv hardening, framing, sanitization.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -88,4 +88,31 @@ test('hosts registry: add/list/rm round-trip, atomic file, invalid rejected', as
   assert.equal(await cmdHosts(['rm', 'nope']), 1);
   assert.equal(await cmdHosts(['list']), 0);
   assert.equal(await cmdHosts(['frobnicate']), 2);                       // usage
+});
+
+test('status --json prints machine shape; resume core marks without typing', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const home = mkdtempSync(join(tmpdir(), 'unsnooze-fleet-e2e-'));
+  const stateDir = join(home, '.unsnooze');
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    version: 1, sessions: {
+      'aaaa1111-2222-3333-4444-555566667777': {
+        key: 'aaaa1111-2222-3333-4444-555566667777',
+        sessionId: 'aaaa1111-2222-3333-4444-555566667777',
+        agent: 'claude', cwd: '/tmp/p', status: 'stopped',
+        resetAt: Date.now() + 3_600_000, resetSource: 'absolute',
+        mux: 'tmux', pane: '%1', muxSession: 'unsnooze', attempts: 0,
+        limitType: '5h', detectedAt: Date.now(),
+      },
+    },
+  }));
+  const env = { ...process.env, UNSNOOZE_STATE_DIR: stateDir, NO_COLOR: '1' };
+  const out = execFileSync(process.execPath, ['bin/unsnooze.js', 'status', '--json'], { env, encoding: 'utf-8' });
+  const j = JSON.parse(out);
+  assert.equal(j.version, 1);
+  assert.equal(j.sessions.length, 1);
+  assert.equal(j.sessions[0].agent, 'claude');
+  assert.equal(j.sessions[0].status, 'stopped');
+  rmSync(home, { recursive: true, force: true });
 });

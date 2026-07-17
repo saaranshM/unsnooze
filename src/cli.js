@@ -37,7 +37,29 @@ export function fmtResetProvenance(s) {
   return via ? `${s.resetSource}, from ${via}` : s.resetSource;
 }
 
-export async function cmdStatus() {
+export async function cmdStatus(args = []) {
+  if (args.includes('--json')) {
+    const state = readState();
+    const daemonRunning = (() => {
+      if (!state.resumerPid) return false;
+      try { process.kill(state.resumerPid, 0); return true; } catch { return false; }
+    })();
+    console.log(JSON.stringify({
+      version: 1,
+      resumerPid: daemonRunning ? state.resumerPid : null,
+      daemonRunning,
+      paused: !getConfig('autoResume'),
+      sessions: Object.values(state.sessions).map(s => ({
+        key: s.key, sessionId: s.sessionId ?? null, agent: s.agent ?? 'claude',
+        cwd: s.cwd ?? null, status: s.status, limitType: s.limitType ?? null,
+        resetAt: s.resetAt ?? null, resetSource: s.resetSource ?? null,
+        mux: s.mux ?? null, pane: s.pane ?? null, muxSession: s.muxSession ?? null,
+        attempts: s.attempts ?? 0, lastError: s.lastError ?? null,
+        workspaceHold: !!s.workspaceHold,
+      })),
+    }, null, 2));
+    return 0;
+  }
   // Interactive TTY → live dashboard (until q). Pipes stay plain.
   if (shouldUseDashboard()) return runDashboard({ tab: 'status' });
 
@@ -119,7 +141,7 @@ export async function cmdStatus() {
   return 0;
 }
 
-function selectKeys(state, idOrAll, statuses = ['stopped']) {
+export function selectKeys(state, idOrAll, statuses = ['stopped']) {
   const candidates = Object.values(state.sessions).filter(s => statuses.includes(s.status));
   if (idOrAll === '--all' || idOrAll === undefined) return candidates.map(s => s.key);
   const match = candidates.filter(s => s.key.startsWith(idOrAll) || (s.sessionId || '').startsWith(idOrAll));
@@ -143,6 +165,16 @@ export async function cmdResumeNow(idOrAll) {
       } catch { /* repo gone or git unhappy — proceed anyway */ }
     }
   }
+  markResumeNow(keys);
+  console.log(`unsnooze: marked ${keys.length} session(s) due now; resumer dispatched.`);
+  return 0;
+}
+
+// Shared core: mark sessions due now + manual (bypasses autoResume off and
+// workspace/context guards), clear any hold, dispatch the resumer. Used by
+// local `resume-now` and (future) remote-trigger fan-out — keep this the
+// single place that owns the mutation semantics.
+export function markResumeNow(keys) {
   updateState(s => {
     for (const key of keys) {
       if (s.sessions[key]) {
@@ -154,8 +186,7 @@ export async function cmdResumeNow(idOrAll) {
     }
   });
   spawnResumerIfNeeded();
-  console.log(`unsnooze: marked ${keys.length} session(s) due now; resumer dispatched.`);
-  return 0;
+  return keys;
 }
 
 export function cmdCancel(idOrAll) {
