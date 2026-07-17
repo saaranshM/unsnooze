@@ -133,3 +133,16 @@ test('press dispatch filters to onClick zones so wheel-only containers do not sw
   const rects = zonesToRects(clickable, node => node.__rect);
   assert.equal(hitTest(rects, 10, 5).id, 'row');
 });
+
+test('installMouseCleanup writes disable-all on process exit exactly once', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+    const { installMouseCleanup } = await import(process.cwd() + '/src/dashboard/run.js');
+    installMouseCleanup(process.stdout);
+    installMouseCleanup(process.stdout); // second install must not double-write
+    process.exit(0);
+  `], { encoding: 'utf-8' });
+  assert.equal((out.match(/\x1b\[\?1003l/g) || []).length, 1);
+  assert.match(out, /\x1b\[\?1002l/);
+  assert.match(out, /\x1b\[\?1006l/);
+});

@@ -2,8 +2,49 @@
 import React from 'react';
 import { render } from 'ink';
 import { App } from './App.js';
+import { MOUSE_DISABLE_ALL } from './mouse-protocol.js';
 
 const h = React.createElement;
+
+// The alt-screen reset does NOT clear mouse tracking modes — a crash or
+// signal-kill without this leaves the user's shell with a hijacked mouse
+// (the lazygit #1764 / opencode #26198 failure class). `exit` doesn't fire
+// on signal default-kills and signal handlers don't cover process.exit(),
+// so install both. Idempotent: only the first install registers.
+let cleanupInstalled = false;
+export function installMouseCleanup(stdout = process.stdout) {
+  if (cleanupInstalled) return () => {};
+  cleanupInstalled = true;
+  let done = false;
+  const off = () => {
+    if (done) return;
+    done = true;
+    try { stdout.write(MOUSE_DISABLE_ALL); } catch { /* stream gone */ }
+  };
+  const onExit = () => off();
+  const onSignal = (sig) => () => {
+    off();
+    process.exit(sig === 'SIGINT' ? 130 : 143);
+  };
+  const onInt = onSignal('SIGINT');
+  const onTerm = onSignal('SIGTERM');
+  const onTstp = () => {
+    // Write mouse-off before ink suspends; MouseProvider re-enables on SIGCONT.
+    try { stdout.write(MOUSE_DISABLE_ALL); } catch { /* stream gone */ }
+  };
+  process.on('exit', onExit);
+  process.on('SIGINT', onInt);
+  process.on('SIGTERM', onTerm);
+  process.on('SIGTSTP', onTstp);
+  return () => {
+    done = true;
+    cleanupInstalled = false;
+    process.off('exit', onExit);
+    process.off('SIGINT', onInt);
+    process.off('SIGTERM', onTerm);
+    process.off('SIGTSTP', onTstp);
+  };
+}
 
 export function shouldUseDashboard({
   force = null,
@@ -29,6 +70,7 @@ export async function runDashboard({ tab = 'status' } = {}) {
     return 1;
   }
 
+  installMouseCleanup(process.stdout);
   const instance = render(h(App, { initialTab: tab }), {
     exitOnCtrlC: true,
     // Full-screen: separate buffer like vim / htop / less — original scrollback restored on quit
@@ -36,6 +78,8 @@ export async function runDashboard({ tab = 'status' } = {}) {
   });
 
   await instance.waitUntilExit();
+  // Belt and braces: normal quit also clears modes (provider already did).
+  process.stdout.write(MOUSE_DISABLE_ALL);
   return 0;
 }
 
