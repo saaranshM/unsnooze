@@ -271,7 +271,8 @@ Usage:
   unsnooze preview [id]            dry-run: what WOULD happen right now, and
                                    why — nothing is typed or opened (exit 2
                                    when a wake is actionable, else 0)
-  unsnooze dashboard [tab]         live TUI (status|usage|sessions|doctor|logs) — q to quit
+  unsnooze dashboard [tab]         live TUI (status|usage|sessions|doctor|logs) — q to quit,
+                                   mouse: click/wheel (m toggles)
   unsnooze usage [--json]          account burn rate & time-to-limit forecast
                                    (--install-statusline for exact Claude %,
                                     --uninstall-statusline to remove it)

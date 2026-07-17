@@ -248,8 +248,9 @@ unsnooze usage — account burn & time-to-limit  (daemon: running · warnings at
 ## Usage
 
 On an interactive TTY, `status` / `usage` / `sessions` open a **live dashboard**
-(`unsnooze dashboard`) with the brand logo (`❯` + rising `zzz`), tabs, and live
-refresh until you press **`q`**. Pipes, `NO_COLOR`, `CI`, and `--json` stay plain.
+(`unsnooze dashboard`) with the brand logo (`❯` + rising `zzz`), tabs, live
+refresh until you press **`q`** — and mouse support: click tabs and rows,
+wheel to scroll (toggle with `m`; hold Shift — Option in iTerm2 — to select text). Pipes, `NO_COLOR`, `CI`, and `--json` stay plain.
 
 ```sh
 claude / codex / grok                  # normal usage — wrapped automatically
@@ -298,6 +299,7 @@ unsnooze help                          # full command list (also -h / --help)
 | `contextGuardTokens` | `100000` | Context-size threshold (tokens) at which `contextGuard` notifies or holds. |
 | `usageWarn` | `notify` | Pre-wall usage warnings from the daemon (`unsnooze usage`): `notify` or `off`. Needs `notifications` on and the daemon running. Env: `UNSNOOZE_USAGE_WARN`. |
 | `usageWarnAt` | `80,95` | Percent thresholds for usage warnings (comma-separated). Non-numeric values fall back to the default — never silently disable. Time tiers (30 / 10 min) are constants, not config keys. Env: `UNSNOOZE_USAGE_WARN_AT`. |
+| `mouse` | `true` | Mouse support in `unsnooze dashboard`: click tabs and session rows, wheel-scroll lists/logs, clickable footer hints. Toggle live with `m`. Hold Shift (Option in iTerm2) to select text while it's on. Env: `UNSNOOZE_MOUSE`. |
 | `reapResumed` | `false` | Opt-in: auto-close `resumed` panes idle longer than `reapIdleAfter`. Off by default — use `unsnooze reap --yes` for explicit cleanup. |
 | `reapIdleAfter` | `604800000` (7d) | Idle age (ms) before an opt-in auto-reap closes a `resumed` pane. |
 | `updateCheck` | `true` | Daily new-version check (a plain GET to the npm registry, nothing identifying is sent). Notices after commands + one desktop toast per version. |

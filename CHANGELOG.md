@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Dashboard mouse support**: click tabs and session rows, wheel-scroll the
+  status/sessions lists and a real scrollback window in Logs, clickable
+  footer hints (refresh / help / quit). Full keyboard parity kept; `m` (or
+  `mouse` config / `UNSNOOZE_MOUSE`) toggles it live so terminal text
+  selection is one keypress away. Tracking modes are always cleared on exit,
+  crash, and Ctrl-Z — no hijacked mouse after quit.
+
 ## 1.13.0 — 2026-07-17
 
 - **`unsnooze usage` — know the wall before you hit it**: burn-rate &
