@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-fleet-test-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
@@ -16,6 +17,8 @@ const {
   validHostToken, sshArgs, frameEnvelope, extractEnvelope,
   stripRemoteText, validateEnvelope, SCHEMA, KEY_RE,
 } = await import('../src/fleet.js');
+const frameIt = frameEnvelope;
+const S = SCHEMA;
 
 test('validHostToken: ssh aliases yes, option-injection and metachars no', () => {
   for (const ok of ['build1', 'user@10.0.0.5', 'vpc-a.internal', 'dev_box.example.com']) {
@@ -115,4 +118,70 @@ test('status --json prints machine shape; resume core marks without typing', asy
   assert.equal(j.sessions[0].agent, 'claude');
   assert.equal(j.sessions[0].status, 'stopped');
   rmSync(home, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// ssh fan-out, cache, `unsnooze fleet`
+// ---------------------------------------------------------------------------
+
+function fakeSsh({ code = 0, stdout = '', delayMs = 5 }) {
+  return () => {
+    const p = new EventEmitter();
+    p.stdout = new EventEmitter();
+    p.stderr = new EventEmitter();
+    p.kill = () => { p.killed = true; p.emit('close', null, 'SIGKILL'); };
+    setTimeout(() => {
+      if (stdout) p.stdout.emit('data', Buffer.from(stdout));
+      p.emit('close', code);
+    }, delayMs);
+    return p;
+  };
+}
+
+const GOOD = frameIt({
+  schema: S, minSchema: 1, cli: '9.9.9', host: 'build1', caps: ['resume', 'cancel'],
+  sessions: [{ key: 'k1', agent: 'claude', status: 'stopped', cwd: '/tmp\x1b[31mX', resetAt: Date.now() + 60_000, mux: 'tmux', muxSession: 'unsnooze' }],
+});
+
+test('fetchHost: online with sanitized fields; motd noise tolerated', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  const r = await fetchHost('build1', 'build1', { spawnFn: fakeSsh({ stdout: 'motd!\n' + GOOD + '\n' }) });
+  assert.equal(r.state, 'online');
+  assert.equal(r.envelope.sessions[0].cwd, '/tmpX');        // CSI stripped on ingest
+  assert.equal(r.envelope.sessions[0].key, 'k1');
+});
+
+test('fetchHost: exit 255 → unreachable; garbage → error; skew detected', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  assert.equal((await fetchHost('h', 'h', { spawnFn: fakeSsh({ code: 255 }) })).state, 'unreachable');
+  assert.equal((await fetchHost('h', 'h', { spawnFn: fakeSsh({ stdout: 'not json' }) })).state, 'error');
+  const skew = frameIt({ schema: 99, minSchema: 99, cli: '9.9.9', host: 'h', caps: [], sessions: [] });
+  assert.equal((await fetchHost('h', 'h', { spawnFn: fakeSsh({ stdout: skew }) })).state, 'skew');
+});
+
+test('fetchHost: timeout kills and reports unreachable', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  const r = await fetchHost('h', 'h', { spawnFn: fakeSsh({ delayMs: 5_000 }), timeoutMs: 50 });
+  assert.equal(r.state, 'unreachable');
+  assert.match(r.error, /timeout/);
+});
+
+test('fetchFleet: dead host does not block others; stale cache is used', async () => {
+  const { fetchFleet, writeFleetCache } = await import('../src/fleet.js');
+  writeFleetCache([{ host: 'dead', state: 'online', at: Date.now() - 60_000, envelope: JSON.parse(GOOD.slice('___UNSNOOZE_BEGIN___'.length, -'___UNSNOOZE_END___'.length)) }]);
+  const spawns = { good: fakeSsh({ stdout: GOOD }), dead: fakeSsh({ code: 255 }) };
+  const results = await fetchFleet({
+    hosts: { good: 'good', dead: 'dead' },
+    spawnFn: (cmd, args) => spawns[args[args.indexOf('-T') + 1]](),
+  });
+  const dead = results.find(r => r.host === 'dead');
+  assert.equal(dead.state, 'stale');                        // cached data survives
+  assert.ok(dead.cachedAt);
+  assert.equal(results.find(r => r.host === 'good').state, 'online');
+});
+
+test('attachHintRemote wraps the local hint in ssh -t', async () => {
+  const { attachHintRemote } = await import('../src/fleet.js');
+  assert.equal(attachHintRemote('gpu', 'tmux', 'unsnooze'), `ssh -t gpu 'tmux new -A -s unsnooze'`);
+  assert.equal(attachHintRemote('gpu', 'zellij', 'unsnooze'), `ssh -t gpu 'zellij attach unsnooze'`);
 });
