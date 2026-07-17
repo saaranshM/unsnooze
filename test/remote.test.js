@@ -80,3 +80,30 @@ test('_remote: unknown verb and bad key exit 1 with framed error', () => {
   assert.equal(runRemote(stateDir, ['resume', 'zzzzzz']).code, 1); // no match
   rmSync(home, { recursive: true, force: true });
 });
+
+test('_remote: write-path exception (lock timeout) emits one framed error line', () => {
+  const { home, stateDir } = seedHome();
+  const lockDir = join(stateDir, 'state.lock');
+  // Hold the lock so acquire times out
+  mkdirSync(lockDir);
+
+  try {
+    const { code, out } = runRemote(stateDir, ['resume', KEY.slice(0, 8)], {
+      UNSNOOZE_LOCK_TIMEOUT_MS: '50', // Very short timeout to trigger faster
+    });
+
+    assert.equal(code, 1, 'exit code should be 1');
+
+    // Verify stdout is exactly one line matching sentinel frame
+    const lines = out.trim().split('\n');
+    assert.equal(lines.length, 1, `stdout should be exactly one line, got ${lines.length}: ${JSON.stringify(lines)}`);
+    assert.match(lines[0], /^___UNSNOOZE_BEGIN___.*___UNSNOOZE_END___$/, 'should be valid sentinel frame');
+
+    // Verify the result is 'error'
+    const env = extractEnvelope(out);
+    assert.equal(env.result, 'error', `result should be 'error', got ${env.result}`);
+  } finally {
+    rmSync(lockDir, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});

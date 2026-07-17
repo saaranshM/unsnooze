@@ -54,24 +54,29 @@ function resolveRequest(args) {
 }
 
 export async function cmdRemote(args = []) {
-  const req = resolveRequest(args);
   const emit = (extra) => console.log(frameEnvelope({ ...handshake(), ...extra }));
-  if (!req) {
-    emit({ result: 'bad-request' });
-    return 1;
-  }
-  const state = readState();
-  if (req.verb === 'status') {
-    emit({ resumerAlive: !!state.resumerPid, sessions: sessionsPayload(state) });
+  try {
+    const req = resolveRequest(args);
+    if (!req) {
+      emit({ result: 'bad-request' });
+      return 1;
+    }
+    const state = readState();
+    if (req.verb === 'status') {
+      emit({ resumerAlive: !!state.resumerPid, sessions: sessionsPayload(state) });
+      return 0;
+    }
+    const keys = selectKeys(state, req.key);
+    if (keys.length === 0) {
+      emit({ result: 'no-match', matched: [] });
+      return 1;
+    }
+    if (req.verb === 'resume') markResumeNow(keys);
+    else for (const k of keys) setStatus(k, 'cancelled');
+    emit({ result: 'ok', matched: keys });
     return 0;
-  }
-  const keys = selectKeys(state, req.key);
-  if (keys.length === 0) {
-    emit({ result: 'no-match', matched: [] });
+  } catch {
+    emit({ result: 'error' });
     return 1;
   }
-  if (req.verb === 'resume') markResumeNow(keys);
-  else for (const k of keys) setStatus(k, 'cancelled');
-  emit({ result: 'ok', matched: keys });
-  return 0;
 }
