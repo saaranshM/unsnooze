@@ -102,3 +102,19 @@ test('hitTest: rectangle containment, last (topmost) match wins', () => {
   assert.equal(hitTest([a, b], 10, 7).id, 'b'); // x+width exclusive: 0..9 for a
   assert.equal(hitTest([], 0, 0), null);
 });
+
+test('zonesToRects drops unmeasured zones and preserves registration order', async () => {
+  const { zonesToRects } = await import('../src/dashboard/mouse.js');
+  const zone = (x, y, width, height, id) => ({
+    id,
+    ref: { current: { __rect: { x, y, width, height } } },
+    onClick: () => {},
+  });
+  // measure is injectable so tests don't need a live Ink layout tree
+  const rects = zonesToRects(
+    [zone(0, 7, 10, 1, 'a'), zone(0, 0, 0, 0, 'empty'), zone(5, 7, 10, 1, 'b')],
+    node => node.__rect,
+  );
+  assert.deepEqual(rects.map(r => r.id), ['a', 'b']);
+  assert.equal(hitTest(rects, 6, 7).id, 'b');
+});
