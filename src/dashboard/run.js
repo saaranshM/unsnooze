@@ -3,6 +3,7 @@ import React from 'react';
 import { render } from 'ink';
 import { App } from './App.js';
 import { MOUSE_DISABLE_ALL } from './mouse-protocol.js';
+import { getConfig } from '../settings.js';
 
 const h = React.createElement;
 
@@ -86,7 +87,7 @@ export async function runDashboard({ tab = 'status' } = {}) {
   }
 
   installMouseCleanup(process.stdout);
-  const instance = render(h(App, { initialTab: tab }), {
+  const instance = render(h(App, { initialTab: tab, mouseEnabled: getConfig('mouse') !== false }), {
     exitOnCtrlC: true,
     // Full-screen: separate buffer like vim / htop / less — original scrollback restored on quit
     alternateScreen: true,

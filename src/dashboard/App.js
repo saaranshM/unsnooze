@@ -15,6 +15,8 @@ import {
   loadLogsSnapshot,
 } from './data.js';
 import { TAGLINE } from './mark.js';
+import { MouseProvider, useMouse, useMouseWheel, Clickable } from './mouse.js';
+import { isMouseNoise } from './mouse-protocol.js';
 
 const h = React.createElement;
 
@@ -31,23 +33,26 @@ const HELP_ROWS = [
   ['tab / shift-tab', 'next / prev tab'],
   ['j k / ↓ ↑', 'move selection'],
   ['r', 'refresh now'],
+  ['m', 'toggle mouse (click tabs/rows, wheel scroll)'],
+  ['shift+click', 'select text while mouse is on (Option in iTerm2)'],
   ['?', 'toggle this help'],
   ['q', 'quit'],
 ];
 
-function TabRow({ active }) {
+function TabRow({ active, onSelect }) {
   return h(Box, { flexDirection: 'row' },
-    ...TABS.flatMap((t, i) => [
-      h(Text, { key: t.id + '-k', color: i === active ? theme.accent : theme.muted, bold: i === active },
-        ` ${t.key} `),
-      h(Text, {
-        key: t.id,
-        color: i === active ? 'black' : theme.muted,
-        backgroundColor: i === active ? theme.accent : undefined,
-        bold: i === active,
-      }, `${t.label}`),
-      h(Text, { key: t.id + '-sp' }, '  '),
-    ]),
+    ...TABS.map((t, i) =>
+      h(Clickable, { key: t.id, onClick: () => onSelect(i), flexDirection: 'row' },
+        h(Text, { color: i === active ? theme.accent : theme.muted, bold: i === active },
+          ` ${t.key} `),
+        h(Text, {
+          color: i === active ? 'black' : theme.muted,
+          backgroundColor: i === active ? theme.accent : undefined,
+          bold: i === active,
+        }, `${t.label}`),
+        h(Text, null, '  '),
+      ),
+    ),
   );
 }
 
@@ -75,7 +80,7 @@ function HelpOverlay({ cols, rows }) {
   );
 }
 
-export function App({ initialTab = 'status' } = {}) {
+function Dashboard({ initialTab = 'status' } = {}) {
   const { exit } = useApp();
   const { columns, rows: winRows } = useWindowSize();
   const cols = columns || process.stdout.columns || 80;
@@ -84,6 +89,7 @@ export function App({ initialTab = 'status' } = {}) {
   const startIdx = Math.max(0, TABS.findIndex(t => t.id === initialTab));
   const [tab, setTab] = useState(startIdx >= 0 ? startIdx : 0);
   const [selected, setSelected] = useState(0);
+  const [logScroll, setLogScroll] = useState(0);
   const [showHelp, setShowHelp] = useState(false);
   const [lastRefresh, setLastRefresh] = useState(Date.now());
   const [nowTick, setNowTick] = useState(Date.now());
@@ -164,6 +170,7 @@ export function App({ initialTab = 'status' } = {}) {
     else if (id === 'doctor') refreshDoctor();
     else if (id === 'logs') refreshLogs();
     setSelected(0);
+    setLogScroll(0);
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -180,7 +187,11 @@ export function App({ initialTab = 'status' } = {}) {
     return () => clearInterval(id);
   }, [refreshStatus, refreshUsage, refreshSessions, refreshLogs]);
 
+  const mouse = useMouse();
+
   useInput((input, key) => {
+    if (isMouseNoise(input)) return;   // leaked SGR fragments are not keys
+    if (input === 'm') { mouse.toggle(); return; }
     if (input === 'q') { exit(); return; }
     if (input === '?') { setShowHelp(s => !s); return; }
     if (key.escape && showHelp) { setShowHelp(false); return; }
@@ -192,6 +203,16 @@ export function App({ initialTab = 'status' } = {}) {
     if (input >= '1' && input <= '5') { setTab(Number(input) - 1); return; }
     if (input === 'j' || key.downArrow) { setSelected(s => s + 1); return; }
     if (input === 'k' || key.upArrow) { setSelected(s => Math.max(0, s - 1)); }
+  });
+
+  useMouseWheel((ev) => {
+    const id = TABS[tabRef.current]?.id;
+    if (id === 'status' || id === 'sessions') {
+      if (ev.wheel === 'down') setSelected(s => s + 1);
+      else setSelected(s => Math.max(0, s - 1));
+    } else if (id === 'logs') {
+      setLogScroll(s => ev.wheel === 'up' ? s + 3 : Math.max(0, s - 3));
+    }
   });
 
   const listLen = TABS[tab]?.id === 'status'
@@ -217,7 +238,7 @@ export function App({ initialTab = 'status' } = {}) {
     case 'usage': main = h(UsageTab, { data: usageData }); break;
     case 'sessions': main = h(SessionsTab, { data: sessionsData, selected: sel }); break;
     case 'doctor': main = h(DoctorTab, { data: doctorData }); break;
-    case 'logs': main = h(LogsTab, { data: logsData, maxRows: bodyRows - 2 }); break;
+    case 'logs': main = h(LogsTab, { data: logsData, maxRows: bodyRows - 2, scroll: logScroll }); break;
     default: main = h(StatusTab, { data: statusWithNow, selected: sel });
   }
 
@@ -252,7 +273,7 @@ export function App({ initialTab = 'status' } = {}) {
       )
       : null,
     // Tab row over a dim rule
-    h(TabRow, { active: tab }),
+    h(TabRow, { active: tab, onSelect: setTab }),
     h(Text, { color: theme.muted, dimColor: true }, '─'.repeat(Math.max(0, cols - 2))),
     // Body
     h(Box, { flexDirection: 'column', flexGrow: 1, paddingX: 1, paddingTop: 1 },
@@ -262,14 +283,30 @@ export function App({ initialTab = 'status' } = {}) {
     // Footer: context keys + brand mark
     h(Text, { color: theme.muted, dimColor: true }, '─'.repeat(Math.max(0, cols - 2))),
     h(Box, { flexDirection: 'row', justifyContent: 'space-between' },
-      h(Text, { color: theme.muted },
-        ' 1-5 tabs · j/k move · r refresh · ',
-        h(Text, { color: theme.bright }, '?'),
-        ' help · q quit',
+      h(Box, { flexDirection: 'row' },
+        h(Text, { color: theme.muted }, ' 1-5 tabs · j/k move · '),
+        h(Clickable, { onClick: refreshActive }, h(Text, { color: theme.muted }, 'r refresh')),
+        h(Text, { color: theme.muted }, ' · '),
+        h(Clickable, { onClick: () => setShowHelp(s => !s) },
+          h(Text, { color: theme.muted }, h(Text, { color: theme.bright }, '?'), ' help')),
+        h(Text, { color: theme.muted }, ' · '),
+        h(Clickable, { onClick: () => mouse.toggle() },
+          h(Text, { color: theme.muted }, `m mouse ${mouse.enabled ? '✓' : '✗'}`)),
+        h(Text, { color: theme.muted }, ' · '),
+        h(Clickable, { onClick: exit }, h(Text, { color: theme.muted }, 'q quit')),
       ),
-      h(Text, { color: theme.accent, bold: true }, '❯ ',
-      ),
+      h(Text, { color: theme.accent, bold: true }, '❯ '),
     ),
-    showHelp ? h(HelpOverlay, { cols, rows }) : null,
+    showHelp
+      ? h(Clickable, {
+        onClick: () => setShowHelp(false),
+        position: 'absolute', top: 0, left: 0, width: cols, height: rows,
+      }, h(HelpOverlay, { cols, rows }))
+      : null,
   );
+}
+
+export function App({ initialTab = 'status', mouseEnabled = true } = {}) {
+  return h(MouseProvider, { initialEnabled: mouseEnabled },
+    h(Dashboard, { initialTab }));
 }
