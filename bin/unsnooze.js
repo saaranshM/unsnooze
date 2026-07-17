@@ -53,7 +53,7 @@ const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'confi
 // Every named subcommand; anything else (or no args) is an agent launch.
 const NAMED_COMMANDS = new Set([
   ...USER_FACING, 'setup', 'install', 'uninstall', 'update', 'daemon',
-  '_hook-stopfailure', '_monitor', '_run', '_resumer', '_update-check',
+  '_hook-stopfailure', '_monitor', '_run', '_resumer', '_update-check', '_remote',
 ]);
 const isLaunchPath = cmd === '_run' || cmd === undefined || !NAMED_COMMANDS.has(cmd);
 const launchArgs = cmd === '_run' ? rest.slice(1) : (cmd === undefined ? [] : [cmd, ...rest]);
@@ -191,6 +191,11 @@ async function main() {
       const mod = await safeImport('../src/resumer.js');
       if (!mod) return 0;
       return mod.runResumer();
+    }
+    case '_remote': {
+      const mod = await safeImport('../src/remote.js');
+      if (!mod) return 1;
+      return mod.cmdRemote(rest);
     }
     case 'update': {
       const { runSelfUpdate } = await import('../src/update-check.js');
