@@ -303,7 +303,7 @@ unsnooze hosts add work you@work-box.local   # register an ssh destination
 unsnooze hosts list                          # registered hosts
 unsnooze hosts rm work                       # forget a host
 unsnooze fleet [--json]                      # every host's sessions, fanned out over ssh
-unsnooze dashboard fleet                     # live Fleet tab — r resumes a selected stopped session
+unsnooze dashboard fleet                     # live Fleet tab — R resumes a selected stopped session (C cancels)
 ```
 
 A registered host needs **unsnooze installed** and **ssh key auth** (no
@@ -316,8 +316,9 @@ changed host fails fast instead of being silently trusted.
 Fleet is *see and mark*, not *type remotely*: `unsnooze fleet` and the
 dashboard's **Fleet** tab list every reachable host's tracked sessions
 (state, reset countdown, attach hint). Selecting a stopped remote session and
-pressing **`r`** only marks it due — the remote's own daemon does the actual
-keystrokes, under the same ownership/liveness/menu gates as a local session.
+pressing **`R`** (uppercase — lowercase `r` refreshes) only marks it due — the
+remote's own daemon does the actual keystrokes, under the same
+ownership/liveness/menu gates as a local session.
 Resumed and stopped sessions print an attach hint
 (`ssh -t <host> 'tmux new -A -s <session>'` / `zellij attach <session>`) so
 you can hop over and watch. An unreachable or out-of-date host shows
