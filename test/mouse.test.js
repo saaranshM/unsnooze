@@ -65,6 +65,34 @@ test('isMouseNoise flags leaked report fragments for the useInput guard', () => 
   assert.equal(isMouseNoise('1'), false);
 });
 
+test('parseSgrEvents: extra mouse buttons (>= 128) have null button', () => {
+  const { events } = parseSgrEvents('\x1b[<128;5;5M');
+  assert.equal(events[0].type, 'press');
+  assert.equal(events[0].button, null);
+});
+
+test('parseSgrEvents: horizontal wheel (base 2/3) has null wheel', () => {
+  const { events: ev67 } = parseSgrEvents('\x1b[<67;5;5M'); // 67 = 64 + 3
+  assert.equal(ev67[0].type, 'wheel');
+  assert.equal(ev67[0].wheel, null);
+
+  const { events: ev66 } = parseSgrEvents('\x1b[<66;5;5M'); // 66 = 64 + 2
+  assert.equal(ev66[0].type, 'wheel');
+  assert.equal(ev66[0].wheel, null);
+});
+
+test('parseSgrEvents: rest carry capped at 32 chars, longer candidates dropped', () => {
+  // Create a partial that exceeds 32 chars
+  const longPartial = '\x1b[<' + '1;'.repeat(40);
+  const { rest: restLong } = parseSgrEvents(longPartial);
+  assert.equal(restLong, '');
+
+  // Short partial under 32 chars is still carried
+  const shortPartial = '\x1b[<0;1';
+  const { rest: restShort } = parseSgrEvents(shortPartial);
+  assert.equal(restShort, '\x1b[<0;1');
+});
+
 test('hitTest: rectangle containment, last (topmost) match wins', () => {
   const a = { x: 0, y: 7, width: 10, height: 1, id: 'a' };
   const b = { x: 5, y: 7, width: 10, height: 1, id: 'b' };

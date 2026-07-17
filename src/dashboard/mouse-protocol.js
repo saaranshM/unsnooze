@@ -24,9 +24,11 @@ function decodeEvent(b, x1, y1, final) {
     button: null,
   };
   if ((b & 64) !== 0 && b < 128) {
-    return { ...ev, type: 'wheel', wheel: base === 1 ? 'down' : 'up' };
+    const wheel = base === 0 ? 'up' : base === 1 ? 'down' : null;
+    return { ...ev, type: 'wheel', wheel };
   }
-  const button = base === 0 ? 'left' : base === 1 ? 'middle' : base === 2 ? 'right' : null;
+  // b >= 128 means extra buttons (xterm 8-11); these map to button: null
+  const button = b >= 128 ? null : (base === 0 ? 'left' : base === 1 ? 'middle' : base === 2 ? 'right' : null);
   if (final === 'm') return { ...ev, type: 'release', button };
   if ((b & 32) !== 0) return { ...ev, type: button ? 'drag' : 'move', button };
   return { ...ev, type: 'press', button };
@@ -50,7 +52,8 @@ export function parseSgrEvents(text) {
   if (escAt !== -1) {
     const candidate = tail.slice(escAt);
     // Only carry prefixes that can still become an SGR report.
-    if (/^\x1b(\[(<[\d;]*)?)?$/.test(candidate)) rest = candidate;
+    // Cap at 32 chars to prevent unbounded growth on malformed input.
+    if (candidate.length <= 32 && /^\x1b(\[(<[\d;]*)?)?$/.test(candidate)) rest = candidate;
   }
   return { events, rest };
 }
