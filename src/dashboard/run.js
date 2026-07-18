@@ -101,7 +101,7 @@ export async function runDashboard({ tab = 'status' } = {}) {
 
 export async function cmdDashboard(args = []) {
   const tabArg = args.find(a => !a.startsWith('-'));
-  const tab = ['status', 'usage', 'sessions', 'doctor', 'logs', 'fleet'].includes(tabArg)
+  const tab = ['status', 'usage', 'sessions', 'doctor', 'logs', 'fleet', 'prompts'].includes(tabArg)
     ? tabArg
     : 'status';
   return runDashboard({ tab });

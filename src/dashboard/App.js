@@ -8,6 +8,7 @@ import { SessionsTab } from './tabs/SessionsTab.js';
 import { DoctorTab } from './tabs/DoctorTab.js';
 import { LogsTab } from './tabs/LogsTab.js';
 import { FleetTab } from './tabs/FleetTab.js';
+import { PromptsTab } from './tabs/PromptsTab.js';
 import {
   loadStatusSnapshot,
   loadUsageSnapshot,
@@ -31,10 +32,11 @@ const TABS = [
   { id: 'doctor', label: 'Doctor', key: '4' },
   { id: 'logs', label: 'Logs', key: '5' },
   { id: 'fleet', label: 'Fleet', key: '6' },
+  { id: 'prompts', label: 'Prompts', key: '7' },
 ];
 
 const HELP_ROWS = [
-  ['1–6', 'switch tab'],
+  ['1–7', 'switch tab'],
   ['tab / shift-tab', 'next / prev tab'],
   ['j k / ↓ ↑', 'move selection'],
   ['r', 'refresh now'],
@@ -108,6 +110,14 @@ function Dashboard({ initialTab = 'status' } = {}) {
   const [usageBusy, setUsageBusy] = useState(false);
   const [fleetBusy, setFleetBusy] = useState(false);
   const [err, setErr] = useState(null);
+  // Prompts tab's add-form owns raw keyboard input while a TextInput/step
+  // selector has focus (typing "r" or "1" into a prompt must not refresh or
+  // switch tabs underneath it) — set true while that form is open, false the
+  // instant it closes or unmounts. No pre-existing suppression flag: the `?`
+  // help overlay doesn't actually gate any keys today, it only toggles its
+  // own visibility — so this is a new, narrowly-scoped mechanism rather than
+  // an extension of one.
+  const [inputCaptured, setInputCaptured] = useState(false);
   const tabRef = useRef(tab);
   tabRef.current = tab;
 
@@ -242,6 +252,10 @@ function Dashboard({ initialTab = 'status' } = {}) {
 
   useInput((input, key) => {
     if (isMouseNoise(input)) return;   // leaked SGR fragments are not keys
+    // Prompts tab's add-form has raw keyboard focus (a TextInput or a step
+    // selector) — every one of the globals below (including q) must stay
+    // silent so typing "quit" or "7pm" into a field can't quit or jump tabs.
+    if (inputCaptured) return;
     if (input === 'm') { mouse.toggle(); return; }
     if (input === 'q') { exit(); return; }
     if (input === '?') { setShowHelp(s => !s); return; }
@@ -251,7 +265,7 @@ function Dashboard({ initialTab = 'status' } = {}) {
       setTab(t => (key.shift ? (t + TABS.length - 1) % TABS.length : (t + 1) % TABS.length));
       return;
     }
-    if (input >= '1' && input <= '6') { setTab(Number(input) - 1); return; }
+    if (input >= '1' && input <= '7') { setTab(Number(input) - 1); return; }
     if (TABS[tabRef.current]?.id === 'fleet' && input === 'R') { handleFleetAction('resume'); return; }
     if (TABS[tabRef.current]?.id === 'fleet' && input === 'C') { handleFleetAction('cancel'); return; }
     if (input === 'j' || key.downArrow) { setSelected(s => s + 1); return; }
@@ -275,7 +289,9 @@ function Dashboard({ initialTab = 'status' } = {}) {
       ? (sessionsData?.length || 0)
       : TABS[tab]?.id === 'fleet'
         ? flattenFleetStopped(fleetData).length
-        : 0;
+        : TABS[tab]?.id === 'prompts'
+          ? (statusData?.promptQueue?.length || 0)
+          : 0;
   const sel = listLen ? Math.min(selected, listLen - 1) : 0;
   const ago = Math.max(0, Math.round((nowTick - lastRefresh) / 1000));
   const active = TABS[tab];
@@ -296,6 +312,11 @@ function Dashboard({ initialTab = 'status' } = {}) {
     case 'doctor': main = h(DoctorTab, { data: doctorData }); break;
     case 'logs': main = h(LogsTab, { data: logsData, maxRows: bodyRows - 2, scroll: logScroll }); break;
     case 'fleet': main = h(FleetTab, { data: fleetData, selected: sel, onSelect: setSelected }); break;
+    case 'prompts': main = h(PromptsTab, {
+      data: statusData?.promptQueue, now: nowTick, sessions: statusData?.sessions,
+      selected: sel, onSelect: setSelected, onRefresh: refreshStatus, onStatus: setErr,
+      onFormOpenChange: setInputCaptured,
+    }); break;
     default: main = h(StatusTab, { data: statusWithNow, selected: sel, onSelect: setSelected });
   }
 
@@ -341,7 +362,7 @@ function Dashboard({ initialTab = 'status' } = {}) {
     h(Text, { color: theme.muted, dimColor: true }, '─'.repeat(Math.max(0, cols - 2))),
     h(Box, { flexDirection: 'row', justifyContent: 'space-between' },
       h(Box, { flexDirection: 'row' },
-        h(Text, { color: theme.muted }, ' 1-6 tabs · j/k move · '),
+        h(Text, { color: theme.muted }, ' 1-7 tabs · j/k move · '),
         h(Clickable, { onClick: refreshActive }, h(Text, { color: theme.muted }, 'r refresh')),
         h(Text, { color: theme.muted }, ' · '),
         h(Clickable, { onClick: () => setShowHelp(s => !s) },
