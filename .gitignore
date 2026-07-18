@@ -6,3 +6,5 @@ docs/superpowers/
 .mcp.json
 .playwright-mcp/
 plans/
+.vercel
+.env*
