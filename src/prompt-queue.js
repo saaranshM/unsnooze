@@ -322,8 +322,18 @@ export async function dispatchPromptEntry(entry, {
     return failPromptEntry(entry, `max resume attempts (${entry.attempts}) exceeded`, { mux, notifier });
   }
 
-  const cased = updateEntry(entry.id, e => (e.status === 'pending' ? { status: 'launching' } : {}));
-  if (!cased || cased.status !== 'launching') {
+  // updateEntry returns the post-state regardless of who performed the
+  // transition, so `cased.status === 'launching'` alone can't tell a winner
+  // from a loser (a loser reading 'pending' as false applies {} and still
+  // sees 'launching' from whoever did win). Capture the CAS outcome directly
+  // in the mutator closure instead.
+  let transitioned = false;
+  const cased = updateEntry(entry.id, e => {
+    if (e.status !== 'pending') return {};
+    transitioned = true;
+    return { status: 'launching' };
+  });
+  if (!cased || !transitioned) {
     // Someone else already moved it (or it's gone) — nothing to do.
     return readState().promptQueue.find(e => e.id === entry.id) || entry;
   }

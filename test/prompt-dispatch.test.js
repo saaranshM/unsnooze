@@ -188,6 +188,22 @@ test('dispatchPromptEntry: attempts already at cap → failed, notify fired, no 
   assert.equal(toasts[0].opts.priority, 4);
 });
 
+test('dispatchPromptEntry: entry already launching (lost the pending→launching race) → no window opened, status untouched', async () => {
+  resetState();
+  const entry = addEntry();
+  updateState(state => {
+    state.promptQueue.find(e => e.id === entry.id).status = 'launching';
+    return state;
+  });
+  let opened = false;
+  const mux = idleMux({ newWindow: async () => { opened = true; return { pane: '%1' }; } });
+  const now = Date.now();
+  const updated = await dispatchPromptEntry(readState().promptQueue.find(e => e.id === entry.id), { mux, now });
+
+  assert.equal(opened, false, 'a caller that lost the CAS must never open a window');
+  assert.equal(updated.status, 'launching', 'status must be left exactly as the winner set it');
+});
+
 // --- tickPromptQueue -------------------------------------------------------
 
 test('tickPromptQueue: dispatches every due entry FIFO', async () => {
