@@ -228,6 +228,7 @@ const GOOD = frameIt({
   schema: S, minSchema: 1, cli: '9.9.9', host: 'build1', caps: ['resume', 'cancel'],
   sessions: [{ key: 'k1', agent: 'claude', status: 'stopped', cwd: '/tmp\x1b[31mX', resetAt: Date.now() + 60_000, mux: 'tmux', muxSession: 'unsnooze' }],
 });
+const fakeSshOk = fakeSsh({ stdout: GOOD });
 
 test('fetchHost: online with sanitized fields; motd noise tolerated', async () => {
   const { fetchHost } = await import('../src/fleet.js');
@@ -363,4 +364,114 @@ test('fetchFleet re-sanitizes cached envelope to strip injected escapes', async 
   assert.equal(evil.state, 'stale');
   // Envelope should be re-sanitized: ESC stripped from cwd
   assert.equal(evil.envelope.sessions[0].cwd, '/tmp/evil');
+});
+
+// ---------------------------------------------------------------------------
+// Password auth wiring: auth-aware sshArgs, sshEnvForHost, fetchHost composition
+// ---------------------------------------------------------------------------
+
+test('sshArgs: multiplex:false omits ControlMaster (native windows)', () => {
+  const on = sshArgs('h', ['status'], { multiplex: true }).join(' ');
+  const off = sshArgs('h', ['status'], { multiplex: false }).join(' ');
+  assert.match(on, /ControlMaster=auto/);
+  assert.doesNotMatch(off, /ControlMaster/);
+  assert.doesNotMatch(off, /ControlPersist/);
+});
+
+test('sshArgs: batch:false omits BatchMode=yes (interactive prompt host)', () => {
+  const on = sshArgs('h', ['status'], { batch: true }).join(' ');
+  const off = sshArgs('h', ['status'], { batch: false }).join(' ');
+  assert.match(on, /BatchMode=yes/);
+  assert.doesNotMatch(off, /BatchMode/);
+});
+
+test('sshEnvForHost: password host gets SSH_ASKPASS env, key host gets none, secret never in argv', async () => {
+  const { sshEnvForHost } = await import('../src/fleet.js');
+  const ssh = { bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' };
+  const pw = sshEnvForHost({ name: 'gpu', dest: 'me@gpu', auth: 'password', source: 'command', cmd: 'op read x' },
+    { ssh, helperPath: '/s/askpass.sh', interactive: false });
+  assert.equal(pw.env.SSH_ASKPASS, '/s/askpass.sh');
+  assert.equal(pw.env.SSH_ASKPASS_REQUIRE, 'force');
+  assert.equal(pw.env.UNSNOOZE_ASKPASS_HOST, 'gpu');
+
+  const key = sshEnvForHost({ name: 'v', dest: 'u@v', auth: 'key' }, { ssh, helperPath: '/x', interactive: false });
+  assert.deepEqual(key.env, {});
+
+  // ssh < 8.4 → needs-auth, no askpass env
+  const old = sshEnvForHost({ name: 'g', dest: 'm@g', auth: 'password', source: 'env', env: 'PW' },
+    { ssh: { ...ssh, askpass: false }, helperPath: '/x', interactive: false });
+  assert.equal(old.needsAuth, true);
+  assert.deepEqual(old.env, {});
+});
+
+test('sshEnvForHost: interactive prompt source lets ssh prompt directly (no askpass, no BatchMode); daemon prompt needs auth', async () => {
+  const { sshEnvForHost } = await import('../src/fleet.js');
+  const ssh = { bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' };
+  const entry = { name: 'lap', dest: 'me@lap', auth: 'password', source: 'prompt' };
+  const interactiveResult = sshEnvForHost(entry, { ssh, helperPath: '/x', interactive: true });
+  assert.deepEqual(interactiveResult.env, {});
+  assert.equal(interactiveResult.batch, false);
+  assert.ok(!interactiveResult.needsAuth);
+
+  const daemonResult = sshEnvForHost(entry, { ssh, helperPath: '/x', interactive: false });
+  assert.equal(daemonResult.needsAuth, true);
+  assert.deepEqual(daemonResult.env, {});
+});
+
+test('fetchHost: password host spawns detected ssh with askpass env; password never in args', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  let seen;
+  const spawnFn = (bin, args, opts) => { seen = { bin, args, opts }; return fakeSshOk(); };
+  await fetchHost('gpu', { dest: 'me@gpu', auth: 'password', source: 'command', cmd: 'op read x' },
+    { spawnFn, detect: () => ({ bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' }), timeoutMs: 200 });
+  assert.equal(seen.bin, 'ssh');
+  assert.equal(seen.opts.env.SSH_ASKPASS_REQUIRE, 'force');
+  assert.equal(seen.opts.env.UNSNOOZE_ASKPASS_HOST, 'gpu');
+  assert.ok(!JSON.stringify(seen.args).includes('op read'));    // cmd/secret never on argv
+  assert.ok(!JSON.stringify(seen.args).includes('SSH_ASKPASS')); // askpass rides env only
+});
+
+test('fetchHost: key host regression — empty env, multiplex/batch from detect, unchanged args shape', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  let seen;
+  const spawnFn = (bin, args, opts) => { seen = { bin, args, opts }; return fakeSshOk(); };
+  await fetchHost('build1', { dest: 'build1', auth: 'key' },
+    { spawnFn, detect: () => ({ bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' }), timeoutMs: 200 });
+  assert.equal(seen.bin, 'ssh');
+  assert.equal(seen.opts.env.SSH_ASKPASS, undefined);
+  assert.equal(seen.opts.env.UNSNOOZE_ASKPASS_HOST, undefined);
+  const flags = seen.args.slice(0, seen.args.indexOf('build1')).join(' ');
+  assert.match(flags, /BatchMode=yes/);
+  assert.match(flags, /ControlMaster=auto/);
+});
+
+test('fetchHost: bare dest string still works (legacy shorthand, key auth)', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  const r = await fetchHost('build1', 'build1', { spawnFn: fakeSsh({ stdout: GOOD }) });
+  assert.equal(r.state, 'online');
+});
+
+test('fetchHost: native-windows flavor (multiplex:false) omits ControlMaster from the real spawn', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  let seen;
+  const spawnFn = (bin, args, opts) => { seen = { bin, args, opts }; return fakeSshOk(); };
+  await fetchHost('winbox', { dest: 'me@winbox', auth: 'key' },
+    { spawnFn, detect: () => ({ bin: 'C:\\ssh.exe', askpass: true, multiplex: false, flavor: 'native-windows' }), timeoutMs: 200 });
+  assert.equal(seen.bin, 'C:\\ssh.exe');
+  assert.doesNotMatch(seen.args.join(' '), /ControlMaster/);
+});
+
+test('remoteAction: password host askpass env present; secret/cmd never in argv', async () => {
+  const { remoteAction } = await import('../src/fleet.js');
+  let seen;
+  const spawnFn = (bin, args, opts) => {
+    seen = { bin, args, opts };
+    return fakeSsh({ stdout: frameEnvelope({ schema: S, minSchema: 1, result: 'ok' }) })();
+  };
+  const res = await remoteAction('gpu', { dest: 'me@gpu', auth: 'password', source: 'command', cmd: 'op read x' },
+    'resume', 'k1', { spawnFn, detect: () => ({ bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' }), timeoutMs: 200 });
+  assert.equal(res.ok, true);
+  assert.equal(seen.opts.env.SSH_ASKPASS_REQUIRE, 'force');
+  assert.equal(seen.opts.env.UNSNOOZE_ASKPASS_HOST, 'gpu');
+  assert.ok(!JSON.stringify(seen.args).includes('op read'));
 });

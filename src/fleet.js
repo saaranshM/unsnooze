@@ -9,6 +9,8 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync as fsExi
 import { spawn, execFileSync, spawnSync } from 'node:child_process';
 import { STATE_DIR } from './config.js';
 import { colors, shouldUseTui, makeTable, logoBlock, badge } from './tui.js';
+import { ensureAskpassHelper } from './askpass.js';
+import { UNSNOOZE_BIN } from './spawn.js';
 
 export const SCHEMA = 1;
 export const MIN_SCHEMA = 1;
@@ -74,23 +76,60 @@ export function detectSsh({
 // read as an option. StrictHostKeyChecking is deliberately NOT set: a CLI -o
 // would override a stricter user config; unknown hosts fail fast under
 // BatchMode with a clear hint instead.
-export function sshArgs(dest, remoteCmd) {
+// `multiplex:false` omits the three ControlMaster/-Path/-Persist options —
+// native Win32-OpenSSH hard-errors on them (no unix-socket support). `batch:
+// false` omits BatchMode=yes — the one case that needs it gone is an
+// interactive password `prompt` host: ssh must be allowed to prompt on the
+// console instead of failing closed (see sshEnvForHost).
+export function sshArgs(dest, remoteCmd, { multiplex = true, batch = true } = {}) {
   if (!validHostToken(dest)) throw new Error(`invalid host: ${JSON.stringify(dest)}`);
   const [verb, ...rest] = remoteCmd;
   if (!REMOTE_VERBS.has(verb)) throw new Error(`invalid remote verb: ${verb}`);
   for (const a of rest) {
     if (!KEY_RE.test(String(a))) throw new Error(`invalid remote arg: ${JSON.stringify(a)}`);
   }
+  const opts = [];
+  if (batch) opts.push('-o', 'BatchMode=yes');
+  opts.push('-o', 'ConnectTimeout=5');
+  if (multiplex) {
+    opts.push(
+      '-o', 'ControlMaster=auto',
+      '-o', `ControlPath=${join(STATE_DIR, 'ssh-%C')}`,
+      '-o', 'ControlPersist=60s',
+    );
+  }
   return [
-    '-o', 'BatchMode=yes',
-    '-o', 'ConnectTimeout=5',
-    '-o', 'ControlMaster=auto',
-    '-o', `ControlPath=${join(STATE_DIR, 'ssh-%C')}`,
-    '-o', 'ControlPersist=60s',
+    ...opts,
     '-T',
     dest,
     'unsnooze', '_remote', verb, ...rest.map(String),
   ];
+}
+
+// Compose the ssh child's env additions for a host's auth mode. Key hosts
+// get nothing — the path stays byte-for-byte what it was before password
+// auth existed. Password hosts with a stored/non-interactive source (or a
+// `prompt` source running under the background daemon, which has no
+// terminal to prompt on) point ssh at the askpass helper via
+// SSH_ASKPASS_REQUIRE=force (OpenSSH >=8.4 only — gated on ssh.askpass) so
+// the secret flows helper-stdout -> ssh and never touches argv or this
+// process's own env. A `prompt` source at a real interactive TTY skips
+// askpass entirely: it returns batch:false so sshArgs drops BatchMode=yes
+// and ssh prompts directly on the console — the zero-shim path.
+export function sshEnvForHost(entry, { ssh, helperPath, interactive = false } = {}) {
+  if (!entry || entry.auth !== 'password') return { env: {} };
+  if (entry.source === 'prompt') {
+    if (interactive) return { env: {}, batch: false };
+    return { env: {}, needsAuth: true };   // daemon: nothing to prompt from
+  }
+  if (!ssh?.askpass) return { env: {}, needsAuth: true };   // ssh < 8.4
+  return {
+    env: {
+      SSH_ASKPASS: helperPath,
+      SSH_ASKPASS_REQUIRE: 'force',
+      UNSNOOZE_ASKPASS_HOST: entry.name,
+    },
+  };
 }
 
 export function frameEnvelope(obj) {
@@ -387,11 +426,30 @@ export function sanitizeEnvelope(env) {
   };
 }
 
-export async function fetchHost(name, dest, { spawnFn = spawn, timeoutMs = 8000 } = {}) {
+// fetchHost/remoteAction's 2nd arg is either a bare dest string (the legacy
+// shorthand — still what a plain `{ good: 'good' }` hosts map or the
+// dashboard's stitched-back r.dest gives us) or a full host descriptor.
+// Normalize both to a descriptor with `name` attached, since sshEnvForHost
+// needs the host name for UNSNOOZE_ASKPASS_HOST.
+function toEntry(name, v) {
+  const base = typeof v === 'string' ? { dest: v, auth: 'key' } : (v || {});
+  return { ...base, name };
+}
+
+export async function fetchHost(name, entryOrDest, {
+  spawnFn = spawn, timeoutMs = 8000, detect = detectSsh, interactive = false,
+} = {}) {
   const at = Date.now();
+  const entry = toEntry(name, entryOrDest);
   let child;
   try {
-    child = spawnFn('ssh', sshArgs(dest, ['status']));
+    const ssh = detect();
+    const helperPath = entry.auth === 'password'
+      ? ensureAskpassHelper({ platform: process.platform, stateDir: STATE_DIR, scriptPath: UNSNOOZE_BIN })
+      : undefined;
+    const { env: envAdditions, batch } = sshEnvForHost(entry, { ssh, helperPath, interactive });
+    const args = sshArgs(entry.dest, ['status'], { multiplex: ssh.multiplex, batch: batch !== false });
+    child = spawnFn(ssh.bin, args, { env: { ...process.env, ...envAdditions } });
   } catch (err) {
     return { host: name, state: 'error', at, error: String(err?.message || err) };
   }
@@ -408,11 +466,20 @@ export async function fetchHost(name, dest, { spawnFn = spawn, timeoutMs = 8000 
 
 // Same transport for resume/cancel — marks state only, never types anything
 // (typing lives in the remote's own daemon gates; see src/remote.js).
-export async function remoteAction(name, dest, verb, key, { spawnFn = spawn, timeoutMs = 8000 } = {}) {
+export async function remoteAction(name, entryOrDest, verb, key, {
+  spawnFn = spawn, timeoutMs = 8000, detect = detectSsh, interactive = false,
+} = {}) {
   const remoteCmd = key != null ? [verb, key] : [verb];
+  const entry = toEntry(name, entryOrDest);
   let child;
   try {
-    child = spawnFn('ssh', sshArgs(dest, remoteCmd));
+    const ssh = detect();
+    const helperPath = entry.auth === 'password'
+      ? ensureAskpassHelper({ platform: process.platform, stateDir: STATE_DIR, scriptPath: UNSNOOZE_BIN })
+      : undefined;
+    const { env: envAdditions, batch } = sshEnvForHost(entry, { ssh, helperPath, interactive });
+    const args = sshArgs(entry.dest, remoteCmd, { multiplex: ssh.multiplex, batch: batch !== false });
+    child = spawnFn(ssh.bin, args, { env: { ...process.env, ...envAdditions } });
   } catch (err) {
     return { ok: false, result: null, error: String(err?.message || err) };
   }
@@ -449,7 +516,7 @@ export function writeFleetCache(results) {
 // not one promise per host). Online results overwrite the cache; hosts that
 // come back unreachable/error fall back to a cached envelope under 24h old,
 // rendered as `stale` rather than dropped.
-export async function fetchFleet({ hosts = readHosts(), concurrency = 4, spawnFn, timeoutMs } = {}) {
+export async function fetchFleet({ hosts = readHosts(), concurrency = 4, spawnFn, timeoutMs, detect, interactive } = {}) {
   const entries = Object.entries(hosts);
   const cacheByHost = new Map(readFleetCache().map(r => [r.host, r]));
   const results = new Array(entries.length);
@@ -458,9 +525,8 @@ export async function fetchFleet({ hosts = readHosts(), concurrency = 4, spawnFn
     while (next < entries.length) {
       const i = next++;
       const [name, raw] = entries[i];
-      const dest = entryDest(raw);
       try {
-        results[i] = await fetchHost(name, dest, { spawnFn, timeoutMs });
+        results[i] = await fetchHost(name, raw, { spawnFn, timeoutMs, detect, interactive });
       } catch (err) {
         results[i] = { host: name, state: 'error', at: Date.now(), error: String(err?.message || err) };
       }
