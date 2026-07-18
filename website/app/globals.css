@@ -129,7 +129,17 @@ code.chip {
 }
 .brand { font-weight: 700; font-size: 16px; text-decoration: none; letter-spacing: 0.02em; white-space: nowrap; }
 .brand .prompt { color: var(--amber); margin-right: 7px; }
-.brand .zz { color: var(--faint); font-size: 11px; vertical-align: super; letter-spacing: 2px; }
+.brand .zz {
+  color: var(--faint); font-size: 11px; vertical-align: super;
+  display: inline-flex; gap: 3px; margin-left: 6px;
+}
+.brand .zz i { font-style: normal; animation: z-drift 2.6s ease-in-out infinite; }
+.brand .zz i:nth-child(2) { animation-delay: 0.4s; }
+.brand .zz i:nth-child(3) { animation-delay: 0.8s; }
+@keyframes z-drift {
+  0%, 100% { opacity: 0.35; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-3px); }
+}
 .nav-links { margin-left: auto; display: flex; gap: 22px; flex-wrap: wrap; }
 .nav-links a { color: var(--dim); text-decoration: none; }
 .nav-links a:hover { color: var(--amber); }

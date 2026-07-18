@@ -15,8 +15,8 @@ export const metadata = {
   },
 };
 
-export default function ChangelogPage() {
-  const entries = readChangelog();
+export default async function ChangelogPage() {
+  const entries = await readChangelog();
 
   return (
     <div className="subpage">

@@ -1,8 +1,8 @@
 import { SITE_URL } from '../lib/site.js';
 import { readChangelog } from '../lib/changelog.js';
 
-export default function sitemap() {
-  const latestRelease = readChangelog()[0]?.date;
+export default async function sitemap() {
+  const latestRelease = (await readChangelog())[0]?.date;
   const changelogModified = latestRelease ? new Date(latestRelease) : new Date();
 
   return [

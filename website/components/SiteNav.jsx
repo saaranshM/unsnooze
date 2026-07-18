@@ -15,7 +15,8 @@ export default function SiteNav({ page = 'home' }) {
     <div className={`nav-bar${scrolled ? ' scrolled' : ''}`}>
       <nav className="nav-inner" aria-label="Main">
         <a className="brand" href={home ? '#top' : '/'}>
-          <span className="prompt">❯</span>unsnooze<span className="zz">&nbsp;z z z</span>
+          <span className="prompt">❯</span>unsnooze
+          <span className="zz" aria-hidden="true"><i>z</i><i>z</i><i>z</i></span>
         </a>
         <div className="nav-links">
           {home ? (
