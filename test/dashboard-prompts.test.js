@@ -14,7 +14,7 @@ const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-dashboard-prompts-test-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
 
 const { applyKey } = await import('../src/dashboard/components/TextInput.js');
-const { PromptsTab, formReduce, initFormState, WHEN_OPTIONS } =
+const { PromptsTab, formReduce, initFormState, WHEN_OPTIONS, submitFinal, removeEntry } =
   await import('../src/dashboard/tabs/PromptsTab.js');
 const { renderToString } = await import('ink');
 const React = (await import('react')).default;
@@ -175,6 +175,170 @@ test('formReduce: BACK from the host-re-entry path step returns to host (not a f
 test('formReduce: unknown event types are a no-op', () => {
   const s = initFormState({});
   assert.equal(formReduce(s, { type: 'NOPE' }), s);
+});
+
+// -- submitFinal (add-form write path) --------------------------------------
+// Injected-deps stubs only — never a real spawn/ssh round trip. Spy helpers
+// record calls in plain arrays rather than pulling in a mock library.
+
+function spy(impl) {
+  const fn = (...args) => { fn.calls.push(args); return impl ? impl(...args) : undefined; };
+  fn.calls = [];
+  return fn;
+}
+
+test('submitFinal: local success — queueAddFn called, form closed, onRefresh + status message', () => {
+  const state = initFormState({ path: '/local/proj', agents: ['claude'], hosts: [] });
+  const setForm = spy();
+  const dispatch = spy();
+  const onRefresh = spy();
+  const onStatus = spy();
+  const queueAddFn = spy(() => ({ ok: true, entry: { id: 'p-aaaa1111' } }));
+
+  submitFinal(state, 'do the thing', { setForm, dispatch, onRefresh, onStatus, queueAddFn });
+
+  assert.equal(queueAddFn.calls.length, 1);
+  assert.deepEqual(queueAddFn.calls[0][0], {
+    cwd: '/local/proj', agent: 'claude', prompt: 'do the thing', mode: 'next-reset', atMs: null,
+  });
+  assert.deepEqual(setForm.calls, [[null]], 'form closes on success');
+  assert.equal(onRefresh.calls.length, 1);
+  assert.equal(onStatus.calls.length, 1);
+  assert.match(onStatus.calls[0][0], /queued p-aaaa1111/);
+  assert.match(onStatus.calls[0][0], /claude/);
+  assert.equal(dispatch.calls.length, 0, 'no SUBMIT_ERROR on success');
+});
+
+test('submitFinal: duplicate error — message names the existing id, form stays open (no setForm/onRefresh)', () => {
+  const state = initFormState({ path: '/local/proj', agents: ['claude'], hosts: [] });
+  const setForm = spy();
+  const dispatch = spy();
+  const onRefresh = spy();
+  const onStatus = spy();
+  const queueAddFn = spy(() => ({ ok: false, error: 'duplicate', existing: { id: 'p-oldold01' } }));
+
+  submitFinal(state, 'do the thing', { setForm, dispatch, onRefresh, onStatus, queueAddFn });
+
+  assert.equal(dispatch.calls.length, 1);
+  assert.equal(dispatch.calls[0][0].type, 'SUBMIT_ERROR');
+  assert.match(dispatch.calls[0][0].error, /duplicate/);
+  assert.match(dispatch.calls[0][0].error, /p-oldold01/);
+  assert.equal(setForm.calls.length, 0, 'form must stay open on error');
+  assert.equal(onRefresh.calls.length, 0);
+  assert.equal(onStatus.calls.length, 0);
+});
+
+test('submitFinal: validation-shaped {ok:false} error passes the raw error through unchanged', () => {
+  const state = initFormState({ path: '/local/proj', agents: ['claude'], hosts: [] });
+  const setForm = spy();
+  const dispatch = spy();
+  const queueAddFn = spy(() => ({ ok: false, error: 'unknown agent: ghost' }));
+
+  submitFinal(state, 'do the thing', { setForm, dispatch, onRefresh: spy(), onStatus: spy(), queueAddFn });
+
+  assert.equal(dispatch.calls.length, 1);
+  assert.deepEqual(dispatch.calls[0][0], { type: 'SUBMIT_ERROR', error: 'unknown agent: ghost' });
+  assert.equal(setForm.calls.length, 0);
+});
+
+test('submitFinal: "at" mode carries atMs through to queueAddFn', () => {
+  let state = initFormState({ path: '/local/proj', agents: ['claude'], hosts: [] });
+  state = { ...state, whenIndex: WHEN_OPTIONS.indexOf('at'), atMs: 999999 };
+  const queueAddFn = spy(() => ({ ok: true, entry: { id: 'p-atat0001' } }));
+
+  submitFinal(state, 'later thing', { setForm: spy(), dispatch: spy(), onRefresh: spy(), onStatus: spy(), queueAddFn });
+
+  assert.equal(queueAddFn.calls[0][0].mode, 'at');
+  assert.equal(queueAddFn.calls[0][0].atMs, 999999);
+});
+
+test('submitFinal: remote branch — closes the form immediately (fire-and-forget), then calls remoteQueueAddFn with the right entry', async () => {
+  let state = initFormState({ path: '/remote/proj', agents: ['claude'], hosts: ['gpu'] });
+  state = { ...state, forHost: 'gpu' };
+  const setForm = spy();
+  const onStatus = spy();
+  const hostEntry = { host: '1.2.3.4' };
+  const readHostsFn = spy(() => ({ gpu: hostEntry }));
+  const remoteQueueAddFn = spy(async () => ({ ok: true, id: 'p-remote01' }));
+
+  submitFinal(state, 'remote thing', { setForm, dispatch: spy(), onRefresh: spy(), onStatus, remoteQueueAddFn, readHostsFn });
+
+  // Fire-and-forget: the form closes synchronously, before the ssh round trip settles.
+  assert.deepEqual(setForm.calls, [[null]]);
+  assert.equal(remoteQueueAddFn.calls.length, 1);
+  assert.equal(remoteQueueAddFn.calls[0][0], 'gpu');
+  assert.deepEqual(remoteQueueAddFn.calls[0][1], {
+    cwd: '/remote/proj', agent: 'claude', prompt: 'remote thing', mode: 'next-reset', atMs: null,
+  });
+  assert.deepEqual(remoteQueueAddFn.calls[0][2], { entryOrDest: hostEntry });
+
+  await Promise.resolve(); // let the .then() handler run
+  await Promise.resolve();
+  assert.equal(onStatus.calls.length, 1);
+  assert.match(onStatus.calls[0][0], /queued p-remote01/);
+  assert.match(onStatus.calls[0][0], /gpu/);
+});
+
+test('submitFinal: remote branch — a resolved-but-failed result routes into onStatus with the error', async () => {
+  let state = initFormState({ path: '/remote/proj', agents: ['claude'], hosts: ['gpu'] });
+  state = { ...state, forHost: 'gpu' };
+  const onStatus = spy();
+  const remoteQueueAddFn = spy(async () => ({ ok: false, error: 'auth failed' }));
+
+  submitFinal(state, 'remote thing', {
+    setForm: spy(), dispatch: spy(), onRefresh: spy(), onStatus,
+    remoteQueueAddFn, readHostsFn: spy(() => ({})),
+  });
+
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(onStatus.calls.length, 1);
+  assert.match(onStatus.calls[0][0], /gpu/);
+  assert.match(onStatus.calls[0][0], /auth failed/);
+});
+
+test('submitFinal: remote branch — a rejected promise (catch path) also routes into onStatus, never throws', async () => {
+  let state = initFormState({ path: '/remote/proj', agents: ['claude'], hosts: ['gpu'] });
+  state = { ...state, forHost: 'gpu' };
+  const onStatus = spy();
+  const remoteQueueAddFn = spy(async () => { throw new Error('connection refused'); });
+
+  assert.doesNotThrow(() => submitFinal(state, 'remote thing', {
+    setForm: spy(), dispatch: spy(), onRefresh: spy(), onStatus,
+    remoteQueueAddFn, readHostsFn: spy(() => ({})),
+  }));
+
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(onStatus.calls.length, 1);
+  assert.match(onStatus.calls[0][0], /gpu/);
+  assert.match(onStatus.calls[0][0], /connection refused/);
+});
+
+// -- removeEntry (list-view y/n remove confirmation) -------------------------
+
+test('removeEntry: success — queueRemoveFn called with the id, confirm cleared, onRefresh fired, returns true', () => {
+  const setConfirmId = spy();
+  const onRefresh = spy();
+  const queueRemoveFn = spy(() => true);
+
+  const out = removeEntry('p-removeme', { setConfirmId, onRefresh, queueRemoveFn });
+
+  assert.equal(out, true);
+  assert.deepEqual(queueRemoveFn.calls, [['p-removeme']]);
+  assert.deepEqual(setConfirmId.calls, [[null]]);
+  assert.equal(onRefresh.calls.length, 1);
+});
+
+test('removeEntry: queueRemoveFn returning false (already-terminal/unknown id) is passed through unchanged', () => {
+  const setConfirmId = spy();
+  const onRefresh = spy();
+  const queueRemoveFn = spy(() => false);
+
+  const out = removeEntry('p-gone', { setConfirmId, onRefresh, queueRemoveFn });
+
+  assert.equal(out, false);
+  assert.deepEqual(setConfirmId.calls, [[null]]);
 });
 
 // -- PromptsTab rendering ----------------------------------------------------

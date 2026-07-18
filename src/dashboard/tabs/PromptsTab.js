@@ -266,6 +266,62 @@ function PromptStep({ state, dispatch, onSubmitFinal }) {
 
 const STEP_COMPONENTS = { agent: AgentStep, when: WhenStep, at: AtStep, host: HostStep };
 
+// -- add-form: submit/remove handlers (unit-test surface) -------------------
+
+// Core result-handling for the add-form's final "queue it" step, pulled out
+// of the component so the local/remote branches, duplicate-error formatting,
+// and success wiring (onRefresh/onStatus/setForm) can be unit-tested without
+// mounting ink or hitting a real queue/ssh round trip. Deps are injected —
+// the component calls this with the real queueAdd/remoteQueueAdd/readHosts;
+// tests pass stubs.
+export function submitFinal(state, value, {
+  setForm, dispatch, onRefresh, onStatus,
+  queueAddFn = queueAdd, remoteQueueAddFn = remoteQueueAdd, readHostsFn = readHosts,
+} = {}) {
+  const agent = state.agents[state.agentIndex];
+  const mode = WHEN_OPTIONS[state.whenIndex];
+  const atMs = mode === 'at' ? state.atMs : null;
+
+  if (state.forHost) {
+    const hostName = state.forHost;
+    const cwd = state.path;
+    const entry = readHostsFn()[hostName];
+    setForm(null); // fire-and-forget — the ssh round trip reports back later
+    remoteQueueAddFn(hostName, { cwd, agent, prompt: value, mode, atMs }, { entryOrDest: entry })
+      .then((res) => {
+        onStatus?.(res.ok
+          ? `prompts: queued ${res.id || ''} for ${agent} on ${hostName}:${shortenCwd(cwd)}`
+          : `prompts: queue add on ${hostName} failed — ${res.error || 'unknown error'}`);
+      })
+      .catch((e) => onStatus?.(`prompts: queue add on ${hostName} failed — ${e.message}`));
+    return;
+  }
+
+  const result = queueAddFn({ cwd: state.path, agent, prompt: value, mode, atMs });
+  if (!result.ok) {
+    dispatch({
+      type: 'SUBMIT_ERROR',
+      error: result.error === 'duplicate'
+        ? `duplicate — matches existing queued prompt ${result.existing?.id}`
+        : result.error,
+    });
+    return;
+  }
+  setForm(null);
+  onRefresh?.();
+  onStatus?.(`prompts: queued ${result.entry.id} for ${agent} in ${shortenCwd(state.path)}`);
+}
+
+// Same idea for the list view's y/n remove confirmation — pulled out so the
+// queueRemove call and its onRefresh wiring have a seam a test can drive
+// with a stub, without going through useInput's raw keypress handling.
+export function removeEntry(id, { setConfirmId, onRefresh, queueRemoveFn = queueRemove } = {}) {
+  const removed = queueRemoveFn(id);
+  setConfirmId(null);
+  onRefresh?.();
+  return removed;
+}
+
 // -- tab -------------------------------------------------------------------
 
 export function PromptsTab({
@@ -288,44 +344,11 @@ export function PromptsTab({
 
   const dispatch = (event) => setForm(prev => (prev == null ? prev : formReduce(prev, event)));
 
-  function submitFinal(value) {
-    const agent = form.agents[form.agentIndex];
-    const mode = WHEN_OPTIONS[form.whenIndex];
-    const atMs = mode === 'at' ? form.atMs : null;
-
-    if (form.forHost) {
-      const hostName = form.forHost;
-      const cwd = form.path;
-      const entry = readHosts()[hostName];
-      setForm(null); // fire-and-forget — the ssh round trip reports back later
-      remoteQueueAdd(hostName, { cwd, agent, prompt: value, mode, atMs }, { entryOrDest: entry })
-        .then((res) => {
-          onStatus?.(res.ok
-            ? `prompts: queued ${res.id || ''} for ${agent} on ${hostName}:${shortenCwd(cwd)}`
-            : `prompts: queue add on ${hostName} failed — ${res.error || 'unknown error'}`);
-        })
-        .catch((e) => onStatus?.(`prompts: queue add on ${hostName} failed — ${e.message}`));
-      return;
-    }
-
-    const result = queueAdd({ cwd: form.path, agent, prompt: value, mode, atMs });
-    if (!result.ok) {
-      dispatch({
-        type: 'SUBMIT_ERROR',
-        error: result.error === 'duplicate'
-          ? `duplicate — matches existing queued prompt ${result.existing?.id}`
-          : result.error,
-      });
-      return;
-    }
-    setForm(null);
-    onRefresh?.();
-    onStatus?.(`prompts: queued ${result.entry.id} for ${agent} in ${shortenCwd(form.path)}`);
-  }
+  const onSubmitFinal = (value) => submitFinal(form, value, { setForm, dispatch, onRefresh, onStatus });
 
   useInput((input, key) => {
     if (confirmId) {
-      if (input === 'y') { queueRemove(confirmId); setConfirmId(null); onRefresh?.(); return; }
+      if (input === 'y') { removeEntry(confirmId, { setConfirmId, onRefresh }); return; }
       if (input === 'n' || key.escape) { setConfirmId(null); }
       return; // swallow everything else while a remove is pending confirmation
     }
@@ -348,7 +371,7 @@ export function PromptsTab({
   let formView = null;
   if (form) {
     if (form.step === 'path') formView = h(PathStep, { state: form, dispatch });
-    else if (form.step === 'prompt') formView = h(PromptStep, { state: form, dispatch, onSubmitFinal: submitFinal });
+    else if (form.step === 'prompt') formView = h(PromptStep, { state: form, dispatch, onSubmitFinal });
     else {
       const StepComp = STEP_COMPONENTS[form.step];
       formView = StepComp ? h(StepComp, { state: form, dispatch }) : null;
