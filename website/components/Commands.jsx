@@ -2,12 +2,13 @@ import Reveal from './Reveal.jsx';
 
 const CMDS = [
   ['unsnooze status', <>tracked sessions, reset countdowns, context sizes — or a live dashboard on a TTY</>],
-  ['unsnooze dashboard', <>full-screen TUI: status, usage, sessions, doctor, logs — with mouse support</>],
+  ['unsnooze dashboard', <>full-screen TUI: status, usage, sessions, doctor, logs, fleet, prompts — with mouse support</>],
   ['unsnooze usage', <>account burn &amp; time-to-limit forecast (<code className="chip">--json</code> for scripts)</>],
   ['unsnooze preview', <>dry-run: what would happen right now, and why — nothing is typed</>],
   ['unsnooze resume-now', <>don't wait for the reset time (<code className="chip">--all</code> for everything)</>],
   ['unsnooze cancel', <>stop tracking a session</>],
   ['unsnooze message <id>', <>per-session wake message (<code className="chip">--clear</code> to reset)</>],
+  ['unsnooze prompt add "…"', <>queue a one-shot prompt: at the limit reset a <em>new</em> session opens in the project and types it (<code className="chip">--at</code>, <code className="chip">--now</code>, <code className="chip">--host</code>)</>],
   ['unsnooze sessions', <>list unsnooze-owned multiplexer sessions and panes</>],
   ['unsnooze hosts add <name>', <>register another machine over ssh — key or password auth (<code className="chip">hosts test</code> pre-flights it)</>],
   ['unsnooze fleet', <>every registered host's sessions in one view; resume/cancel remotely from the dashboard's fleet tab</>],

@@ -67,6 +67,15 @@ const TABS = {
       <span className="d-amber">  ◐</span> <span className="d-ink">gpu</span>{'     '}<span className="d-amber">needs-auth</span> <span className="d-faint">(env var UNSNOOZE_PW_GPU is not set) · pw:env</span>{'\n'}
     </pre>
   ),
+  prompts: (
+    <pre className="term-body dash-body">
+      <span className="d-faint">  queued prompts · a add · d remove · delivered in a NEW session at the reset</span>{'\n\n'}
+      <span className="d-faint">  p-3f9a1c2e</span>  <span className="d-ink">claude</span>  ~/work/payments{'   '}next reset{'  '}<span className="d-amber">pending</span>{'    '}<span className="d-dim">"run the full test suite and fix…"</span>{'\n'}
+      <span className="d-faint">  p-8b20d4aa</span>  <span className="d-ink">codex</span>{'   '}~/work/ingest{'     '}at 9:00 pm{'  '}<span className="d-amber">pending</span>{'    '}<span className="d-dim">"ship the release"</span>{'\n'}
+      <span className="d-faint">  p-11c07e21</span>  <span className="d-ink">claude</span>  ~/oss/unsnooze{'    '}3:00 am{'     '}<span className="d-green">delivered</span>{'  '}<span className="d-dim">new session started ▶</span>{'\n\n'}
+      <span className="d-faint">  one-shot: each prompt is consumed on delivery — pane-verified against the limit banner</span>{'\n'}
+    </pre>
+  ),
 };
 
 export default function Dashboard() {
@@ -78,8 +87,9 @@ export default function Dashboard() {
         <h2>A dashboard for <span className="hl">the small hours</span></h2>
         <p className="section-lede">
           <code className="chip">unsnooze dashboard</code> is a full-screen terminal UI —
-          status, usage forecast, sessions, install doctor, live logs, and your whole ssh
-          fleet, with mouse support: click tabs and rows, wheel-scroll the logs. Pipes,{' '}
+          status, usage forecast, sessions, install doctor, live logs, queued prompts, and
+          your whole ssh fleet, with mouse support: click tabs and rows, wheel-scroll the
+          logs. Pipes,{' '}
           <code className="chip">CI</code>, and <code className="chip">--json</code> stay plain.
           Try the tabs.
         </p>

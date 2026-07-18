@@ -6,6 +6,7 @@ import Agents from '../components/Agents.jsx';
 import Contract from '../components/Contract.jsx';
 import Dashboard from '../components/Dashboard.jsx';
 import Usage from '../components/Usage.jsx';
+import Prompts from '../components/Prompts.jsx';
 import Guards from '../components/Guards.jsx';
 import Commands from '../components/Commands.jsx';
 import Faq from '../components/Faq.jsx';
@@ -16,7 +17,7 @@ import { JsonLd, webSite, softwareApplication, faqPage } from '../lib/jsonld.js'
 export const metadata = {
   title: 'unsnooze — auto-resume Claude Code & Codex when the usage limit resets',
   description:
-    'Hit the Claude Code 5-hour or weekly usage limit overnight? unsnooze tracks every limit-stopped AI coding session — Claude Code, Codex CLI, Grok, Qwen, Kimi, OpenCode, Antigravity — and wakes each one in tmux or Zellij the moment the limit resets.',
+    'Hit the Claude Code 5-hour or weekly usage limit overnight? unsnooze tracks every limit-stopped AI coding session — Claude Code, Codex CLI, Grok, Qwen, Kimi, OpenCode, Antigravity — wakes each one in tmux or Zellij the moment the limit resets, and starts queued prompts as fresh sessions.',
   alternates: { canonical: '/' },
   openGraph: {
     title: 'unsnooze — while you sleep, the work continues',
@@ -40,6 +41,7 @@ export default function Home() {
         <Contract />
         <Dashboard />
         <Usage />
+        <Prompts />
         <Guards />
         <Commands />
         <Faq />
