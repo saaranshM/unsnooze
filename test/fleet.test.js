@@ -1,7 +1,7 @@
 // Fleet primitives: host validation, ssh argv hardening, framing, sanitization.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -15,7 +15,7 @@ after(() => {
 
 const {
   validHostToken, sshArgs, frameEnvelope, extractEnvelope,
-  stripRemoteText, validateEnvelope, SCHEMA, KEY_RE,
+  stripRemoteText, validateEnvelope, SCHEMA, KEY_RE, BEGIN, END,
 } = await import('../src/fleet.js');
 const frameIt = frameEnvelope;
 const S = SCHEMA;
@@ -634,4 +634,280 @@ test('cmdHosts test: unknown host and missing name are rejected cleanly', async 
   const { cmdHosts } = await import('../src/fleet.js');
   assert.equal(await cmdHosts(['test', 'nope-not-registered']), 1);
   assert.equal(await cmdHosts(['test']), 2);
+});
+
+// ---------------------------------------------------------------------------
+// C1 (CRITICAL): a stored password source must NOT run with BatchMode=yes —
+// OpenSSH disables password/keyboard-interactive auth under BatchMode BEFORE
+// ever consulting SSH_ASKPASS, so the whole stored-password feature is dead
+// on real OpenSSH unless sshEnvForHost drops batch for every path that
+// actually attempts a connection with a password (stored askpass + the
+// interactive prompt passthrough) — batch:true stays for key hosts only.
+// ---------------------------------------------------------------------------
+
+test('C1: sshEnvForHost returns batch:false for a STORED password source (env/keychain/command), not just the interactive prompt', async () => {
+  const { sshEnvForHost } = await import('../src/fleet.js');
+  const ssh = { bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' };
+  for (const entry of [
+    { name: 'a', dest: 'me@a', auth: 'password', source: 'env', env: 'PW' },
+    { name: 'b', dest: 'me@b', auth: 'password', source: 'keychain', service: 's', account: 'ac' },
+    { name: 'c', dest: 'me@c', auth: 'password', source: 'command', cmd: 'op read x' },
+  ]) {
+    const r = sshEnvForHost(entry, { ssh, helperPath: '/s/askpass.sh', interactive: false });
+    assert.equal(r.batch, false, `${entry.source} source must return batch:false so BatchMode=yes never reaches argv`);
+    assert.ok(!r.needsAuth, `${entry.source} source with valid ssh.askpass should not need auth`);
+  }
+});
+
+test('C1: key hosts still get batch:true (unspecified → sshArgs default), no regression', async () => {
+  const { sshEnvForHost } = await import('../src/fleet.js');
+  const ssh = { bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' };
+  const r = sshEnvForHost({ name: 'v', dest: 'u@v', auth: 'key' }, { ssh, helperPath: '/x', interactive: false });
+  assert.notEqual(r.batch, false);
+});
+
+test('C1: fetchHost composes sshArgs WITHOUT BatchMode=yes for a stored-source password host', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  let seenArgs;
+  const spawnFn = (bin, args) => { seenArgs = args; return fakeSshOk(); };
+  await fetchHost('gpu', { dest: 'me@gpu', auth: 'password', source: 'command', cmd: 'op read x' },
+    { spawnFn, detect: () => ({ bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' }), timeoutMs: 200 });
+  assert.doesNotMatch(seenArgs.join(' '), /BatchMode/, 'BatchMode=yes must never ride with a stored askpass password host');
+});
+
+test('C1: remoteAction composes sshArgs WITHOUT BatchMode=yes for a stored-source password host', async () => {
+  const { remoteAction } = await import('../src/fleet.js');
+  let seenArgs;
+  const spawnFn = (bin, args) => {
+    seenArgs = args;
+    return fakeSsh({ stdout: frameEnvelope({ schema: S, minSchema: 1, result: 'ok' }) })();
+  };
+  await remoteAction('gpu', { dest: 'me@gpu', auth: 'password', source: 'command', cmd: 'op read x' }, 'resume', 'k1',
+    { spawnFn, detect: () => ({ bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' }), timeoutMs: 200 });
+  assert.doesNotMatch(seenArgs.join(' '), /BatchMode/);
+});
+
+test('C1: AUTH_FAIL_RE tightened — a non-auth 255 whose banner merely mentions "password" is no longer mislabeled needs-auth', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  // Real OpenSSH auth failures always look like "Permission denied (...)."
+  // A banner that just happens to contain the word "password" (e.g. a motd
+  // or a connection-refused message) must NOT be mislabeled as needs-auth.
+  const notAuthFailure = fakeSsh({ code: 255, stderr: 'kex_exchange_identification: read: Connection reset by password-gated proxy\n' });
+  const r = await fetchHost('gpu', { dest: 'me@gpu', auth: 'password', source: 'command', cmd: 'op read x' },
+    { spawnFn: notAuthFailure, detect: () => ({ bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' }), timeoutMs: 200 });
+  assert.equal(r.state, 'unreachable', 'a non "Permission denied (" banner must stay unreachable, not needs-auth');
+
+  // Genuine auth failures (the real OpenSSH shape) still classify correctly.
+  const realAuthFailure = fakeSsh({ code: 255, stderr: 'Permission denied (password).\n' });
+  const r2 = await fetchHost('gpu', { dest: 'me@gpu', auth: 'password', source: 'command', cmd: 'op read x' },
+    { spawnFn: realAuthFailure, detect: () => ({ bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' }), timeoutMs: 200 });
+  assert.equal(r2.state, 'needs-auth');
+});
+
+// The regression that permanently guards C1: a fake `ssh` binary that
+// reproduces real OpenSSH's actual gate order — refuses password auth the
+// instant BatchMode=yes is on its argv (255, "Permission denied (password).",
+// never touching SSH_ASKPASS), and otherwise (BatchMode absent) honors
+// SSH_ASKPASS_REQUIRE=force by shelling out to the real askpass helper this
+// codebase provisions, exactly as real ssh would. This is spawned as a real
+// child process (never the real system `ssh`, never a real host) so it pins
+// actual OpenSSH gate-ordering semantics rather than a JS mock's assumptions.
+test('C1 regression: real-OpenSSH-shaped fake ssh refuses password auth under BatchMode, succeeds without it', async () => {
+  const { fetchHost, writeHosts, readHosts } = await import('../src/fleet.js');
+  const { execFileSync } = await import('node:child_process');
+
+  const fakeSshDir = mkdtempSync(join(tmpdir(), 'unsnooze-c1-fakessh-'));
+  const expectedSecret = 'c1-regression-secret-42';
+  const envelope = { schema: 1, minSchema: 1, cli: 'x', host: 'c1regress', caps: [], sessions: [] };
+  const framed = BEGIN + JSON.stringify(envelope) + END;
+
+  const fakeSshPath = join(fakeSshDir, 'fake-ssh.js');
+  writeFileSync(fakeSshPath, `#!/usr/bin/env node
+const { execFileSync } = require('child_process');
+const args = process.argv.slice(2);
+function refuse() {
+  process.stderr.write('Permission denied (password).\\n');
+  process.exit(255);
+}
+// Real OpenSSH: BatchMode=yes disables password/keyboard-interactive auth
+// BEFORE ever consulting SSH_ASKPASS.
+if (args.includes('BatchMode=yes')) refuse();
+if (!process.env.SSH_ASKPASS || process.env.SSH_ASKPASS_REQUIRE !== 'force') refuse();
+let secret = '';
+try {
+  secret = execFileSync(process.env.SSH_ASKPASS, ['Password:'], { encoding: 'utf8' });
+} catch (e) { refuse(); }
+if (secret.trim() !== ${JSON.stringify(expectedSecret)}) refuse();
+process.stdout.write(${JSON.stringify(framed)});
+process.exit(0);
+`);
+  chmodSync(fakeSshPath, 0o755);
+
+  // Real hosts.json entry so the real `_askpass` subcommand (invoked by the
+  // real helper script the fake ssh shells out to) can resolve the source.
+  const priorHosts = readHosts();
+  writeHosts({
+    ...Object.fromEntries(Object.entries(priorHosts).map(([n, e]) => [n, e.auth === 'key' ? e.dest : e])),
+    c1regress: {
+      dest: 'gpu-dest', auth: 'password', source: 'command',
+      cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`process.stdout.write(${JSON.stringify(expectedSecret)})`)}`,
+    },
+  });
+
+  const entry = readHosts().c1regress;
+  const r = await fetchHost('c1regress', entry, {
+    detect: () => ({ bin: fakeSshPath, askpass: true, multiplex: true, flavor: 'unix' }),
+    timeoutMs: 10_000,
+  });
+
+  assert.equal(r.state, 'online', `expected online (BatchMode absent → askpass runs), got ${r.state}: ${r.error}`);
+
+  rmSync(fakeSshDir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// I1 (IMPORTANT): interactive-prompt hosts (batch:false, ssh prompting on
+// /dev/tty) must not share the default 8s kill timeout with the rest of the
+// fleet, and must never run concurrently with each other (concurrent
+// /dev/tty prompts would interleave and corrupt each other's no-echo state).
+// ---------------------------------------------------------------------------
+
+test('I1: fetchFleet does not SIGKILL an interactive-prompt host at the old default 8s timeout', { timeout: 20_000 }, async () => {
+  const { fetchFleet } = await import('../src/fleet.js');
+  const hosts = { lap: { dest: 'me@lap', auth: 'password', source: 'prompt' } };
+  // A slow typist: this "ssh" only resolves after 8.2s — longer than the
+  // fetchHost-standalone default of 8000ms. If fetchFleet applied that same
+  // default here, this host would be SIGKILLed mid-typing.
+  const spawnFn = fakeSsh({ stdout: GOOD, delayMs: 8_200 });
+  const results = await fetchFleet({ hosts, spawnFn, interactive: true });
+  assert.equal(results[0].state, 'online', `must not be killed at the old 8s default: ${results[0].error}`);
+});
+
+test('I1: fetchFleet runs interactive-prompt hosts serially (never concurrently), while non-interactive hosts keep pooled concurrency', async () => {
+  const { fetchFleet } = await import('../src/fleet.js');
+  const hosts = {
+    lap1: { dest: 'me@lap1', auth: 'password', source: 'prompt' },
+    lap2: { dest: 'me@lap2', auth: 'password', source: 'prompt' },
+    key1: 'key1-dest',
+    key2: 'key2-dest',
+  };
+  let activePrompt = 0;
+  let maxActivePrompt = 0;
+  let activeOther = 0;
+  let maxActiveOther = 0;
+  const spawnFn = (bin, args) => {
+    const isPrompt = !args.join(' ').includes('BatchMode');
+    if (isPrompt) {
+      activePrompt++; maxActivePrompt = Math.max(maxActivePrompt, activePrompt);
+    } else {
+      activeOther++; maxActiveOther = Math.max(maxActiveOther, activeOther);
+    }
+    const p = new EventEmitter();
+    p.stdout = new EventEmitter();
+    p.stderr = new EventEmitter();
+    p.kill = () => { p.killed = true; };
+    setTimeout(() => {
+      if (isPrompt) activePrompt--; else activeOther--;
+      p.stdout.emit('data', Buffer.from(GOOD));
+      p.emit('close', 0);
+    }, 30);
+    return p;
+  };
+  const results = await fetchFleet({ hosts, spawnFn, interactive: true, concurrency: 4, timeoutMs: 2000 });
+  assert.equal(results.length, 4);
+  assert.equal(maxActivePrompt, 1, 'interactive-prompt hosts must never overlap (concurrency 1)');
+  assert.ok(maxActiveOther >= 1, 'non-interactive hosts still ran');
+});
+
+// ---------------------------------------------------------------------------
+// Cheap fixes folded in alongside C1/I1
+// ---------------------------------------------------------------------------
+
+// M2: differentiate the needs-auth reason so "ssh too old" and "no terminal
+// to prompt from" don't both collapse into the same generic message.
+test('M2: sshEnvForHost differentiates needsAuth reasons (ssh too old vs prompt-with-no-terminal)', async () => {
+  const { sshEnvForHost } = await import('../src/fleet.js');
+  const tooOld = sshEnvForHost({ name: 'g', dest: 'm@g', auth: 'password', source: 'env', env: 'PW' },
+    { ssh: { bin: 'ssh', askpass: false, multiplex: true, flavor: 'unix' }, helperPath: '/x', interactive: false });
+  assert.equal(tooOld.needsAuth, true);
+  assert.match(tooOld.error, /ssh too old|unrecognized/i);
+
+  const noTerminal = sshEnvForHost({ name: 'lap', dest: 'me@lap', auth: 'password', source: 'prompt' },
+    { ssh: { bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' }, helperPath: '/x', interactive: false });
+  assert.equal(noTerminal.needsAuth, true);
+  assert.notEqual(noTerminal.error, tooOld.error, 'the two needs-auth causes must not share one generic message');
+});
+
+test('M2: fetchHost surfaces the differentiated needsAuth reason (not the old generic "no resolvable credential")', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  const r = await fetchHost('g', { dest: 'm@g', auth: 'password', source: 'env', env: 'PW' },
+    { spawnFn: () => fakeSshOk(), detect: () => ({ bin: 'ssh', askpass: false, multiplex: true, flavor: 'unix' }) });
+  assert.equal(r.state, 'needs-auth');
+  assert.match(r.error, /ssh too old|unrecognized/i);
+});
+
+// M3: a `prompt`-source host must not be read in phase 1 of `hosts test` —
+// that would prompt the user once for the check and again on connect.
+test('M3: cmdHosts test on a prompt-source host skips the phase-1 credential read (no double prompt)', async () => {
+  const { cmdHosts, writeHosts } = await import('../src/fleet.js');
+  writeHosts({ prompthost: { dest: 'me@prompthost', auth: 'password', source: 'prompt' } });
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => logs.push(a.join(' '));
+  try {
+    // Phase 2 legitimately fails here (test runner stdin isn't a TTY, so
+    // there's nothing to prompt from over the real transport) — that's
+    // phase 2's job. What M3 targets is phase 1: it must print the
+    // interactive note and never attempt (and fail on) a resolveSecret
+    // read of its own, which would be a distinct, earlier failure line.
+    await cmdHosts(['test', 'prompthost'], { spawnFn: fakeSshOk, timeoutMs: 200 });
+  } finally {
+    console.log = origLog;
+  }
+  const out = logs.join('\n');
+  assert.equal(logs[0], 'unsnooze: auth: interactive — will prompt on connect',
+    'phase 1 must be exactly the interactive note, not a resolveSecret failure');
+  assert.ok(!out.includes('unsnooze: auth: no terminal for prompt'),
+    'phase 1 must not have tried to resolveSecret the prompt source itself');
+});
+
+// M4: `hosts add` success message is auth-appropriate (not "ssh key access"
+// for a password host), and a `hosts test` failure no longer repeats the
+// reason text twice.
+test('M4: hosts add success message is auth-appropriate for password vs key hosts', async () => {
+  const { cmdHosts } = await import('../src/fleet.js');
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => logs.push(a.join(' '));
+  try {
+    await cmdHosts(['add', 'm4key', 'me@m4key']);
+    await cmdHosts(['add', 'm4pw', 'me@m4pw', '--auth', 'password', '--source', 'env', '--env', 'UNSNOOZE_PW_M4']);
+  } finally {
+    console.log = origLog;
+  }
+  const keyMsg = logs.find(l => l.includes('m4key'));
+  const pwMsg = logs.find(l => l.includes('m4pw'));
+  assert.match(keyMsg, /ssh key access/);
+  assert.doesNotMatch(pwMsg, /ssh key access/, 'a password host must not claim it needs ssh key access');
+  assert.match(pwMsg, /password/i);
+});
+
+test('M4: hosts test failure does not repeat the full reason text twice', async () => {
+  const { cmdHosts, writeHosts } = await import('../src/fleet.js');
+  writeHosts({ m4fail: { dest: 'me@m4fail', auth: 'password', source: 'env', env: 'UNSNOOZE_PW_M4FAIL' } });
+  delete process.env.UNSNOOZE_PW_M4FAIL;
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => logs.push(a.join(' '));
+  let code;
+  try {
+    code = await cmdHosts(['test', 'm4fail'], { spawnFn: fakeSshOk, timeoutMs: 200 });
+  } finally {
+    console.log = origLog;
+  }
+  const out = logs.join('\n');
+  assert.equal(code, 1);
+  const occurrences = (out.match(/UNSNOOZE_PW_M4FAIL is not set/g) || []).length;
+  assert.equal(occurrences, 1, `the reason text must appear once, not duplicated (got ${occurrences})`);
+  assert.match(out, /needs-setup/);
 });

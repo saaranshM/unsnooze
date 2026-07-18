@@ -46,6 +46,23 @@ test('resolveCommand: non-zero exit (run throws) throws AuthError', () => {
   assert.throws(() => resolveCommand({ cmd: 'false' }, { run }), AuthError);
 });
 
+// M1: resolveCommand's AuthError echoes the failing command's stderr — a
+// secret tool debug-printing to stderr could otherwise leak a huge or
+// control-char-laden blob into a message that ends up on a user's screen
+// (`hosts test` output, logs). Cap it and strip control chars.
+test('resolveCommand: uncapped/control-char stderr from a failing command is capped and stripped in the AuthError message', () => {
+  const huge = 'x'.repeat(5000);
+  const run = () => { throw new Error(`exit 1: \x1b[31m${huge}\x1b[0m`); };
+  try {
+    resolveCommand({ cmd: 'evil-tool' }, { run });
+    assert.fail('should have thrown');
+  } catch (e) {
+    assert.ok(e instanceof AuthError);
+    assert.ok(e.message.length < 300, `message should be capped, was ${e.message.length} chars`);
+    assert.doesNotMatch(e.message, /\x1b/, 'control chars (e.g. ANSI escapes) must be stripped');
+  }
+});
+
 test('resolveKeychain: mac uses security -w with service/account on argv, never the secret', () => {
   const mac = resolveKeychain({ service: 'svc', account: 'me' },
     {
@@ -138,6 +155,69 @@ test('_askpass: unknown host / unset secret → exit 1, empty stdout', () => {
   rmSync(sd, { recursive: true, force: true });
 });
 
+// C1 part 2: OpenSSH >=8.4 sets SSH_ASKPASS_PROMPT=confirm for a host-key
+// yes/no confirmation, not a password request. With BatchMode dropped (the
+// C1 fix), an unknown host now reaches this prompt instead of failing
+// closed at BatchMode — the helper must never hand ssh the secret in
+// response to a confirm prompt (fail-closed: hint + exit 1).
+test('cmdAskpass: SSH_ASKPASS_PROMPT=confirm never emits the secret — hints and exits 1', async () => {
+  const { cmdAskpass } = await import('../src/askpass.js');
+  const dir = mkdtempSync(join(tmpdir(), 'unsnooze-askpass-confirm-'));
+  const sd = join(dir, '.unsnooze'); mkdirSync(sd, { recursive: true });
+  writeFileSync(join(sd, 'hosts.json'), JSON.stringify({
+    gpu: { dest: 'me@gpu', auth: 'password', source: 'env', env: 'UNSNOOZE_PW_GPU' },
+  }));
+  const origStateDir = process.env.UNSNOOZE_STATE_DIR;
+  const origPrompt = process.env.SSH_ASKPASS_PROMPT;
+  const origPw = process.env.UNSNOOZE_PW_GPU;
+  process.env.UNSNOOZE_STATE_DIR = sd;
+  process.env.SSH_ASKPASS_PROMPT = 'confirm';
+  process.env.UNSNOOZE_PW_GPU = 'hunter2';
+  let stdoutWritten = '';
+  let stderrWritten = '';
+  const origStdoutWrite = process.stdout.write;
+  const origStderrWrite = process.stderr.write;
+  process.stdout.write = (s) => { stdoutWritten += s; return true; };
+  process.stderr.write = (s) => { stderrWritten += s; return true; };
+  let code;
+  try {
+    code = await cmdAskpass(['gpu']);
+  } finally {
+    process.stdout.write = origStdoutWrite;
+    process.stderr.write = origStderrWrite;
+    if (origStateDir === undefined) delete process.env.UNSNOOZE_STATE_DIR; else process.env.UNSNOOZE_STATE_DIR = origStateDir;
+    if (origPrompt === undefined) delete process.env.SSH_ASKPASS_PROMPT; else process.env.SSH_ASKPASS_PROMPT = origPrompt;
+    if (origPw === undefined) delete process.env.UNSNOOZE_PW_GPU; else process.env.UNSNOOZE_PW_GPU = origPw;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.equal(code, 1, 'must fail closed');
+  assert.equal(stdoutWritten, '', 'the secret must never be emitted for a confirm prompt');
+  assert.match(stderrWritten, /host key not yet trusted/i);
+  assert.match(stderrWritten, /gpu/);
+  assert.doesNotMatch(stdoutWritten + stderrWritten, /hunter2/, 'secret value must never appear anywhere in output');
+});
+
+test('cmdAskpass: SSH_ASKPASS_PROMPT=confirm end-to-end via the real subprocess entry point', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'unsnooze-askpass-confirm2-'));
+  const sd = join(dir, '.unsnooze'); mkdirSync(sd, { recursive: true });
+  writeFileSync(join(sd, 'hosts.json'), JSON.stringify({
+    gpu: { dest: 'me@gpu', auth: 'password', source: 'env', env: 'UNSNOOZE_PW_GPU' },
+  }));
+  let code = 0, out = '', err = '';
+  try {
+    out = execFileSync(process.execPath, ['bin/unsnooze.js', '_askpass', 'gpu', 'Are you sure?'],
+      { env: { ...process.env, UNSNOOZE_STATE_DIR: sd, UNSNOOZE_PW_GPU: 'hunter2', SSH_ASKPASS_PROMPT: 'confirm' }, encoding: 'utf-8' });
+  } catch (e) {
+    code = e.status;
+    out = String(e.stdout || '');
+    err = String(e.stderr || '');
+  }
+  assert.equal(code, 1);
+  assert.equal(out, '', 'stdout must be empty — no secret leaks to a confirm prompt');
+  assert.match(err, /host key not yet trusted/i);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("ensureAskpassHelper: unix writes an executable shebang wrapper", async () => {
   const { ensureAskpassHelper } = await import('../src/askpass.js');
   const sd = mkdtempSync(join(tmpdir(), 'unsnooze-helper-'));
@@ -166,5 +246,25 @@ test('ensureAskpassHelper: win32 writes a .cmd wrapper referencing the host env 
   const body = readFileSync(p, 'utf-8');
   assert.match(body, /_askpass/);
   assert.match(body, /UNSNOOZE_ASKPASS_HOST/);
+  rmSync(sd, { recursive: true, force: true });
+});
+
+// low-1: the write must be atomic (write-tmp + rename), never a partial
+// file visible at the final path, and a stale/wrong mode on a pre-existing
+// file must still be corrected back to 0700.
+test('ensureAskpassHelper: write is atomic (no leftover tmp files) and re-provisioning a pre-existing file still yields 0700', async () => {
+  const { readdirSync, chmodSync } = await import('node:fs');
+  const { ensureAskpassHelper } = await import('../src/askpass.js');
+  const sd = mkdtempSync(join(tmpdir(), 'unsnooze-helper-atomic-'));
+  const p1 = ensureAskpassHelper({ platform: 'darwin', stateDir: sd, nodePath: '/usr/bin/node', scriptPath: '/x/bin/unsnooze.js' });
+  assert.deepEqual(readdirSync(sd), ['askpass.sh'], 'no .tmp.* residue after the first write');
+
+  // Simulate a pre-existing file with the wrong mode (e.g. left over from a
+  // different umask/version) and re-provision.
+  chmodSync(p1, 0o644);
+  const p2 = ensureAskpassHelper({ platform: 'darwin', stateDir: sd, nodePath: '/usr/bin/node', scriptPath: '/x/bin/unsnooze.js' });
+  assert.equal(p2, p1);
+  assert.equal(statSync(p2).mode & 0o777, 0o700, 'pre-existing file must still be corrected to 0700');
+  assert.deepEqual(readdirSync(sd), ['askpass.sh'], 'no .tmp.* residue after re-provisioning');
   rmSync(sd, { recursive: true, force: true });
 });

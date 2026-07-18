@@ -108,27 +108,43 @@ export function sshArgs(dest, remoteCmd, { multiplex = true, batch = true } = {}
 
 // Compose the ssh child's env additions for a host's auth mode. Key hosts
 // get nothing — the path stays byte-for-byte what it was before password
-// auth existed. Password hosts with a stored/non-interactive source (or a
-// `prompt` source running under the background daemon, which has no
-// terminal to prompt on) point ssh at the askpass helper via
-// SSH_ASKPASS_REQUIRE=force (OpenSSH >=8.4 only — gated on ssh.askpass) so
-// the secret flows helper-stdout -> ssh and never touches argv or this
-// process's own env. A `prompt` source at a real interactive TTY skips
-// askpass entirely: it returns batch:false so sshArgs drops BatchMode=yes
-// and ssh prompts directly on the console — the zero-shim path.
+// auth existed (batch left unspecified → sshArgs' own default of true).
+//
+// Every password path that actually attempts a connection returns
+// batch:false — this is load-bearing, not cosmetic: OpenSSH disables
+// password/keyboard-interactive auth the instant BatchMode=yes is set, and
+// it does so BEFORE ever consulting SSH_ASKPASS. A stored source (env/
+// keychain/command) pointed at the askpass helper via
+// SSH_ASKPASS_REQUIRE=force (OpenSSH >=8.4 only — gated on ssh.askpass)
+// would never get a chance to run if BatchMode stayed on — ssh would just
+// exit 255 "Permission denied" without ever invoking the helper. So the
+// secret flows helper-stdout -> ssh and never touches argv or this
+// process's own env, AND BatchMode must be off for that helper to ever run.
+// A `prompt` source at a real interactive TTY skips askpass entirely: it
+// also returns batch:false so ssh prompts directly on the console — the
+// zero-shim path. Only a `prompt` source with no terminal to prompt from
+// (the daemon) and ssh too old for askpass short-circuit to needsAuth
+// before ever spawning ssh, so batch is moot there.
 export function sshEnvForHost(entry, { ssh, helperPath, interactive = false } = {}) {
   if (!entry || entry.auth !== 'password') return { env: {} };
   if (entry.source === 'prompt') {
     if (interactive) return { env: {}, batch: false };
-    return { env: {}, needsAuth: true };   // daemon: nothing to prompt from
+    // daemon: nothing to prompt from
+    return { env: {}, needsAuth: true, error: 'prompt source needs an interactive terminal — use env/command/keychain for the daemon' };
   }
-  if (!ssh?.askpass) return { env: {}, needsAuth: true };   // ssh < 8.4
+  if (!ssh?.askpass) {
+    return {
+      env: {}, needsAuth: true,
+      error: 'ssh too old or unrecognized for non-interactive password auth (needs OpenSSH 8.4+ for SSH_ASKPASS_REQUIRE)',
+    };
+  }
   return {
     env: {
       SSH_ASKPASS: helperPath,
       SSH_ASKPASS_REQUIRE: 'force',
       UNSNOOZE_ASKPASS_HOST: entry.name,
     },
+    batch: false,
   };
 }
 
@@ -326,7 +342,10 @@ export async function cmdHosts(args = [], { spawnFn, detect, timeoutMs } = {}) {
     }
     hosts[name] = entry;
     writeHosts(serializeHosts(hosts));
-    console.log(`unsnooze: host ${name} → ${d}. It needs unsnooze installed and ssh key access.`);
+    const authHint = entry.auth === 'password'
+      ? `password auth via ${entry.source} (see \`unsnooze hosts test ${name}\`)`
+      : 'ssh key access';
+    console.log(`unsnooze: host ${name} → ${d}. It needs unsnooze installed and ${authHint}.`);
     return 0;
   }
   if (verb === 'rm') {
@@ -348,13 +367,19 @@ export async function cmdHosts(args = [], { spawnFn, detect, timeoutMs } = {}) {
     // A failure here means ssh would fail identically (no askpass helper
     // could resolve it either), so skip the network round trip entirely
     // rather than print a misleadingly-successful probe below it.
-    if (entry.auth === 'password') {
+    if (entry.auth === 'password' && entry.source === 'prompt') {
+      // A `prompt` source reads from the terminal — resolving it here would
+      // prompt the user once for this phase-1 check and again for the
+      // phase-2 connection below. Nothing to pre-validate: it either has a
+      // terminal or it doesn't, and phase 2 will surface that.
+      console.log('unsnooze: auth: interactive — will prompt on connect');
+    } else if (entry.auth === 'password') {
       try {
         await resolveSecret(entry, { readSecret });
         console.log('unsnooze: auth: source resolved ok');
       } catch (e) {
         console.log(`unsnooze: auth: ${e.message}`);
-        console.log(`unsnooze: needs-setup: ${e.message}`);
+        console.log('unsnooze: needs-setup');
         return 1;
       }
     }
@@ -419,12 +444,16 @@ function collectChild(child, timeoutMs) {
   });
 }
 
-// OpenSSH writes auth failures to stderr ("Permission denied
-// (publickey,password)."); never trust this for a key-auth host — a key
-// host getting Permission denied is a genuine key problem (wrong/missing
-// key, wrong user), not a password-source issue, so it must stay
-// unreachable/error rather than mislabel itself needs-auth.
-const AUTH_FAIL_RE = /Permission denied|password|publickey/i;
+// OpenSSH writes auth failures to stderr in exactly this shape: "Permission
+// denied (publickey,password)."; never trust this for a key-auth host — a
+// key host getting Permission denied is a genuine key problem (wrong/
+// missing key, wrong user), not a password-source issue, so it must stay
+// unreachable/error rather than mislabel itself needs-auth. Matching only
+// "Permission denied (" (not a bare "password"/"publickey" substring
+// anywhere in stderr) avoids mislabeling a non-auth 255 whose banner just
+// happens to mention "password" (e.g. a motd or a proxy's own error text)
+// as needs-auth.
+const AUTH_FAIL_RE = /Permission denied \(/;
 function isPasswordAuthFailure(entry, stderr) {
   return entry.auth === 'password' && AUTH_FAIL_RE.test(String(stderr || ''));
 }
@@ -484,23 +513,39 @@ function toEntry(name, v) {
   return { ...base, name };
 }
 
+// Shared by fetchHost and remoteAction: detect ssh, provision the askpass
+// helper for password hosts, resolve the auth env/batch mode for this host
+// (sshEnvForHost), build the hardened argv (sshArgs), and spawn. Pulled out
+// to one function so the C1 batch-mode fix can never diverge between the
+// two call sites again — previously each duplicated this
+// detect->ensureAskpassHelper->sshEnvForHost->sshArgs->spawn block.
+function composeSshSpawn(name, entryOrDest, remoteCmd, { spawnFn, detect, interactive }) {
+  const entry = toEntry(name, entryOrDest);
+  const ssh = detect();
+  const helperPath = entry.auth === 'password'
+    ? ensureAskpassHelper({ platform: process.platform, stateDir: STATE_DIR, scriptPath: UNSNOOZE_BIN })
+    : undefined;
+  const { env: envAdditions, batch, needsAuth, error } = sshEnvForHost(entry, { ssh, helperPath, interactive });
+  // No resolvable credential (ssh too old, or a `prompt` source with no
+  // terminal to prompt on) — never spawn ssh just to watch it fail.
+  if (needsAuth) return { entry, needsAuth: true, error };
+  const args = sshArgs(entry.dest, remoteCmd, { multiplex: ssh.multiplex, batch: batch !== false });
+  const child = spawnFn(ssh.bin, args, { env: { ...process.env, ...envAdditions } });
+  return { entry, child };
+}
+
 export async function fetchHost(name, entryOrDest, {
   spawnFn = spawn, timeoutMs = 8000, detect = detectSsh, interactive = false,
 } = {}) {
   const at = Date.now();
-  const entry = toEntry(name, entryOrDest);
-  let child;
+  let entry, child;
   try {
-    const ssh = detect();
-    const helperPath = entry.auth === 'password'
-      ? ensureAskpassHelper({ platform: process.platform, stateDir: STATE_DIR, scriptPath: UNSNOOZE_BIN })
-      : undefined;
-    const { env: envAdditions, batch, needsAuth } = sshEnvForHost(entry, { ssh, helperPath, interactive });
-    // No resolvable credential (ssh too old, or a `prompt` source with no
-    // terminal to prompt on) — never spawn ssh just to watch it fail.
-    if (needsAuth) return { host: name, state: 'needs-auth', at, error: 'no resolvable credential' };
-    const args = sshArgs(entry.dest, ['status'], { multiplex: ssh.multiplex, batch: batch !== false });
-    child = spawnFn(ssh.bin, args, { env: { ...process.env, ...envAdditions } });
+    const composed = composeSshSpawn(name, entryOrDest, ['status'], { spawnFn, detect, interactive });
+    entry = composed.entry;
+    if (composed.needsAuth) {
+      return { host: name, state: 'needs-auth', at, error: composed.error || 'no resolvable credential' };
+    }
+    child = composed.child;
   } catch (err) {
     return { host: name, state: 'error', at, error: String(err?.message || err) };
   }
@@ -526,17 +571,14 @@ export async function remoteAction(name, entryOrDest, verb, key, {
   spawnFn = spawn, timeoutMs = 8000, detect = detectSsh, interactive = false,
 } = {}) {
   const remoteCmd = key != null ? [verb, key] : [verb];
-  const entry = toEntry(name, entryOrDest);
-  let child;
+  let entry, child;
   try {
-    const ssh = detect();
-    const helperPath = entry.auth === 'password'
-      ? ensureAskpassHelper({ platform: process.platform, stateDir: STATE_DIR, scriptPath: UNSNOOZE_BIN })
-      : undefined;
-    const { env: envAdditions, batch, needsAuth } = sshEnvForHost(entry, { ssh, helperPath, interactive });
-    if (needsAuth) return { ok: false, result: null, error: 'no resolvable credential', needsAuth: true };
-    const args = sshArgs(entry.dest, remoteCmd, { multiplex: ssh.multiplex, batch: batch !== false });
-    child = spawnFn(ssh.bin, args, { env: { ...process.env, ...envAdditions } });
+    const composed = composeSshSpawn(name, entryOrDest, remoteCmd, { spawnFn, detect, interactive });
+    entry = composed.entry;
+    if (composed.needsAuth) {
+      return { ok: false, result: null, error: composed.error || 'no resolvable credential', needsAuth: true };
+    }
+    child = composed.child;
   } catch (err) {
     return { ok: false, result: null, error: String(err?.message || err) };
   }
@@ -573,19 +615,47 @@ export function writeFleetCache(results) {
   renameSync(tmp, FLEET_CACHE_FILE);
 }
 
+// I1: a `prompt`-source host at a real interactive TTY is the one case
+// where ssh prompts a human directly on /dev/tty (sshEnvForHost returns
+// batch:false with no askpass env). Those hosts must never share the
+// pooled-concurrency worker loop below or its default 8s kill timeout —
+// a slow typist would get SIGKILLed mid-password, and concurrency:4 would
+// let several /dev/tty prompts interleave and corrupt each other's no-echo
+// terminal state. They're partitioned out and run serially afterward with
+// a generous timeout instead.
+function isInteractivePromptHost(name, raw, interactive) {
+  const entry = toEntry(name, raw);
+  return !!interactive && entry.auth === 'password' && entry.source === 'prompt';
+}
+
+// Far longer than the pooled default (8s) — long enough that a human typing
+// a password is never SIGKILLed mid-entry. Only applies to the serial
+// interactive-prompt pass below; the pooled fan-out keeps its own default.
+const INTERACTIVE_PROMPT_TIMEOUT_MS = 10 * 60_000;
+
 // Bounded-concurrency fan-out: a dead host is hard-killed by fetchHost's own
 // timeout and never blocks the others (allSettled + a fixed worker pool,
 // not one promise per host). Online results overwrite the cache; hosts that
 // come back unreachable/error fall back to a cached envelope under 24h old,
-// rendered as `stale` rather than dropped.
+// rendered as `stale` rather than dropped. Interactive-prompt hosts (see
+// isInteractivePromptHost) are excluded from this pool and run afterward,
+// one at a time — see below.
 export async function fetchFleet({ hosts = readHosts(), concurrency = 4, spawnFn, timeoutMs, detect, interactive } = {}) {
   const entries = Object.entries(hosts);
   const cacheByHost = new Map(readFleetCache().map(r => [r.host, r]));
   const results = new Array(entries.length);
+
+  const pooledIdx = [];
+  const promptIdx = [];
+  for (let i = 0; i < entries.length; i++) {
+    const [name, raw] = entries[i];
+    (isInteractivePromptHost(name, raw, interactive) ? promptIdx : pooledIdx).push(i);
+  }
+
   let next = 0;
   async function worker() {
-    while (next < entries.length) {
-      const i = next++;
+    while (next < pooledIdx.length) {
+      const i = pooledIdx[next++];
       const [name, raw] = entries[i];
       try {
         results[i] = await fetchHost(name, raw, { spawnFn, timeoutMs, detect, interactive });
@@ -594,8 +664,21 @@ export async function fetchFleet({ hosts = readHosts(), concurrency = 4, spawnFn
       }
     }
   }
-  const workerCount = Math.max(1, Math.min(concurrency, entries.length));
-  await Promise.allSettled(Array.from({ length: workerCount }, worker));
+  const workerCount = Math.max(1, Math.min(concurrency, pooledIdx.length));
+  if (pooledIdx.length > 0) await Promise.allSettled(Array.from({ length: workerCount }, worker));
+
+  // Serial, one /dev/tty prompt at a time, generous timeout unless the
+  // caller explicitly overrode it.
+  for (const i of promptIdx) {
+    const [name, raw] = entries[i];
+    try {
+      results[i] = await fetchHost(name, raw, {
+        spawnFn, detect, interactive, timeoutMs: timeoutMs ?? INTERACTIVE_PROMPT_TIMEOUT_MS,
+      });
+    } catch (err) {
+      results[i] = { host: name, state: 'error', at: Date.now(), error: String(err?.message || err) };
+    }
+  }
 
   const merged = results.map((r) => {
     if (r.state === 'online') return r;

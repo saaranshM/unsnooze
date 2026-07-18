@@ -3,7 +3,7 @@
 // anywhere. The SERVICE/ACCOUNT/VAR *names* may appear on argv; the secret
 // itself never does — it only ever comes back on stdout/stdin.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { writeFileSync, chmodSync, mkdirSync } from 'node:fs';
+import { writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 
 export class AuthError extends Error {
@@ -28,6 +28,14 @@ function defaultShellRun(cmd, opts) {
 
 const trimPw = (s) => String(s ?? '').replace(/\r?\n$/, '');
 
+// Minimal control-char strip for text surfaced in an error message to the
+// user (a secret command's own stderr, potentially attacker/tool-controlled
+// debug output). Mirrors fleet.js's stripRemoteText, but inlined rather
+// than imported — fleet.js imports from this module, so importing back
+// would create a circular top-level import (cmdAskpass already sidesteps
+// this the same way, via a dynamic `await import('./fleet.js')`).
+const stripControlChars = (s) => String(s ?? '').replace(/[\x00-\x1f\x7f]/g, '');
+
 export function resolveEnv(entry, { env = process.env } = {}) {
   const v = env[entry.env];
   if (v == null || v === '') throw new AuthError(`env var ${entry.env} is not set`);
@@ -41,7 +49,13 @@ export function resolveCommand(entry, { run = defaultShellRun } = {}) {
   if (!cmd) throw new AuthError('empty command source');
   let out;
   try { out = run(cmd, { shell: true }); }
-  catch (e) { throw new AuthError(`command source failed: ${e.message}`); }
+  catch (e) {
+    // e.message may embed the command's own uncapped stderr (a secret tool
+    // debug-printing to stderr could otherwise leak a huge or
+    // control-char-laden blob into `hosts test` output/logs) — cap and
+    // strip before it ever reaches a message.
+    throw new AuthError(`command source failed: ${stripControlChars(e.message).slice(0, 200)}`);
+  }
   const pw = trimPw(out);
   if (!pw) throw new AuthError('command source produced no output');
   return pw;
@@ -120,6 +134,16 @@ export function readSecret(prompt, { input = process.stdin, output = process.std
 export async function cmdAskpass(args = []) {
   const host = process.env.UNSNOOZE_ASKPASS_HOST ?? args[0];
   try {
+    // C1 part 2: dropping BatchMode for password hosts (sshEnvForHost) means
+    // ssh can now reach a yes/no host-key confirmation for an unknown host,
+    // not just a password request. OpenSSH >=8.4 sets
+    // SSH_ASKPASS_PROMPT=confirm for that case. Never hand back the secret
+    // here — fail closed with a hint instead; the user has to `ssh <host>`
+    // once manually to accept the host key before password auth can work.
+    if (process.env.SSH_ASKPASS_PROMPT === 'confirm') {
+      process.stderr.write(`unsnooze _askpass: host key not yet trusted for ${host} — run \`ssh ${host}\` once manually to accept it\n`);
+      return 1;
+    }
     const { readHosts } = await import('./fleet.js');
     const entry = readHosts()[host];
     if (!entry || entry.auth !== 'password') {
@@ -146,11 +170,20 @@ export function ensureAskpassHelper({ platform = process.platform, stateDir, nod
     // The resolution ladder (design §5c) is finalized in Task 7's cross-platform pass;
     // here we write the unix-style .cmd wrapper used by Git-Bash/WSL and MSYS ssh.
     const p = join(stateDir, 'askpass.cmd');
-    writeFileSync(p, `@echo off\r\n"${nodePath}" "${scriptPath}" _askpass %UNSNOOZE_ASKPASS_HOST%\r\n`);
+    const tmp = p + `.tmp.${process.pid}`;
+    writeFileSync(tmp, `@echo off\r\n"${nodePath}" "${scriptPath}" _askpass %UNSNOOZE_ASKPASS_HOST%\r\n`);
+    renameSync(tmp, p);   // atomic: never a torn/partial file visible at p
     return p;
   }
   const p = join(stateDir, 'askpass.sh');
-  writeFileSync(p, `#!/bin/sh\nexec "${nodePath}" "${scriptPath}" _askpass "$UNSNOOZE_ASKPASS_HOST"\n`);
+  // Write to a temp file then rename over p — a crash/concurrent read never
+  // observes a partially-written helper. Mode is applied to the tmp file at
+  // creation (writeFileSync's mode option only takes effect on a new file);
+  // chmodSync after the rename additionally corrects a pre-existing p left
+  // with the wrong mode by an older run.
+  const tmp = p + `.tmp.${process.pid}`;
+  writeFileSync(tmp, `#!/bin/sh\nexec "${nodePath}" "${scriptPath}" _askpass "$UNSNOOZE_ASKPASS_HOST"\n`, { mode: 0o700 });
+  renameSync(tmp, p);
   chmodSync(p, 0o700);
   return p;
 }
