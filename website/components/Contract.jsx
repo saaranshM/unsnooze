@@ -54,13 +54,13 @@ export default function Contract() {
           permissions.
         </p>
       </Reveal>
+      {/* Reveal renders the div itself so the dl's children are single-level
+          div groups wrapping dt/dd — the only structure assistive tech accepts. */}
       <dl className="contract">
         {TERMS.map((t, i) => (
-          <Reveal key={t.dt} delay={Math.min(i * 0.04, 0.14)}>
-            <div className="row">
-              <dt>{t.dt}</dt>
-              <dd>{t.dd}</dd>
-            </div>
+          <Reveal key={t.dt} delay={Math.min(i * 0.04, 0.14)} className="row">
+            <dt>{t.dt}</dt>
+            <dd>{t.dd}</dd>
           </Reveal>
         ))}
       </dl>

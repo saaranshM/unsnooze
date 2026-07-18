@@ -30,7 +30,7 @@ export default function Compare() {
           <table className="compare">
             <thead>
               <tr>
-                <th scope="col"></th>
+                <th scope="col"><span className="sr-only">Capability</span></th>
                 <th scope="col" className="us">unsnooze</th>
                 <th scope="col">claude-auto-retry</th>
                 <th scope="col">autoclaude</th>

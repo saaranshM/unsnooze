@@ -6,7 +6,7 @@
   --line-soft: #1a2029;
   --ink: #e6edf3;
   --dim: #8b949e;
-  --faint: #5b6470;
+  --faint: #78828f; /* ≥4.8:1 on night/panel — WCAG AA for small text */
   --amber: #f59e0b;
   --rose: #fb7185;
   --awake: #3fb950;
@@ -60,6 +60,11 @@ code.chip {
 }
 
 .wrap { max-width: 1020px; margin: 0 auto; padding: 0 24px; position: relative; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
 
 /* ---------- ambient layers ---------- */
 .dawn-layer {
