@@ -271,7 +271,7 @@ wheel to scroll (toggle with `m`; hold Shift — Option in iTerm2 — to select 
 ```sh
 claude / codex / grok                  # normal usage — wrapped automatically
 unsnooze status                        # tracked sessions + reset countdowns
-unsnooze dashboard [tab]               # live TUI (status|usage|sessions|doctor|logs)
+unsnooze dashboard [tab]               # live TUI (status|usage|sessions|doctor|logs|fleet|prompts)
 unsnooze usage [--json]                # account burn & time-to-limit forecast
 unsnooze usage --install-statusline    # opt-in exact Claude % (chains your statusLine)
 unsnooze resume-now [id|--all]         # don't wait for the reset time

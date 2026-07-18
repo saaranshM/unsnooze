@@ -293,7 +293,7 @@ Usage:
   unsnooze preview [id]            dry-run: what WOULD happen right now, and
                                    why — nothing is typed or opened (exit 2
                                    when a wake is actionable, else 0)
-  unsnooze dashboard [tab]         live TUI (status|usage|sessions|doctor|logs|fleet) — q to quit,
+  unsnooze dashboard [tab]         live TUI (status|usage|sessions|doctor|logs|fleet|prompts) — q to quit,
                                    mouse: click/wheel (m toggles)
   unsnooze hosts [add|rm|list]     register ssh hosts for the fleet view
                                    add <name> <dest> [--auth key|password]
