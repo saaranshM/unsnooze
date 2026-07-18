@@ -143,20 +143,79 @@ export function validateEnvelope(obj) {
 }
 
 // ---------------------------------------------------------------------------
-// Host registry — ~/.unsnooze/hosts.json  { "<name>": "<ssh destination>" }
-// A separate single-purpose file (not config.json): settings.js has no
-// dynamic-key support and the config surface stays small.
+// Host registry — ~/.unsnooze/hosts.json  { "<name>": "<ssh destination>" |
+// { dest, auth: 'key'|'password', source?, env?, service?, account?, cmd? } }
+// A bare string is a legacy/diff-friendly shorthand for key auth; readHosts()
+// normalizes both forms to the descriptor shape, writeHosts (via cmdHosts)
+// collapses key-auth descriptors back to bare strings on save. A separate
+// single-purpose file (not config.json): settings.js has no dynamic-key
+// support and the config surface stays small.
 // ---------------------------------------------------------------------------
 
 const HOSTS_FILE = join(STATE_DIR, 'hosts.json');
+
+// Password-auth sources: where cmdFleet/fetchHost pull a credential from when
+// a host needs a password instead of an ssh key. Kept as a fixed set (not
+// free text) since the source name gates which of env/service/account/cmd
+// fields are consulted downstream.
+const SOURCES = new Set(['prompt', 'env', 'keychain', 'command']);
+// Env var names: POSIX shell identifier shape, so a hostile/typo'd name can
+// never smuggle a shell metacharacter into anything that reads process.env.
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+
+// Normalize a raw hosts.json value (string = legacy key host, or an already
+// object-shaped entry) into a canonical descriptor. Returns null for
+// anything unrecognizable so readHosts can drop it rather than propagate
+// malformed/tampered disk state.
+function normalizeHostEntry(raw) {
+  if (typeof raw === 'string') {
+    return validHostToken(raw) ? { dest: raw, auth: 'key' } : null;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (!validHostToken(raw.dest)) return null;
+  if (raw.auth !== 'password') return { dest: raw.dest, auth: 'key' };
+  const source = SOURCES.has(raw.source) ? raw.source : 'prompt';
+  const e = { dest: raw.dest, auth: 'password', source };
+  if (source === 'env' && ENV_NAME_RE.test(raw.env || '')) e.env = raw.env;
+  if (source === 'keychain') {
+    if (typeof raw.service === 'string') e.service = stripRemoteText(raw.service, 128);
+    if (typeof raw.account === 'string') e.account = stripRemoteText(raw.account, 128);
+  }
+  if (source === 'command' && typeof raw.cmd === 'string') e.cmd = raw.cmd;
+  return e;
+}
+
+// A descriptor's dest, tolerating both the normalized object shape and a
+// bare legacy string — lets callers (fetchFleet, formatFleetTui) accept
+// either without forcing every caller through readHosts() first (tests and
+// callers that build a hosts map by hand still work).
+function entryDest(v) {
+  if (typeof v === 'string') return v;
+  return v && typeof v === 'object' ? v.dest : undefined;
+}
+
+// Inverse of normalizeHostEntry for the write path: a plain key-auth entry
+// collapses back to the bare string form so hosts.json stays diff-friendly
+// for the common case; password entries keep their full descriptor.
+function serializeHostEntry(e) {
+  return e && typeof e === 'object' && e.auth === 'key' ? e.dest : e;
+}
+
+function serializeHosts(hosts) {
+  const out = Object.create(null);
+  for (const [name, e] of Object.entries(hosts)) out[name] = serializeHostEntry(e);
+  return out;
+}
 
 export function readHosts() {
   const out = Object.create(null);
   try {
     const raw = JSON.parse(readFileSync(HOSTS_FILE, 'utf-8'));
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-      for (const [name, dest] of Object.entries(raw)) {
-        if (validHostToken(name) && validHostToken(dest)) out[name] = dest;
+      for (const [name, v] of Object.entries(raw)) {
+        if (!validHostToken(name)) continue;
+        const e = normalizeHostEntry(v);
+        if (e) out[name] = e;
       }
     }
   } catch { /* absent or unreadable → empty */ }
@@ -170,6 +229,20 @@ export function writeHosts(hosts) {
   renameSync(tmp, HOSTS_FILE);
 }
 
+function parseFlags(argv) {
+  const f = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--auth') f.auth = argv[++i];
+    else if (a === '--source') f.source = argv[++i];
+    else if (a === '--env') f.env = argv[++i];
+    else if (a === '--service') f.service = argv[++i];
+    else if (a === '--account') f.account = argv[++i];
+    else if (a === '--cmd') f.cmd = argv[++i];
+  }
+  return f;
+}
+
 export async function cmdHosts(args = []) {
   const [verb, name, dest] = args;
   const hosts = readHosts();
@@ -179,7 +252,11 @@ export async function cmdHosts(args = []) {
       console.log('unsnooze: no hosts registered. Add one: unsnooze hosts add <name> [ssh-destination]');
       return 0;
     }
-    for (const n of names) console.log(`  ${n.padEnd(16)} ${hosts[n]}`);
+    for (const n of names) {
+      const e = hosts[n];
+      const tag = e.auth === 'password' ? `  (password via ${e.source})` : '';
+      console.log(`  ${n.padEnd(16)} ${e.dest}${tag}`);
+    }
     return 0;
   }
   if (verb === 'add') {
@@ -188,8 +265,28 @@ export async function cmdHosts(args = []) {
       console.error('unsnooze: invalid host name/destination (letters, digits, . _ @ - only; no leading -).');
       return 1;
     }
-    hosts[name] = d;
-    writeHosts(hosts);
+    const f = parseFlags(args.slice(3));
+    let entry = d;   // default: bare string = key auth
+    if (f.auth === 'password') {
+      const source = f.source ?? 'prompt';
+      if (!SOURCES.has(source)) { console.error(`unsnooze: unknown source '${source}' (prompt|env|keychain|command)`); return 1; }
+      if (source === 'command' && !f.cmd) { console.error('unsnooze: --source command requires --cmd'); return 1; }
+      if (source === 'env' && f.env && !ENV_NAME_RE.test(f.env)) { console.error('unsnooze: invalid --env name'); return 1; }
+      entry = { dest: d, auth: 'password', source };
+      if (source === 'env') {
+        entry.env = f.env || `UNSNOOZE_PW_${name.toUpperCase().replace(/[^A-Z0-9_]/g, '_')}`;
+      }
+      if (source === 'keychain') {
+        entry.service = stripRemoteText(f.service || `unsnooze-${name}`, 128);
+        entry.account = stripRemoteText(f.account || d.split('@')[0], 128);
+      }
+      if (source === 'command') entry.cmd = f.cmd;
+    } else if (f.auth && f.auth !== 'key') {
+      console.error(`unsnooze: unknown --auth '${f.auth}' (key|password)`);
+      return 1;
+    }
+    hosts[name] = entry;
+    writeHosts(serializeHosts(hosts));
     console.log(`unsnooze: host ${name} → ${d}. It needs unsnooze installed and ssh key access.`);
     return 0;
   }
@@ -199,7 +296,7 @@ export async function cmdHosts(args = []) {
       return 1;
     }
     delete hosts[name];
-    writeHosts(hosts);
+    writeHosts(serializeHosts(hosts));
     console.log(`unsnooze: removed ${name}.`);
     return 0;
   }
@@ -360,7 +457,8 @@ export async function fetchFleet({ hosts = readHosts(), concurrency = 4, spawnFn
   async function worker() {
     while (next < entries.length) {
       const i = next++;
-      const [name, dest] = entries[i];
+      const [name, raw] = entries[i];
+      const dest = entryDest(raw);
       try {
         results[i] = await fetchHost(name, dest, { spawnFn, timeoutMs });
       } catch (err) {
@@ -450,7 +548,7 @@ export function formatFleetTui(results, { color = true, hosts = {}, now = Date.n
     for (const s of stopped) {
       const id = s.sessionId ? s.sessionId.slice(0, 8) : (s.key ? s.key.slice(0, 8) : '(no id)');
       const when = Number.isFinite(s.resetAt) ? fmtCountdown(s.resetAt - now) : '?';
-      const dest = hosts[r.host] || r.host;
+      const dest = entryDest(hosts[r.host]) || r.host;
       const hint = s.muxSession ? attachHintRemote(dest, s.mux || 'tmux', s.muxSession) : null;
       lines.push(`    ${badge(s.status, { color })} ${c.bright(id)}  ${(s.agent || 'claude').padEnd(6)} resets ${when}${hint ? `  attach: ${hint}` : ''}`);
     }

@@ -92,13 +92,91 @@ test('hosts registry: add/list/rm round-trip, atomic file, invalid rejected', as
   assert.deepEqual({ ...readHosts() }, {});
   assert.equal(await cmdHosts(['add', 'build1']), 0);                    // dest defaults to name
   assert.equal(await cmdHosts(['add', 'gpu', 'ubuntu@10.0.0.7']), 0);
-  assert.deepEqual({ ...readHosts() }, { build1: 'build1', gpu: 'ubuntu@10.0.0.7' });
+  assert.deepEqual({ ...readHosts() }, {
+    build1: { dest: 'build1', auth: 'key' },
+    gpu: { dest: 'ubuntu@10.0.0.7', auth: 'key' },
+  });
   assert.equal(await cmdHosts(['add', 'bad', '-oProxyCommand=x']), 1);  // invalid dest
   assert.equal(await cmdHosts(['rm', 'build1']), 0);
   assert.deepEqual(Object.keys(readHosts()), ['gpu']);
   assert.equal(await cmdHosts(['rm', 'nope']), 1);
   assert.equal(await cmdHosts(['list']), 0);
   assert.equal(await cmdHosts(['frobnicate']), 2);                       // usage
+});
+
+test('readHosts: migrates string entries to key-auth descriptors', async () => {
+  const { writeHosts, readHosts } = await import('../src/fleet.js');
+  writeHosts({ vpc: 'ubuntu@10.0.0.7' });                       // legacy string on disk
+  const h = readHosts();
+  assert.deepEqual({ ...h.vpc }, { dest: 'ubuntu@10.0.0.7', auth: 'key' });
+});
+
+test('hosts add --auth password --source command stores a descriptor', async () => {
+  const { cmdHosts, readHosts } = await import('../src/fleet.js');
+  assert.equal(await cmdHosts(['add', 'ci', 'ci@build', '--auth', 'password',
+    '--source', 'command', '--cmd', 'op read op://v/ci/pw']), 0);
+  const e = readHosts().ci;
+  assert.equal(e.auth, 'password');
+  assert.equal(e.source, 'command');
+  assert.equal(e.cmd, 'op read op://v/ci/pw');
+});
+
+test('hosts add: password defaults to prompt source; bad source/auth rejected', async () => {
+  const { cmdHosts, readHosts } = await import('../src/fleet.js');
+  assert.equal(await cmdHosts(['add', 'lap', 'me@lap', '--auth', 'password']), 0);
+  assert.equal(readHosts().lap.source, 'prompt');
+  assert.equal(await cmdHosts(['add', 'x', 'x@x', '--auth', 'nope']), 1);
+  assert.equal(await cmdHosts(['add', 'y', 'y@y', '--auth', 'password', '--source', 'bogus']), 1);
+  // command source requires --cmd; env requires --env
+  assert.equal(await cmdHosts(['add', 'z', 'z@z', '--auth', 'password', '--source', 'command']), 1);
+});
+
+test('hosts add: --source env requires a valid --env name', async () => {
+  const { cmdHosts, readHosts } = await import('../src/fleet.js');
+  assert.equal(await cmdHosts(['add', 'e1', 'e1@e1', '--auth', 'password',
+    '--source', 'env', '--env', 'bad name!']), 1);                       // invalid identifier
+  assert.equal(await cmdHosts(['add', 'e2', 'e2@e2', '--auth', 'password',
+    '--source', 'env', '--env', 'UNSNOOZE_PW_E2']), 0);
+  assert.equal(readHosts().e2.env, 'UNSNOOZE_PW_E2');
+  assert.equal(await cmdHosts(['add', 'e3', 'e3@e3', '--auth', 'password', '--source', 'env']), 0);
+  assert.match(readHosts().e3.env, /^UNSNOOZE_PW_E3$/);                  // auto-generated default
+});
+
+test('hosts add: --source keychain defaults service/account from name/dest', async () => {
+  const { cmdHosts, readHosts } = await import('../src/fleet.js');
+  assert.equal(await cmdHosts(['add', 'kc', 'alice@box', '--auth', 'password', '--source', 'keychain']), 0);
+  const e = readHosts().kc;
+  assert.equal(e.service, 'unsnooze-kc');
+  assert.equal(e.account, 'alice');
+  assert.equal(await cmdHosts(['add', 'kc2', 'bob@box2', '--auth', 'password', '--source', 'keychain',
+    '--service', 'svc', '--account', 'acct']), 0);
+  assert.equal(readHosts().kc2.service, 'svc');
+  assert.equal(readHosts().kc2.account, 'acct');
+});
+
+test('key host still writes/reads as before (regression)', async () => {
+  const { cmdHosts, readHosts } = await import('../src/fleet.js');
+  assert.equal(await cmdHosts(['add', 'vpc2', 'ubuntu@vpc2']), 0);
+  assert.equal(readHosts().vpc2.auth, 'key');
+  assert.equal(readHosts().vpc2.dest, 'ubuntu@vpc2');
+});
+
+test('writeHosts round-trip: key host serializes as bare string, password host as descriptor', async () => {
+  const { cmdHosts, readHosts } = await import('../src/fleet.js');
+  const { readFileSync } = await import('node:fs');
+  const { STATE_DIR } = await import('../src/config.js');
+  const { join: pathJoin } = await import('node:path');
+  assert.equal(await cmdHosts(['add', 'plain', 'ubuntu@plain']), 0);
+  assert.equal(await cmdHosts(['add', 'secure', 'sec@box', '--auth', 'password']), 0);
+  const onDisk = JSON.parse(readFileSync(pathJoin(STATE_DIR, 'hosts.json'), 'utf-8'));
+  assert.equal(typeof onDisk.plain, 'string', 'key host stays diff-friendly bare string on disk');
+  assert.equal(onDisk.plain, 'ubuntu@plain');
+  assert.equal(typeof onDisk.secure, 'object');
+  assert.equal(onDisk.secure.auth, 'password');
+  // and it still reads back correctly through the normalizer
+  assert.equal(readHosts().plain.dest, 'ubuntu@plain');
+  assert.equal(readHosts().plain.auth, 'key');
+  assert.equal(readHosts().secure.auth, 'password');
 });
 
 test('status --json prints machine shape; resume core marks without typing', async () => {

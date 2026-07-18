@@ -80,7 +80,7 @@ export async function loadDoctorSnapshot() {
 export async function loadFleetSnapshot() {
   const hosts = readHosts();
   const results = await fetchFleet({ hosts });
-  return results.map(r => ({ ...r, dest: hosts[r.host] }));
+  return results.map(r => ({ ...r, dest: hosts[r.host]?.dest }));
 }
 
 // Flat (host, dest, session) rows for every stopped session across the
