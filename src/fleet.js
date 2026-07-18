@@ -5,8 +5,8 @@
 // allowlisted host tokens, closed verb set, sentinel-framed JSON, and
 // control-char-stripped ingest.
 import { join } from 'node:path';
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync as fsExistsSync } from 'node:fs';
+import { spawn, execFileSync } from 'node:child_process';
 import { STATE_DIR } from './config.js';
 import { colors, shouldUseTui, makeTable, logoBlock, badge } from './tui.js';
 
@@ -26,6 +26,52 @@ export function validHostToken(s) {
 }
 
 const REMOTE_VERBS = new Set(['status', 'resume', 'cancel']);
+
+// ssh -V prints to STDERR; capture it. Returns '' on any failure.
+function defaultRun(bin, args) {
+  try {
+    return execFileSync(bin, args, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (e) {
+    return String(e.stderr || e.stdout || '');
+  }
+}
+
+export function parseSshVersion(banner) {
+  const m = String(banner || '').match(/OpenSSH(_for_Windows)?_(\d+)\.(\d+)/i);
+  if (!m) return { ok: false, flavor: 'unknown', major: 0, minor: 0, askpass: false, multiplex: false };
+  const nativeWindows = !!m[1];
+  const major = Number(m[2]), minor = Number(m[3]);
+  const atLeast84 = major > 8 || (major === 8 && minor >= 4);
+  return {
+    ok: true,
+    flavor: nativeWindows ? 'native-windows' : 'unix',
+    major, minor,
+    askpass: atLeast84,           // SSH_ASKPASS_REQUIRE=force (OpenSSH 8.4+)
+    multiplex: !nativeWindows,    // ControlMaster needs unix sockets; native win hard-errors
+  };
+}
+
+let _sshCache = null;
+export function detectSsh({
+  platform = process.platform,
+  run = defaultRun,
+  existsSync = fsExistsSync,
+  cache = true,
+} = {}) {
+  if (cache && _sshCache) return _sshCache;
+  let bin = 'ssh';
+  if (platform === 'win32') {
+    const probes = [
+      'C:\\Windows\\System32\\OpenSSH\\ssh.exe',
+      'C:\\Program Files\\Git\\usr\\bin\\ssh.exe',
+    ];
+    const found = probes.find(p => existsSync(p));
+    if (found) bin = found;   // prefer a concrete install; else fall through to PATH 'ssh'
+  }
+  const info = { bin, ...parseSshVersion(run(bin, ['-V'])) };
+  if (cache) _sshCache = info;
+  return info;
+}
 
 // Fixed hardening flags, always before the host so nothing tainted can be
 // read as an option. StrictHostKeyChecking is deliberately NOT set: a CLI -o
