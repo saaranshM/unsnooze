@@ -45,7 +45,7 @@ test('corrupt promptQueue (object) normalizes to []', () => {
 
 test('queueAdd happy path persists to state.json', () => {
   resetState();
-  const result = queueAdd({ cwd: '/tmp/proj-a', agent: 'claude', prompt: 'do the thing' });
+  const result = queueAdd({ cwd: '/tmp/proj-a', agent: 'claude', prompt: 'do the thing', spawn: false });
   assert.equal(result.ok, true);
   assert.match(result.entry.id, /^p-[0-9a-f]{8}$/);
   assert.equal(result.entry.cwd, '/tmp/proj-a');
@@ -69,44 +69,103 @@ test('queueAdd happy path persists to state.json', () => {
 
 test('queueAdd rejects a relative cwd', () => {
   resetState();
-  const result = queueAdd({ cwd: 'relative/path', agent: 'claude', prompt: 'hi' });
+  const result = queueAdd({ cwd: 'relative/path', agent: 'claude', prompt: 'hi', spawn: false });
   assert.equal(result.ok, false);
   assert.match(result.error, /absolute/i);
 });
 
 test('queueAdd rejects an unknown agent', () => {
   resetState();
-  const result = queueAdd({ cwd: '/tmp/proj', agent: 'not-a-real-agent', prompt: 'hi' });
+  const result = queueAdd({ cwd: '/tmp/proj', agent: 'not-a-real-agent', prompt: 'hi', spawn: false });
   assert.equal(result.ok, false);
   assert.match(result.error, /agent/i);
 });
 
 test('queueAdd rejects a prompt that is empty after sanitization', () => {
   resetState();
-  const result = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: '\x1b[31m\x03   ' });
+  const result = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: '\x1b[31m\x03   ', spawn: false });
   assert.equal(result.ok, false);
   assert.match(result.error, /prompt/i);
 });
 
 test('queueAdd rejects a bad mode', () => {
   resetState();
-  const result = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'hi', mode: 'whenever' });
+  const result = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'hi', mode: 'whenever', spawn: false });
   assert.equal(result.ok, false);
   assert.match(result.error, /mode/i);
 });
 
 test('queueAdd rejects mode "at" without a finite atMs', () => {
   resetState();
-  const result = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'hi', mode: 'at', atMs: NaN });
+  const result = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'hi', mode: 'at', atMs: NaN, spawn: false });
   assert.equal(result.ok, false);
   assert.match(result.error, /atMs/i);
 });
 
+test('queueAdd rejects a bad createdBy', () => {
+  resetState();
+  const result = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'hi', createdBy: 'evil', spawn: false });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /createdBy/i);
+});
+
+test('queueAdd accepts createdBy "remote"', () => {
+  resetState();
+  const result = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'hi', createdBy: 'remote', spawn: false });
+  assert.equal(result.ok, true);
+  assert.equal(result.entry.createdBy, 'remote');
+});
+
+test('queueAdd with spawn suppressed does not call spawnResumerIfNeeded', () => {
+  resetState();
+  let called = false;
+  const result = queueAdd({
+    cwd: '/tmp/proj', agent: 'claude', prompt: 'hi', spawn: false,
+    spawnFn: () => { called = true; },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(called, false);
+});
+
+test('queueAdd with spawn enabled calls the injected spawnFn on success', () => {
+  resetState();
+  let called = false;
+  const result = queueAdd({
+    cwd: '/tmp/proj', agent: 'claude', prompt: 'hi', spawn: true,
+    spawnFn: () => { called = true; },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(called, true);
+});
+
+test('queueAdd does not spawn on a duplicate or a full queue even with spawn: true', () => {
+  resetState();
+  let calls = 0;
+  const spawnFn = () => { calls += 1; };
+  queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'dup me', spawn: true, spawnFn });
+  assert.equal(calls, 1);
+  const dup = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'dup me', spawn: true, spawnFn });
+  assert.equal(dup.ok, false);
+  assert.equal(dup.error, 'duplicate');
+  assert.equal(calls, 1, 'a duplicate must not spawn again');
+});
+
+test('queueAdd does not spawn on a validation failure even with spawn: true', () => {
+  resetState();
+  let called = false;
+  const result = queueAdd({
+    cwd: 'relative', agent: 'claude', prompt: 'hi', spawn: true,
+    spawnFn: () => { called = true; },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(called, false);
+});
+
 test('queueAdd dedupes identical pending (cwd, agent, prompt)', () => {
   resetState();
-  const first = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'same prompt' });
+  const first = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'same prompt', spawn: false });
   assert.equal(first.ok, true);
-  const second = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'same prompt' });
+  const second = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'same prompt', spawn: false });
   assert.equal(second.ok, false);
   assert.equal(second.error, 'duplicate');
   assert.equal(second.existing.id, first.entry.id);
@@ -116,10 +175,10 @@ test('queueAdd dedupes identical pending (cwd, agent, prompt)', () => {
 test('queueAdd caps at 50 non-terminal entries', () => {
   resetState();
   for (let i = 0; i < 50; i += 1) {
-    const r = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: `prompt number ${i}` });
+    const r = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: `prompt number ${i}`, spawn: false });
     assert.equal(r.ok, true, `entry ${i} should succeed`);
   }
-  const overflow = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'one too many' });
+  const overflow = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'one too many', spawn: false });
   assert.equal(overflow.ok, false);
   assert.equal(overflow.error, 'queue full');
   assert.equal(queueList().length, 50);
@@ -153,7 +212,7 @@ test('sanitizePrompt trims and caps length at 4000', () => {
 
 test('queueRemove cancels a pending entry and returns true', () => {
   resetState();
-  const { entry } = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'remove me' });
+  const { entry } = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'remove me', spawn: false });
   assert.equal(queueRemove(entry.id), true);
   const found = queueList().find(e => e.id === entry.id);
   assert.equal(found.status, 'cancelled');
@@ -166,21 +225,21 @@ test('queueRemove returns false for an unknown id', () => {
 
 test('queueRemove returns false for an already-terminal entry', () => {
   resetState();
-  const { entry } = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'already gone' });
+  const { entry } = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'already gone', spawn: false });
   assert.equal(queueRemove(entry.id), true);
   assert.equal(queueRemove(entry.id), false);
 });
 
 test('queueClear cancels only pending/launching entries and returns the count', () => {
   resetState();
-  const a = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'a' }).entry;
-  const b = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'b' }).entry;
+  const a = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'a', spawn: false }).entry;
+  const b = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'b', spawn: false }).entry;
   updateState(state => {
     const rec = state.promptQueue.find(e => e.id === b.id);
     rec.status = 'launching';
     return state;
   });
-  const c = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'c' }).entry;
+  const c = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'c', spawn: false }).entry;
   updateState(state => {
     const rec = state.promptQueue.find(e => e.id === c.id);
     rec.status = 'delivered';
@@ -226,7 +285,7 @@ test('prune removes old terminal promptQueue entries, keeps pending and recent t
 
 test('duePromptEntries: "now" mode entries are always due', () => {
   resetState();
-  const { entry } = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'immediate', mode: 'now' });
+  const { entry } = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'immediate', mode: 'now', spawn: false });
   const due = duePromptEntries(Date.now(), { anchors: {} });
   assert.deepEqual(due.map(e => e.id), [entry.id]);
 });
@@ -234,8 +293,8 @@ test('duePromptEntries: "now" mode entries are always due', () => {
 test('duePromptEntries: "at" mode respects atMs boundary', () => {
   resetState();
   const now = Date.now();
-  const past = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'past', mode: 'at', atMs: now - 1000 }).entry;
-  const future = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'future', mode: 'at', atMs: now + 100_000 }).entry;
+  const past = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'past', mode: 'at', atMs: now - 1000, spawn: false }).entry;
+  const future = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'future', mode: 'at', atMs: now + 100_000, spawn: false }).entry;
   const due = duePromptEntries(now, { anchors: {} });
   const ids = due.map(e => e.id);
   assert.ok(ids.includes(past.id));
@@ -245,7 +304,7 @@ test('duePromptEntries: "at" mode respects atMs boundary', () => {
 test('duePromptEntries: "next-reset" with future anchor is not due', () => {
   resetState();
   const now = Date.now();
-  queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'waiting on reset' });
+  queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'waiting on reset', spawn: false });
   const due = duePromptEntries(now, { anchors: { claude: { resetAtMs: now + 3_600_000 } } });
   assert.equal(due.length, 0);
 });
@@ -253,14 +312,14 @@ test('duePromptEntries: "next-reset" with future anchor is not due', () => {
 test('duePromptEntries: "next-reset" with past anchor is due', () => {
   resetState();
   const now = Date.now();
-  const entry = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'reset already happened' }).entry;
+  const entry = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'reset already happened', spawn: false }).entry;
   const due = duePromptEntries(now, { anchors: { claude: { resetAtMs: now - 1000 } } });
   assert.deepEqual(due.map(e => e.id), [entry.id]);
 });
 
 test('duePromptEntries: "next-reset" with null anchor (no known future reset) is due', () => {
   resetState();
-  const entry = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'no signal' }).entry;
+  const entry = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'no signal', spawn: false }).entry;
   const due = duePromptEntries(Date.now(), { anchors: { claude: { resetAtMs: null } } });
   assert.deepEqual(due.map(e => e.id), [entry.id]);
 });
@@ -268,7 +327,7 @@ test('duePromptEntries: "next-reset" with null anchor (no known future reset) is
 test('duePromptEntries: notBefore in the future blocks an otherwise-due entry', () => {
   resetState();
   const now = Date.now();
-  const { entry } = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'backoff floor' });
+  const { entry } = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'backoff floor', spawn: false });
   updateState(state => {
     state.promptQueue.find(e => e.id === entry.id).notBefore = now + 60_000;
     return state;
@@ -279,9 +338,9 @@ test('duePromptEntries: notBefore in the future blocks an otherwise-due entry', 
 
 test('duePromptEntries preserves FIFO order across mixed modes', () => {
   resetState();
-  const a = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'a', mode: 'now' }).entry;
-  const b = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'b', mode: 'now' }).entry;
-  const c = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'c', mode: 'now' }).entry;
+  const a = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'a', mode: 'now', spawn: false }).entry;
+  const b = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'b', mode: 'now', spawn: false }).entry;
+  const c = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'c', mode: 'now', spawn: false }).entry;
   const due = duePromptEntries(Date.now(), { anchors: {} });
   assert.deepEqual(due.map(e => e.id), [a.id, b.id, c.id]);
 });
@@ -298,7 +357,7 @@ test('duePromptEntries resolves anchors per distinct agent when anchors not inje
     };
     return state;
   });
-  const { entry } = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'real anchor path' });
+  const { entry } = queueAdd({ cwd: '/tmp/proj', agent: 'claude', prompt: 'real anchor path', spawn: false });
   const due = duePromptEntries(now);
   assert.deepEqual(due.map(e => e.id), []);
   assert.notEqual(entry, undefined);

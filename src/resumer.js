@@ -713,7 +713,7 @@ export function routeDispatchOutcome(result, rec, deferCounts, { maxBusyDefers =
 // sessions are detected without a hook or pane. signal: clean shutdown.
 export async function runResumer({
   resolveMux = resolveRecordMux, pollInterval = POLL_INTERVAL_MS,
-  persistent = false, watcher = null, signal = null,
+  persistent = false, watcher = null, signal = null, queueMux = null,
 } = {}) {
   // A transient hook-spawned resumer may hold the lock right now; a daemon
   // outlives it, so wait for the lock instead of dying. The watcher MUST keep
@@ -760,7 +760,12 @@ export async function runResumer({
 
       const stopped = activeStopped();
       const resuming = Object.values(readState().sessions).filter(s => s.status === 'resuming');
-      if (stopped.length === 0 && resuming.length === 0 && !persistent) {
+      // Additive: a pending/launching prompt-queue entry keeps a transient
+      // resumer alive the same way a stopped/resuming session record does —
+      // this can only make the loop live LONGER, never exit earlier (the
+      // original session-only condition is untouched, just AND-ed with this).
+      const queuePending = readState().promptQueue.some(e => ['pending', 'launching'].includes(e.status));
+      if (stopped.length === 0 && resuming.length === 0 && !queuePending && !persistent) {
         log('no pending sessions — resumer exiting');
         return 0;
       }
@@ -789,6 +794,20 @@ export async function runResumer({
       if (verifying.length > 0) {
         await sleep(VERIFY_DELAY_MS);
         for (const key of verifying) await verifyOne(key, { resolveMux });
+      }
+
+      // Prompt queue delivery — strictly AFTER session dispatch/verify above,
+      // and in its own try/catch, so a queue bug can never skip or delay a
+      // session resume. Lazy dynamic import: prompt-queue.js statically
+      // imports awaitReadyAndSend/retryBackoffMs from this module, so a
+      // static import here would cycle. `queueMux` lets callers (tests) pin
+      // a fake multiplexer for the queue path; the default lets
+      // tickPromptQueue resolve its own (only touched when work exists).
+      try {
+        const { tickPromptQueue } = await import('./prompt-queue.js');
+        await tickPromptQueue(queueMux ? { mux: queueMux } : {});
+      } catch (err) {
+        log(`prompt queue tick failed: ${err.message}`);
       }
 
       await sleep(pollInterval);
