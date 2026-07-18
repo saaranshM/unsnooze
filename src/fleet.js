@@ -6,7 +6,7 @@
 // control-char-stripped ingest.
 import { join } from 'node:path';
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync as fsExistsSync } from 'node:fs';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFileSync, spawnSync } from 'node:child_process';
 import { STATE_DIR } from './config.js';
 import { colors, shouldUseTui, makeTable, logoBlock, badge } from './tui.js';
 
@@ -29,11 +29,8 @@ const REMOTE_VERBS = new Set(['status', 'resume', 'cancel']);
 
 // ssh -V prints to STDERR; capture it. Returns '' on any failure.
 function defaultRun(bin, args) {
-  try {
-    return execFileSync(bin, args, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
-  } catch (e) {
-    return String(e.stderr || e.stdout || '');
-  }
+  const r = spawnSync(bin, args, { encoding: 'utf-8' });
+  return String(r.stderr || r.stdout || '');
 }
 
 export function parseSshVersion(banner) {

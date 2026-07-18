@@ -49,3 +49,20 @@ test('detectSsh: unix uses PATH ssh', () => {
   assert.equal(info.bin, 'ssh');
   assert.equal(info.multiplex, true);
 });
+
+test('detectSsh: real system ssh (default run) parses a version when ssh is present', () => {
+  const info = detectSsh({ cache: false });   // real defaultRun, real ssh -V
+  // If ssh exists it must parse; if truly absent, ok:false is acceptable — assert the capture path works when a banner exists
+  if (info.ok) {
+    assert.ok(info.major >= 1);
+    assert.ok(['unix','native-windows'].includes(info.flavor));
+    // If we got here with ok:true, stderr capture is working
+    return;
+  }
+  // On a system with ssh, this should have parsed. If info.ok is false, something went wrong.
+  // (accept false on systems without ssh, but this machine has it)
+  const hasReal = process.platform !== 'win32';  // reasonable assumption for test runner
+  if (hasReal) {
+    assert.ok(info.ok, 'ssh exists on this system but failed to parse — stderr capture may be broken');
+  }
+});
