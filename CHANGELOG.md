@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Fleet password auth**: hosts can now use a password instead of an ssh key
+  — `unsnooze hosts add <name> <dest> --auth password --source
+  prompt|env|keychain|command` (`prompt` is interactive no-echo and the
+  default; `env`/`keychain`/`command` are daemon-capable). `keychain` is a
+  macOS-only built-in; Windows and Linux use `--source command` with a
+  per-OS recipe (`pass`, `secret-tool`, `security`, `powershell`, `op read`
+  — see README). `unsnooze hosts test <name>` pre-flights a host without
+  ever printing its secret. Auth-gapped hosts render as `needs-auth` in
+  `fleet`/the dashboard, distinct from `unreachable`. Security: the password
+  never touches argv, `ps`, or unsnooze's own environment — it flows through
+  OpenSSH's `SSH_ASKPASS` hook, helper-stdout → ssh, in-process; unsnooze
+  stores no plaintext itself; keys stay the unchanged, BatchMode-hardened
+  default.
 - **Fleet — sessions on every machine, over your own SSH**: `unsnooze hosts
   [add|rm|list]` registers ssh destinations; `unsnooze fleet [--json]` and
   the dashboard's new **Fleet** tab fan out to every host in parallel and

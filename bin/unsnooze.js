@@ -292,6 +292,12 @@ Usage:
   unsnooze dashboard [tab]         live TUI (status|usage|sessions|doctor|logs|fleet) — q to quit,
                                    mouse: click/wheel (m toggles)
   unsnooze hosts [add|rm|list]     register ssh hosts for the fleet view
+                                   add <name> <dest> [--auth key|password]
+                                     [--source prompt|env|keychain|command]
+                                     [--env VAR] [--service s --account a]
+                                     [--cmd '<command>']
+  unsnooze hosts test <name>       pre-flight a host: resolves its credential
+                                   and probes reachability (secret never shown)
   unsnooze fleet [--json]          all hosts' sessions (hosts add <name> first)
   unsnooze usage [--json]          account burn rate & time-to-limit forecast
                                    (--install-statusline for exact Claude %,

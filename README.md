@@ -325,6 +325,85 @@ you can hop over and watch. An unreachable or out-of-date host shows
 `unreachable`/`skew` rather than blocking the rest of the fleet, and falls
 back to its last-known state (marked `stale`) for up to 24h.
 
+### Auth: keys (default) or password
+
+Every host picks its own auth, per host — unsnooze imposes no policy:
+
+- **`key`** (default, unchanged) — the BatchMode-hardened path above. Nothing
+  about a key host changes.
+- **`password`, interactive** (`--source prompt`, the default source when you
+  pass `--auth password` with nothing else) — typed at run time, no-echo, on
+  whichever terminal is running `unsnooze fleet`/`hosts test`. Nothing is
+  stored. There's no terminal under the background daemon, so a `prompt`
+  host is naturally interactive-only — it shows `needs-auth` when the daemon
+  or a piped/non-TTY caller tries it.
+- **`password`, stored** (`--source env|keychain|command`) — resolved
+  automatically, so the daemon and `unsnooze fleet` can reach it unattended.
+
+```sh
+unsnooze hosts add <name> <dest>
+    [--auth key|password]                  # default: key
+    [--source prompt|env|keychain|command] # default: prompt, once --auth password is set
+    [--env <VARNAME>]                      # env source: var to read (default UNSNOOZE_PW_<NAME>)
+    [--service <s> --account <a>]          # keychain source (macOS only)
+    [--cmd '<command>']                    # command source: program whose stdout is the password
+unsnooze hosts test <name>                 # pre-flight: resolves the source (never prints the
+                                            #   secret) then a real ssh reachability probe
+```
+
+Examples:
+
+```sh
+unsnooze hosts add laptop me@laptop.local --auth password
+# → prompts for a password every time it's used from a real terminal
+
+unsnooze hosts add gpu ubuntu@gpu.example.com --auth password --source env --env UNSNOOZE_PW_GPU
+# → export UNSNOOZE_PW_GPU=... in your shell/session first
+
+unsnooze hosts add mac me@mac-mini.local --auth password --source keychain --service unsnooze-mac --account me
+# → macOS only; reads via `security find-generic-password`
+
+unsnooze hosts add ci ci@build.example.com --auth password --source command --cmd 'op read op://vault/ci/password'
+# → any OS; runs your own secret manager and reads its stdout
+
+unsnooze hosts test gpu   # resolves the credential + probes reachability; prints "auth ok" or a hint, never the secret
+```
+
+**`command` is the portable, first-class source** — plug in whatever secret
+manager you already run. Per-OS one-liners for `--cmd`:
+
+| OS | Example `--cmd` |
+|---|---|
+| macOS | `security find-generic-password -s <service> -a <account> -w` |
+| Linux | `pass show <path>` &nbsp;or&nbsp; `secret-tool lookup <attr> <value> ...` |
+| Windows | `powershell -Command "..."` (e.g. wrapping `Get-StoredCredential`) &nbsp;or&nbsp; `op read op://vault/item/password` |
+| any OS | `op read op://vault/item/password` (1Password CLI), or any other manager's read command |
+
+`keychain` is a convenience built-in for **macOS only** (`security
+find-generic-password`) — there's no dependable dependency-free store to
+shell out to on Windows or Linux, so those use `--source command` with the
+recipes above instead.
+
+**Security posture:** the password reaches `ssh` through OpenSSH's own
+`SSH_ASKPASS` hook — it never appears on `argv`, in `ps`, or in unsnooze's
+own environment; it flows helper-stdout → ssh, in-process, for that one ssh
+child only. unsnooze itself **stores no plaintext**: `keychain`/`command`
+delegate entirely to the OS store or your own manager, and `env` is
+user-managed (readable by your own shell already — positioned as a
+low-friction/CI convenience, not secret-manager-grade). Keys remain the
+default and their BatchMode-hardened path is untouched by any of this.
+
+**Windows note:** native `ssh.exe` (Windows' built-in OpenSSH client) prompts
+fine out of the box for an **interactive** `prompt`-source host — no shim
+needed, it's the zero-friction path. **Stored** sources (`env`/`keychain`/
+`command`) need a non-interactive askpass helper, and native `ssh.exe`
+requires that to be a real launchable `.exe` — it won't reliably run a `.js`
+or npm's `.cmd` shim. Until unsnooze ships that native launcher, use a
+**Git-for-Windows or WSL `ssh`** (both accept the script-based helper the
+same way macOS/Linux do — common on dev machines already) for stored
+password hosts on Windows; a plain `ssh <host>` prompt works with native
+`ssh.exe` regardless.
+
 ## Settings
 
 `unsnooze setup` writes `~/.unsnooze/config.json`; change anything later with
