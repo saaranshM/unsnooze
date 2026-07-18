@@ -40,7 +40,9 @@ const DURATION_UNIT_MS = {
   hour: 3_600_000, hr: 3_600_000, day: 86_400_000, week: 604_800_000,
 };
 
-function parseGoDuration(text) {
+// Exported so callers that accept the same "+2h30m" / "45m" token grammar
+// (e.g. prompt.js's --at parser) don't have to duplicate DURATION_TOKEN_REGEX.
+export function parseGoDuration(text) {
   let total = 0;
   // Reset lastIndex — the regex is global and shared across calls.
   DURATION_TOKEN_REGEX.lastIndex = 0;

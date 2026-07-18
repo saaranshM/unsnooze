@@ -2,6 +2,7 @@
 
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { homedir } from 'node:os';
 import { LOG_FILE, MAX_RESUME_ATTEMPTS } from './config.js';
 import { readState, setStatus, updateState } from './state.js';
 import { getAgent } from './agents/index.js';
@@ -11,6 +12,7 @@ import { spawnResumerIfNeeded } from './spawn.js';
 import { getMultiplexer } from './multiplexer.js';
 import { listOwnedSessions, reap, attachHint } from './reap.js';
 import { planFor } from './resumer.js';
+import { queueList } from './prompt-queue.js';
 import {
   shouldUseTui, formatStatusTui, formatSessionsTui, formatPreviewTui, logoBlock,
 } from './tui.js';
@@ -22,6 +24,42 @@ function fmtCountdown(ms) {
   if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60);
   return `${h}h ${m % 60}m`;
+}
+
+// Shared by status's cwd column and prompt.js's queue listings — collapse the
+// home dir prefix to '~' the way most shells display it.
+export function shortenHome(p) {
+  if (typeof p !== 'string' || !p) return p;
+  const home = homedir();
+  if (p === home) return '~';
+  return p.startsWith(`${home}/`) ? `~${p.slice(home.length)}` : p;
+}
+
+// pending/launching are the only non-terminal prompt-queue statuses
+// (delivered/failed/cancelled are terminal — see prompt-queue.js).
+function pendingPromptEntries() {
+  return queueList().filter(e => e.status === 'pending' || e.status === 'launching');
+}
+
+function fmtQueueDue(e, now) {
+  if (Number.isFinite(e.notBefore) && e.notBefore > now) {
+    return `backoff until ${new Date(e.notBefore).toLocaleString()}`;
+  }
+  if (e.mode === 'now') return 'now';
+  if (e.mode === 'at') return new Date(e.atMs).toLocaleString();
+  return 'next reset';
+}
+
+// Printed after the sessions report in the plain-text `unsnooze status` —
+// silent (no section at all) when the queue has nothing pending, so the
+// existing status output is byte-identical for everyone not using the queue.
+function printPromptQueueSection(entries) {
+  if (entries.length === 0) return;
+  const now = Date.now();
+  console.log(`\nqueued prompts: ${entries.length}\n`);
+  for (const e of entries) {
+    console.log(`  ${e.id}  ${(e.agent || 'claude').padEnd(8)} ${fmtQueueDue(e, now).padEnd(28)} ${e.status.padEnd(9)} ${shortenHome(e.cwd)}`);
+  }
 }
 
 
@@ -57,6 +95,7 @@ export async function cmdStatus(args = []) {
         attempts: s.attempts ?? 0, lastError: s.lastError ?? null,
         workspaceHold: !!s.workspaceHold,
       })),
+      promptQueue: queueList(),
     }, null, 2));
     return 0;
   }
@@ -107,6 +146,7 @@ export async function cmdStatus(args = []) {
 
   if (sessions.length === 0) {
     console.log(`unsnooze: no tracked sessions.${paused ? '  (PAUSED — auto-resume off)' : ''}`);
+    printPromptQueueSection(pendingPromptEntries());
     return 0;
   }
   const pausedNote = paused ? '  PAUSED — auto-resume off (`unsnooze config set autoResume on`)' : '';
@@ -138,6 +178,7 @@ export async function cmdStatus(args = []) {
     console.log(`  [${s.status.toUpperCase().padEnd(9)}] ${id}  ${(s.agent || 'claude').padEnd(6)} ${s.limitType?.padEnd(7) ?? 'unknown'} ${s.cwd}`);
     console.log(`              mux ${s.mux ?? '-'} · pane ${pane} · session ${s.muxSession ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}${msg}${ctx}${hold}${attach}`);
   }
+  printPromptQueueSection(pendingPromptEntries());
   return 0;
 }
 

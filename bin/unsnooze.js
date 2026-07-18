@@ -48,7 +48,7 @@ function runAgentFallback(agentId, args) {
 
 // Only human-facing commands may print update notices — never the wrapper
 // passthrough, hooks, or daemons (their output lands in agent panes/logs).
-const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'doctor', 'preview', 'usage', 'dashboard', 'hosts', 'fleet', 'help', '-h', '--help', '--help-unsnooze']);
+const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'doctor', 'preview', 'usage', 'dashboard', 'hosts', 'fleet', 'prompt', 'help', '-h', '--help', '--help-unsnooze']);
 
 // Every named subcommand; anything else (or no args) is an agent launch.
 const NAMED_COMMANDS = new Set([
@@ -161,6 +161,10 @@ async function main() {
     case 'fleet': {
       const { cmdFleet } = await import('../src/fleet.js');
       return cmdFleet(rest);
+    }
+    case 'prompt': {
+      const { cmdPrompt } = await import('../src/prompt.js');
+      return cmdPrompt(rest);
     }
     case 'install': {
       const { cmdInstall } = await import('../src/install.js');
@@ -299,6 +303,12 @@ Usage:
   unsnooze hosts test <name>       pre-flight a host: resolves its credential
                                    and probes reachability (secret never shown)
   unsnooze fleet [--json]          all hosts' sessions (hosts add <name> first)
+  unsnooze prompt add [text...]    queue a prompt to start a NEW session in a
+                                   project when the limit resets ([--agent id]
+                                   [--project path] [--at time|--now])
+  unsnooze prompt list [--json]    list queued prompts
+  unsnooze prompt remove <id>      cancel a queued prompt
+  unsnooze prompt clear            cancel all pending queued prompts
   unsnooze usage [--json]          account burn rate & time-to-limit forecast
                                    (--install-statusline for exact Claude %,
                                     --uninstall-statusline to remove it)
