@@ -75,13 +75,15 @@ $ unsnooze setup`}</Shell>
               </ul>
               <p>Every file it touches is backed up first (<C>*.unsnooze-orig</C> pristine,{' '}
                 <C>*.unsnooze-bak</C> rolling), and <C>unsnooze uninstall</C> removes every change.
-                Verify the install any time:</p>
+                Verify the install any time with <C>unsnooze doctor</C> — it reports{' '}
+                <em>problems</em>, not a checklist, so a healthy install is a one-liner:</p>
               <Shell title="unsnooze doctor">{`$ unsnooze doctor
-  ✓ shell wrappers installed (~/.zshrc)
-  ✓ claude StopFailure hook installed
-  ✓ tmux 3.5a found · Zellij not installed (ok)
-  ✓ daemon unit loaded (launchd) · PATH ok
-  ✓ state.json healthy`}</Shell>
+unsnooze doctor: all clear — install is healthy.
+  · resumer/daemon: running (pid 4821)`}</Shell>
+              <p>Anything wrong comes back as a <C>✗</C> finding with a suggested fix, and{' '}
+                <C>doctor --fix</C> repairs what it safely can. One nuance on requirements: tmux
+                version isn't checked — any tmux runs, but reviving dead sessions uses env flags
+                that need tmux ≥ 3.2.</p>
             </section>
 
             <section className="doc-sec" id="everyday">
@@ -89,10 +91,17 @@ $ unsnooze setup`}</Shell>
               <p>Run your agents like always. When one hits its limit, unsnooze records the stop in{' '}
                 <C>~/.unsnooze/state.json</C> — agent, session id, working directory, pane, and the
                 reset time parsed from the banner — and wakes it when the limit lifts.</p>
-              <Shell title="unsnooze status">{`$ unsnooze status
-  claude  f3a1…  ~/work/payments   snoozed   wakes 3:00 am (in 2h 41m)   ctx ~152k tok
-  codex   8c42…  ~/work/ingest     snoozed   wakes 3:00 am (in 2h 41m)
-  claude  9d07…  ~/oss/unsnooze    resumed   woke 8:01 pm · verified`}</Shell>
+              <Shell title="unsnooze status (plain / piped)">{`$ unsnooze status
+  [STOPPED  ] f3a1c2d4  claude 5h      /Users/you/work/payments
+              mux tmux · pane %12 · session unsnooze · via hook · resets 19/7/2026, 3:00:00 am (2h 41m) (absolute, from hook) · attempts 0/5 · ctx ~152k tok
+  [RESUMED  ] 92d6f63d  claude 5h      /Users/you/oss/unsnooze
+              mux tmux · pane %7 · session unsnooze · via cli · resets 18/7/2026, 4:11:00 pm (due now) (absolute, from scrape) · attempts 1/5 · attach: tmux attach -t unsnooze`}</Shell>
+              <p>Each session is two lines: a header (status, 8-char id, agent, limit window,
+                working directory) and a detail line (pane, how the stop was detected, the reset
+                time with countdown and its provenance, attempts out of 5, plus{' '}
+                <C>ctx ~152k tok</C> on stopped sessions and an attach hint on live ones).
+                Statuses are <C>stopped</C>, <C>resuming</C>, <C>resumed</C>, <C>cancelled</C>,
+                and <C>failed</C>.</p>
               <p>On an interactive terminal, <C>status</C>, <C>usage</C>, and <C>sessions</C> open
                 the live dashboard instead; pipes, <C>CI</C>, <C>NO_COLOR</C>, and <C>--json</C>{' '}
                 stay plain. The common interventions:</p>
@@ -108,7 +117,7 @@ $ unsnooze cancel --all        # stop tracking everything`}</Shell>
 
             <section className="doc-sec" id="commands">
               <h2>Command reference</h2>
-              <p>Verbatim from <C>unsnooze help</C> (v1.13):</p>
+              <p>Verbatim from <C>unsnooze help</C> (current main):</p>
               <Shell title="unsnooze help">{`unsnooze — wakes every limit-stopped AI coding session when the limit resets
 
 Usage:
@@ -130,6 +139,12 @@ Usage:
   unsnooze dashboard [tab]         live TUI (status|usage|sessions|doctor|logs|fleet)
                                    — q to quit, mouse: click/wheel (m toggles)
   unsnooze hosts [add|rm|list]     register ssh hosts for the fleet view
+                                   add <name> <dest> [--auth key|password]
+                                     [--source prompt|env|keychain|command]
+                                     [--env VAR] [--service s --account a]
+                                     [--cmd '<command>']
+  unsnooze hosts test <name>       pre-flight a host: resolves its credential
+                                   and probes reachability (secret never shown)
   unsnooze fleet [--json]          all hosts' sessions (hosts add <name> first)
   unsnooze usage [--json]          account burn rate & time-to-limit forecast
                                    (--install-statusline for exact Claude %,
@@ -214,8 +229,9 @@ unsnooze usage — account burn & time-to-limit  (daemon: running · warnings at
                   Code's server-authoritative rate limits.</li>
                 <li><strong><C>(calibrated from N stops)</C></strong> — Claude token burn against a
                   ceiling learned from <em>your</em> recorded limit stops. Not plan presets.</li>
-                <li><strong><C>(estimated)</C></strong> — used tokens + burn shown; ceiling unknown
-                  until the first observed stop.</li>
+                <li><strong><C>(estimated — calibrating, needs one observed limit stop)</C></strong>{' '}
+                  — used tokens + burn shown; the ceiling stays unknown until the first
+                  observed stop.</li>
               </ul>
               <Shell title="statusline shim (opt-in)">{`$ unsnooze usage --install-statusline    # exact Claude % (chains your statusLine)
 $ unsnooze usage --uninstall-statusline  # restore your original statusLine`}</Shell>
@@ -231,23 +247,138 @@ $ unsnooze usage --uninstall-statusline  # restore your original statusLine`}</S
 
             <section className="doc-sec" id="fleet">
               <h2>Multi-host fleet</h2>
-              <p>Sessions don't all live on one machine. Register any host reachable by{' '}
-                <C>ssh</C> alias and unsnooze pulls its tracked sessions over ssh — visible in{' '}
-                <C>unsnooze fleet</C> and the dashboard's <strong>fleet</strong> tab.</p>
-              <Shell title="fleet">{`$ unsnooze hosts add devbox      # any name that works as \`ssh devbox\`
-$ unsnooze hosts list
-$ unsnooze fleet                 # every host's sessions in one view
-$ unsnooze fleet --json          # machine-readable
-$ unsnooze dashboard fleet       # live view`}</Shell>
-              <p>Remove a host with <C>unsnooze hosts rm &lt;name&gt;</C>. unsnooze must be
-                installed on the remote host too. Hosts are polled in parallel with a bounded ssh
-                pool, per-host timeouts, and a 24h stale cache — one dead box never blocks the
-                rest.</p>
-              <p><strong>Security posture:</strong> no listening ports, no custom auth, no tokens —
-                transport is plain OpenSSH with host-key checking never weakened. The remote is
-                always the one that types, under its own gates; <C>unsnooze _remote</C> is the
-                single remote entrypoint, safe to lock to an <C>authorized_keys</C> forced
-                command.</p>
+              <p>See and act on unsnooze sessions on <strong>other machines</strong> from one
+                terminal — over your own SSH, no new service to run. The remote host needs
+                unsnooze installed; transport is your existing <C>~/.ssh/config</C>, keys, and
+                agent.</p>
+              <Shell title="fleet">{`$ unsnooze hosts add work you@work-box.local   # register an ssh destination
+$ unsnooze hosts list                          # registered hosts
+$ unsnooze hosts test work                     # pre-flight: credential + reachability
+$ unsnooze hosts rm work                       # forget a host
+$ unsnooze fleet [--json]                      # every host's sessions, fanned out over ssh
+$ unsnooze dashboard fleet                     # live Fleet tab`}</Shell>
+              <p><strong>Before adding a host, connect to it the normal way once</strong>{' '}
+                (<C>ssh &lt;host&gt;</C>) so OpenSSH pins the host key itself. unsnooze never
+                weakens host-key checking to skip that step — an unknown or changed host fails
+                fast instead of being silently trusted. If <C>dest</C> is omitted, the name
+                doubles as the destination (so any <C>~/.ssh/config</C> alias works as-is).
+                Hosts live in <C>~/.unsnooze/hosts.json</C>.</p>
+
+              <h3>See and mark — not type remotely</h3>
+              <p>The fleet view lists every reachable host's tracked sessions (state, reset
+                countdown, attach hint). In the dashboard's Fleet tab, selecting a stopped remote
+                session and pressing <strong>R</strong> (uppercase — lowercase <C>r</C> refreshes)
+                only <em>marks it due</em>; <strong>C</strong> cancels it. The remote's own daemon
+                does the actual keystrokes, under the same ownership/liveness/menu gates as a
+                local session — a compromised viewer cannot make a remote type anything else.
+                Stopped and resumed sessions print an attach hint
+                (<C>ssh -t &lt;host&gt; 'tmux new -A -s &lt;session&gt;'</C> or{' '}
+                <C>zellij attach &lt;session&gt;</C>) so you can hop over and watch.
+                Note: remote resume/cancel always targets one session — <C>--all</C> is
+                local-only.</p>
+
+              <h3>Host states</h3>
+              <div className="doc-table-scroll">
+                <table className="doc-table">
+                  <thead><tr><th>state</th><th>meaning</th></tr></thead>
+                  <tbody>
+                    <tr><td><C>online</C></td><td>Fresh answer, latency shown in ms.</td></tr>
+                    <tr><td><C>stale</C></td><td>Host currently unreachable, showing its last-known sessions from cache (up to 24h, age shown).</td></tr>
+                    <tr><td><C>needs-auth</C></td><td>The credential is the problem, not the network — a password source didn't resolve, ssh rejected the password, or a <C>prompt</C> host was tried without a terminal. Distinct from unreachable; fix the source and verify with <C>hosts test</C>.</td></tr>
+                    <tr><td><C>unreachable</C></td><td>ssh couldn't connect (timeout or connection failure).</td></tr>
+                    <tr><td><C>skew</C></td><td>Remote unsnooze too old to speak the protocol — update it.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <p>Hosts are polled in parallel (bounded pool, hard per-host timeouts around
+                8&nbsp;s) so one dead box never blocks the rest; interactive password prompts run
+                one at a time afterwards, with a generous timeout so you're never cut off
+                mid-password. Like <C>preview</C>, <C>unsnooze fleet</C> exits <strong>2</strong>{' '}
+                when some host has a stopped session — scriptable.</p>
+
+              <h3>Auth: keys (default) or password</h3>
+              <p>Every host picks its own auth. <C>key</C> is the default and stays the hardened
+                path (ssh <C>BatchMode</C>, agent/keys, nothing new). <C>--auth password</C> adds
+                four credential sources:</p>
+              <Shell title="unsnooze hosts add — full syntax">{`$ unsnooze hosts add <name> <dest>
+      [--auth key|password]                  # default: key
+      [--source prompt|env|keychain|command] # default: prompt, once --auth password is set
+      [--env <VARNAME>]                      # env source: var to read (default UNSNOOZE_PW_<NAME>)
+      [--service <s> --account <a>]          # keychain source (macOS only)
+      [--cmd '<command>']                    # command source: program whose stdout is the password`}</Shell>
+              <ul>
+                <li><strong><C>prompt</C></strong> (default) — typed at run time, no-echo, on
+                  whichever terminal runs <C>fleet</C> / <C>hosts test</C>. Nothing is ever
+                  stored. Interactive-only by nature: under the daemon, in pipes, and in the
+                  dashboard's Fleet tab it shows <C>needs-auth</C> instead of prompting.</li>
+                <li><strong><C>env</C></strong> — reads a variable you export
+                  (default <C>UNSNOOZE_PW_&lt;NAME&gt;</C>). Daemon-capable. Positioned as a
+                  low-friction/CI convenience, not secret-manager-grade — your shell can already
+                  read it.</li>
+                <li><strong><C>keychain</C></strong> — macOS-only built-in via{' '}
+                  <C>security find-generic-password</C> (defaults: service{' '}
+                  <C>unsnooze-&lt;name&gt;</C>, account = the user part of <C>dest</C>).
+                  Daemon-capable.</li>
+                <li><strong><C>command</C></strong> — the portable, first-class source: any
+                  program whose stdout is the password. Daemon-capable, works on every OS. Its
+                  stderr is deliberately discarded so a chatty secret tool can never leak into
+                  logs.</li>
+              </ul>
+              <Shell title="examples">{`$ unsnooze hosts add laptop me@laptop.local --auth password
+# → prompts (no-echo) every time it's used from a real terminal
+
+$ unsnooze hosts add gpu ubuntu@gpu.example.com --auth password --source env --env UNSNOOZE_PW_GPU
+# → export UNSNOOZE_PW_GPU=... first
+
+$ unsnooze hosts add mac me@mac-mini.local --auth password --source keychain --service unsnooze-mac --account me
+# → macOS only; reads via \`security find-generic-password\`
+
+$ unsnooze hosts add ci ci@build.example.com --auth password --source command --cmd 'op read op://vault/ci/password'
+# → any OS; runs your secret manager, reads its stdout
+
+$ unsnooze hosts test gpu
+# → resolves the credential + probes reachability; prints "auth ok" or a
+#   hint ("needs-setup: ..."), never the secret`}</Shell>
+              <p>Per-OS <C>--cmd</C> recipes for the command source:</p>
+              <div className="doc-table-scroll">
+                <table className="doc-table">
+                  <thead><tr><th>OS</th><th>example <C>--cmd</C></th></tr></thead>
+                  <tbody>
+                    <tr><td>macOS</td><td><C>security find-generic-password -s &lt;service&gt; -a &lt;account&gt; -w</C></td></tr>
+                    <tr><td>Linux</td><td><C>pass show &lt;path&gt;</C> or <C>secret-tool lookup &lt;attr&gt; &lt;value&gt;</C></td></tr>
+                    <tr><td>Windows</td><td><C>powershell -Command "..."</C> (e.g. wrapping <C>Get-StoredCredential</C>) or <C>op read …</C></td></tr>
+                    <tr><td>any OS</td><td><C>op read op://vault/item/password</C> (1Password CLI) — or any manager's read command</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <p><strong>Requirements &amp; limits:</strong> stored sources
+                (<C>env</C>/<C>keychain</C>/<C>command</C>) need OpenSSH ≥ 8.4
+                (<C>SSH_ASKPASS_REQUIRE</C>) — older ssh shows <C>needs-auth</C>. On native
+                Windows, <C>ssh.exe</C> prompts fine for an interactive <C>prompt</C> host, but
+                stored sources need Git-for-Windows or WSL ssh for now. <C>keychain</C> exists
+                only on macOS — Linux and Windows use <C>--source command</C> with the recipes
+                above.</p>
+
+              <h3>Fleet security posture</h3>
+              <ul>
+                <li><strong>No new network surface.</strong> No listening ports, no custom auth,
+                  no tokens — only outbound OpenSSH child processes, and{' '}
+                  <C>StrictHostKeyChecking</C> is never touched.</li>
+                <li><strong>The remote is the authority.</strong>{' '}
+                  <C>unsnooze _remote</C> is the single remote entrypoint
+                  (<C>status</C>/<C>resume</C>/<C>cancel</C>); resume only marks a session due —
+                  the remote daemon types under its own gates. Lock a key to it with{' '}
+                  <C>command="unsnooze _remote",restrict</C> in the remote{' '}
+                  <C>authorized_keys</C> — that key can never open a shell.</li>
+                <li><strong>Remote output is untrusted.</strong> Every field a host returns is
+                  control-character-stripped, length-capped, and copied into fresh objects before
+                  it touches your terminal or state; session names are re-validated before being
+                  shown in a copy-pasteable attach hint.</li>
+                <li><strong>Passwords never touch argv, <C>ps</C>, or unsnooze's environment.</strong>{' '}
+                  They flow through OpenSSH's own <C>SSH_ASKPASS</C> hook — helper stdout to ssh,
+                  in-process, for that one ssh child. unsnooze stores no plaintext:
+                  keychain/command delegate to the OS store or your manager.</li>
+              </ul>
             </section>
 
             <section className="doc-sec" id="notifications">
@@ -306,9 +437,11 @@ $ unsnooze config set ntfyPrivacy terse   # keep paths out of push bodies`}</She
               <h2>Guards</h2>
               <h3>workspaceGuard — the repo changed while it slept</h3>
               <p>The repo's HEAD and dirty state are fingerprinted at stop time and re-checked at
-                wake. <C>inform</C> (default) resumes with a heads-up in the wake message ("HEAD
-                abc1234 → def5678 — re-read before continuing"); <C>pause</C> holds the session and{' '}
-                <C>resume-now</C> shows the diff stat first; <C>off</C> disables.</p>
+                wake. <C>inform</C> (default) resumes with a heads-up appended to the wake message
+                — <em>"Heads up: this workspace changed while the session was stopped (HEAD
+                abc1234 → def5678). Re-read the current state of the repo before continuing."</em>{' '}
+                — while <C>pause</C> holds the session and <C>resume-now</C> shows the diff stat
+                first; <C>off</C> disables.</p>
               <h3>contextGuard — the cold-cache wake tax</h3>
               <p>Providers cache your session's context, but that cache lives minutes, not hours.
                 After a long limit stop, the <em>first</em> wake message — unsnooze's or a

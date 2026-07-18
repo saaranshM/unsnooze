@@ -17,9 +17,9 @@ const entries = raw
       date: date || null,
       html: marked.parse(chunk.slice(nl + 1).trim()),
     };
-  });
-
-const latestIndex = entries.findIndex((e) => e.version !== 'Unreleased');
+  })
+  // published releases only — the repo's "Unreleased" section stays off the site
+  .filter((e) => e.version !== 'Unreleased');
 
 export default function ChangelogPage() {
   return (
@@ -41,10 +41,9 @@ export default function ChangelogPage() {
           {entries.map((e, i) => (
             <article className="cl-entry" key={e.version} id={`v${e.version}`}>
               <div className="cl-meta">
-                <h2>{e.version === 'Unreleased' ? 'Unreleased' : `v${e.version}`}</h2>
+                <h2>{`v${e.version}`}</h2>
                 {e.date && <time>{e.date}</time>}
-                {e.version === 'Unreleased' && <span className="tag exp">on main</span>}
-                {i === latestIndex && <span className="tag stable">latest</span>}
+                {i === 0 && <span className="tag stable">latest</span>}
               </div>
               {/* eslint-disable-next-line react/no-danger */}
               <div className="prose" dangerouslySetInnerHTML={{ __html: e.html }} />

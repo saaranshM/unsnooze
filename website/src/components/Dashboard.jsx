@@ -37,13 +37,10 @@ const TABS = {
   ),
   doctor: (
     <pre className="term-body dash-body">{'\n'}
-      <span className="d-green">  ✓</span> shell wrappers installed (~/.zshrc){'\n'}
-      <span className="d-green">  ✓</span> claude StopFailure hook installed{'\n'}
-      <span className="d-green">  ✓</span> tmux 3.5a found · Zellij not installed (ok){'\n'}
-      <span className="d-green">  ✓</span> daemon unit loaded (launchd) · PATH ok{'\n'}
-      <span className="d-green">  ✓</span> state.json healthy · 4 sessions tracked{'\n'}
-      <span className="d-amber">  !</span> statusline shim not installed <span className="d-faint">(optional — exact claude %)</span>{'\n\n'}
-      <span className="d-faint">  everything else looks good. fix issues automatically: unsnooze doctor --fix</span>{'\n'}
+      <span className="d-green">  ✓</span> install is healthy.{'\n'}
+      <span className="d-faint">  · resumer/daemon: running (pid 4821)</span>{'\n\n'}
+      <span className="d-faint">  doctor reports problems, not a checklist — anything wrong shows as a ✗ finding</span>{'\n'}
+      <span className="d-faint">  with a suggested fix, and `unsnooze doctor --fix` repairs what it safely can</span>{'\n'}
     </pre>
   ),
   logs: (
@@ -57,6 +54,17 @@ const TABS = {
       <span className="d-faint">  03:00:12</span> <span className="d-green">verify</span>{'   '}both panes re-captured · no banner · <span className="d-green">done</span>{'\n'}
     </pre>
   ),
+  fleet: (
+    <pre className="term-body dash-body">{'\n'}
+      <span className="d-faint">  3 hosts · R resume selected · C cancel · r refresh</span>{'\n\n'}
+      <span className="d-green">  ●</span> <span className="d-ink">work</span>{'    '}<span className="d-green">online</span> <span className="d-faint">(42ms) · key</span>{'\n'}
+      {'    '}<span className="d-amber">❯</span> <span className="d-rose">● STOPPED</span>{'  '}<span className="d-faint">f3a1c2d4</span>{'  '}claude{'  '}resets 3:00 am{'\n'}
+      <span className="d-faint">        attach: ssh -t work 'tmux new -A -s unsnooze'</span>{'\n\n'}
+      <span className="d-dim">  ◌</span> <span className="d-ink">mac</span>{'     '}<span className="d-amber">stale</span> <span className="d-faint">(2h old) · pw:keychain</span>{'\n'}
+      <span className="d-faint">      (no stopped sessions)</span>{'\n\n'}
+      <span className="d-amber">  ◐</span> <span className="d-ink">gpu</span>{'     '}<span className="d-amber">needs-auth</span> <span className="d-faint">(env var UNSNOOZE_PW_GPU is not set) · pw:env</span>{'\n'}
+    </pre>
+  ),
 };
 
 export default function Dashboard() {
@@ -68,9 +76,10 @@ export default function Dashboard() {
         <h2>A dashboard for <span className="hl">the small hours</span></h2>
         <p className="section-lede">
           <code className="chip">unsnooze dashboard</code> is a full-screen terminal UI —
-          status, usage forecast, sessions, install doctor, and live logs, with mouse
-          support: click tabs and rows, wheel-scroll the logs. Pipes, <code className="chip">CI</code>,
-          and <code className="chip">--json</code> stay plain. Try the tabs.
+          status, usage forecast, sessions, install doctor, live logs, and your whole ssh
+          fleet, with mouse support: click tabs and rows, wheel-scroll the logs. Pipes,{' '}
+          <code className="chip">CI</code>, and <code className="chip">--json</code> stay plain.
+          Try the tabs.
         </p>
       </Reveal>
       <Reveal delay={0.1}>

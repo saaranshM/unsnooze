@@ -15,6 +15,7 @@ export default defineConfig({
         main: resolve(import.meta.dirname, 'index.html'),
         docs: resolve(import.meta.dirname, 'docs/index.html'),
         changelog: resolve(import.meta.dirname, 'changelog/index.html'),
+        feedback: resolve(import.meta.dirname, 'feedback/index.html'),
       },
     },
   },

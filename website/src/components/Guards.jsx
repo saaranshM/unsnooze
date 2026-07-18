@@ -3,8 +3,8 @@ import Reveal from './Reveal.jsx';
 const GUARDS = [
   {
     key: 'usageWarn', def: 'notify', title: 'Pre-wall warnings',
-    body: <>The daemon warns at 80% and 95% burn, and at 30 and 10 minutes to the wall at
-      your current pace — deduped once per window. It may <em>suggest</em>{' '}
+    body: <>The daemon warns at 80% and 95% of the window's quota, and at 30 and 10 minutes
+      to the wall at your current pace — deduped once per window. It may <em>suggest</em>{' '}
       <code className="chip">/compact</code> so the eventual wake is cheap; it never
       auto-types it.</>,
   },

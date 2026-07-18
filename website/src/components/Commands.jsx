@@ -9,6 +9,8 @@ const CMDS = [
   ['unsnooze cancel', <>stop tracking a session</>],
   ['unsnooze message <id>', <>per-session wake message (<code className="chip">--clear</code> to reset)</>],
   ['unsnooze sessions', <>list unsnooze-owned multiplexer sessions and panes</>],
+  ['unsnooze hosts add <name>', <>register another machine over ssh — key or password auth (<code className="chip">hosts test</code> pre-flights it)</>],
+  ['unsnooze fleet', <>every registered host's sessions in one view; resume/cancel remotely from the dashboard's fleet tab</>],
   ['unsnooze reap', <>close finished panes and empty sessions — dry-run by default</>],
   ['unsnooze doctor', <>install health check, with <code className="chip">--fix</code></>],
   ['unsnooze logs -f', <>what unsnooze has been doing, live</>],

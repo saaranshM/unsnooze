@@ -17,6 +17,7 @@ export default function Footer() {
       <div className="foot-links">
         <a href="docs/">docs</a>
         <a href="changelog/">changelog</a>
+        <a href="feedback/">feedback</a>
         <a href="https://github.com/saaranshM/unsnooze">github</a>
         <a href="https://www.npmjs.com/package/unsnooze">npm</a>
         <a href="https://github.com/saaranshM/unsnooze/blob/main/SECURITY.md">security</a>

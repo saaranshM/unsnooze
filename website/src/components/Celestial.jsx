@@ -55,7 +55,7 @@ export default function Celestial() {
     let cy;
     if (p < 0.45) { // moonset down the right edge
       cx = (lerp(0.82, 0.86, seg(p, 0, 0.45)) + edge) * vw;
-      cy = lerp(0.13, 0.72, seg(p, 0, 0.45)) * vh;
+      cy = lerp(0.21, 0.72, seg(p, 0, 0.45)) * vh;
     } else if (p < 0.55) { // dipping below the fold
       cx = (lerp(0.86, 0.88, seg(p, 0.45, 0.55)) + edge) * vw;
       cy = lerp(0.72, 1.16, seg(p, 0.45, 0.55)) * vh;
