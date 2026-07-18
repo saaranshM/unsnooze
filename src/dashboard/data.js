@@ -74,25 +74,29 @@ export async function loadDoctorSnapshot() {
 }
 
 // Thin wrapper over fetchFleet() — ssh fan-out is per-host timeout-bounded
-// there, so this can just be awaited like loadUsageSnapshot. `dest` is
-// stitched back onto each result (fetchHost doesn't carry it) so tabs can
-// build ssh -t attach hints without re-reading the hosts file.
+// there, so this can just be awaited like loadUsageSnapshot. `dest` and the
+// full host `entry` (descriptor: dest/auth/source/env/service/account/cmd)
+// are stitched back onto each result (fetchHost doesn't carry either) so
+// tabs can build ssh -t attach hints and so App.js's R/C actions can pass
+// the whole descriptor into remoteAction — a bare dest string loses the
+// auth fields, which silently downgrades password hosts to key auth.
 export async function loadFleetSnapshot() {
   const hosts = readHosts();
   const results = await fetchFleet({ hosts });
-  return results.map(r => ({ ...r, dest: hosts[r.host]?.dest }));
+  return results.map(r => ({ ...r, dest: hosts[r.host]?.dest, entry: hosts[r.host] }));
 }
 
-// Flat (host, dest, session) rows for every stopped session across the
-// fleet, in host order — the single source of truth for row ordering so
+// Flat (host, dest, entry, session) rows for every stopped session across
+// the fleet, in host order — the single source of truth for row ordering so
 // FleetTab's rendered list and App's selection/keybinding math never drift
-// apart.
+// apart. `entry` (the full host descriptor) rides along so R/C actions can
+// hand remoteAction auth-aware args instead of a bare dest string.
 export function flattenFleetStopped(fleetData) {
   if (!fleetData) return [];
   const out = [];
   for (const r of fleetData) {
     const sessions = (r.envelope?.sessions ?? []).filter(s => s.status === 'stopped');
-    for (const s of sessions) out.push({ host: r.host, dest: r.dest || r.host, session: s });
+    for (const s of sessions) out.push({ host: r.host, dest: r.dest || r.host, entry: r.entry, session: s });
   }
   return out;
 }

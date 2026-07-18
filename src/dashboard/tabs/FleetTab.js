@@ -20,6 +20,9 @@ function hostHeader(r, now) {
   if (r.state === 'skew') {
     return { glyph: '△', color: theme.warn, label: 'version skew — update remote' };
   }
+  if (r.state === 'needs-auth') {
+    return { glyph: '◐', color: theme.warn, label: `needs-auth${r.error ? ` (${r.error})` : ''}` };
+  }
   if (r.state === 'unreachable') {
     return { glyph: '○', color: theme.crit, label: `unreachable${r.error ? ` (${r.error})` : ''}` };
   }

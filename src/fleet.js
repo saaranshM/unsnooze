@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync as fsExi
 import { spawn, execFileSync, spawnSync } from 'node:child_process';
 import { STATE_DIR } from './config.js';
 import { colors, shouldUseTui, makeTable, logoBlock, badge } from './tui.js';
-import { ensureAskpassHelper } from './askpass.js';
+import { ensureAskpassHelper, resolveSecret, readSecret } from './askpass.js';
 import { UNSNOOZE_BIN } from './spawn.js';
 
 export const SCHEMA = 1;
@@ -282,7 +282,7 @@ function parseFlags(argv) {
   return f;
 }
 
-export async function cmdHosts(args = []) {
+export async function cmdHosts(args = [], { spawnFn, detect, timeoutMs } = {}) {
   const [verb, name, dest] = args;
   const hosts = readHosts();
   if (verb === 'list' || verb === undefined) {
@@ -339,7 +339,36 @@ export async function cmdHosts(args = []) {
     console.log(`unsnooze: removed ${name}.`);
     return 0;
   }
-  console.error('usage: unsnooze hosts [list | add <name> [ssh-destination] | rm <name>]');
+  if (verb === 'test') {
+    if (!name) { console.error('usage: unsnooze hosts test <name>'); return 2; }
+    const entry = hosts[name];
+    if (!entry) { console.error(`unsnooze: no such host: ${name}`); return 1; }
+    // Phase 1: resolve the credential in-process — enough to confirm the
+    // source is reachable/set without ever letting the value touch stdout.
+    // A failure here means ssh would fail identically (no askpass helper
+    // could resolve it either), so skip the network round trip entirely
+    // rather than print a misleadingly-successful probe below it.
+    if (entry.auth === 'password') {
+      try {
+        await resolveSecret(entry, { readSecret });
+        console.log('unsnooze: auth: source resolved ok');
+      } catch (e) {
+        console.log(`unsnooze: auth: ${e.message}`);
+        console.log(`unsnooze: needs-setup: ${e.message}`);
+        return 1;
+      }
+    }
+    // Phase 2: a real reachability probe over ssh (same transport `fleet`
+    // uses) — this is the only phase that ever touches the network.
+    const r = await fetchHost(name, entry, { spawnFn, detect, timeoutMs, interactive: !!process.stdin.isTTY });
+    if (r.state === 'online') {
+      console.log(entry.auth === 'password' ? 'unsnooze: auth ok' : 'unsnooze: key ok');
+      return 0;
+    }
+    console.log(`unsnooze: needs-setup: ${r.error || r.state}`);
+    return 1;
+  }
+  console.error('usage: unsnooze hosts [list | add <name> [ssh-destination] | rm <name> | test <name>]');
   return 2;
 }
 
@@ -349,15 +378,20 @@ export async function cmdHosts(args = []) {
 // ---------------------------------------------------------------------------
 
 const STDOUT_CAP = 256 * 1024;
+const STDERR_CAP = 4 * 1024;
 const MAX_SESSIONS = 200;
 const FLEET_CACHE_FILE = join(STATE_DIR, 'fleet-cache.json');
 const STALE_WINDOW_MS = 24 * 3_600_000;
 
-// Drains a spawned ssh child: caps stdout, hard-kills at timeoutMs, and
-// always resolves (never rejects) so a dead host can't hang Promise.all.
+// Drains a spawned ssh child: caps stdout/stderr, hard-kills at timeoutMs,
+// and always resolves (never rejects) so a dead host can't hang Promise.all.
+// stderr is kept (small cap — just enough to classify an auth failure, see
+// AUTH_FAIL_RE below) since OpenSSH writes "Permission denied ..." there,
+// never on stdout.
 function collectChild(child, timeoutMs) {
   return new Promise((resolve) => {
     let out = Buffer.alloc(0);
+    let err = Buffer.alloc(0);
     let capped = false;
     let timedOut = false;
     let done = false;
@@ -365,7 +399,7 @@ function collectChild(child, timeoutMs) {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      resolve({ code, stdout: out.toString('utf8'), timedOut });
+      resolve({ code, stdout: out.toString('utf8'), stderr: err.toString('utf8'), timedOut });
     };
     const timer = setTimeout(() => {
       timedOut = true;
@@ -376,9 +410,23 @@ function collectChild(child, timeoutMs) {
       out = Buffer.concat([out, chunk]);
       if (out.length > STDOUT_CAP) { out = out.subarray(0, STDOUT_CAP); capped = true; }
     });
+    child.stderr?.on('data', (chunk) => {
+      if (err.length >= STDERR_CAP) return;
+      err = Buffer.concat([err, chunk]).subarray(0, STDERR_CAP);
+    });
     child.on('close', (code) => finish(code));
     child.on('error', () => finish(null));
   });
+}
+
+// OpenSSH writes auth failures to stderr ("Permission denied
+// (publickey,password)."); never trust this for a key-auth host — a key
+// host getting Permission denied is a genuine key problem (wrong/missing
+// key, wrong user), not a password-source issue, so it must stay
+// unreachable/error rather than mislabel itself needs-auth.
+const AUTH_FAIL_RE = /Permission denied|password|publickey/i;
+function isPasswordAuthFailure(entry, stderr) {
+  return entry.auth === 'password' && AUTH_FAIL_RE.test(String(stderr || ''));
 }
 
 function str(v, max) {
@@ -447,16 +495,24 @@ export async function fetchHost(name, entryOrDest, {
     const helperPath = entry.auth === 'password'
       ? ensureAskpassHelper({ platform: process.platform, stateDir: STATE_DIR, scriptPath: UNSNOOZE_BIN })
       : undefined;
-    const { env: envAdditions, batch } = sshEnvForHost(entry, { ssh, helperPath, interactive });
+    const { env: envAdditions, batch, needsAuth } = sshEnvForHost(entry, { ssh, helperPath, interactive });
+    // No resolvable credential (ssh too old, or a `prompt` source with no
+    // terminal to prompt on) — never spawn ssh just to watch it fail.
+    if (needsAuth) return { host: name, state: 'needs-auth', at, error: 'no resolvable credential' };
     const args = sshArgs(entry.dest, ['status'], { multiplex: ssh.multiplex, batch: batch !== false });
     child = spawnFn(ssh.bin, args, { env: { ...process.env, ...envAdditions } });
   } catch (err) {
     return { host: name, state: 'error', at, error: String(err?.message || err) };
   }
-  const { code, stdout, timedOut } = await collectChild(child, timeoutMs);
+  const { code, stdout, stderr, timedOut } = await collectChild(child, timeoutMs);
   const latencyMs = Date.now() - at;
   if (timedOut) return { host: name, state: 'unreachable', at, latencyMs, error: 'timeout' };
-  if (code === 255) return { host: name, state: 'unreachable', at, latencyMs, error: `ssh exit ${code}` };
+  if (code === 255) {
+    if (isPasswordAuthFailure(entry, stderr)) {
+      return { host: name, state: 'needs-auth', at, latencyMs, error: 'ssh auth failed' };
+    }
+    return { host: name, state: 'unreachable', at, latencyMs, error: `ssh exit ${code}` };
+  }
   const parsed = extractEnvelope(stdout);
   if (!parsed) return { host: name, state: 'error', at, latencyMs, error: 'bad or missing response frame' };
   const v = validateEnvelope(parsed);
@@ -477,15 +533,21 @@ export async function remoteAction(name, entryOrDest, verb, key, {
     const helperPath = entry.auth === 'password'
       ? ensureAskpassHelper({ platform: process.platform, stateDir: STATE_DIR, scriptPath: UNSNOOZE_BIN })
       : undefined;
-    const { env: envAdditions, batch } = sshEnvForHost(entry, { ssh, helperPath, interactive });
+    const { env: envAdditions, batch, needsAuth } = sshEnvForHost(entry, { ssh, helperPath, interactive });
+    if (needsAuth) return { ok: false, result: null, error: 'no resolvable credential', needsAuth: true };
     const args = sshArgs(entry.dest, remoteCmd, { multiplex: ssh.multiplex, batch: batch !== false });
     child = spawnFn(ssh.bin, args, { env: { ...process.env, ...envAdditions } });
   } catch (err) {
     return { ok: false, result: null, error: String(err?.message || err) };
   }
-  const { code, stdout, timedOut } = await collectChild(child, timeoutMs);
+  const { code, stdout, stderr, timedOut } = await collectChild(child, timeoutMs);
   if (timedOut) return { ok: false, result: null, error: 'timeout' };
-  if (code === 255) return { ok: false, result: null, error: `ssh exit ${code}` };
+  if (code === 255) {
+    if (isPasswordAuthFailure(entry, stderr)) {
+      return { ok: false, result: null, error: 'ssh auth failed', needsAuth: true };
+    }
+    return { ok: false, result: null, error: `ssh exit ${code}` };
+  }
   const parsed = extractEnvelope(stdout);
   if (!parsed) return { ok: false, result: null, error: 'bad or missing response frame' };
   const v = validateEnvelope(parsed);
@@ -584,6 +646,7 @@ function fmtCountdown(ms) {
 function stateGlyph(state, c) {
   if (state === 'online') return c.green('● online');
   if (state === 'stale') return c.yellow('◐ stale');
+  if (state === 'needs-auth') return c.yellow('◐ needs-auth');
   if (state === 'skew') return c.red('✗ skew');
   return c.red(`✗ ${state}`);
 }
@@ -633,7 +696,11 @@ export async function cmdFleet(args = []) {
       else console.log('unsnooze: no hosts registered. Add one: unsnooze hosts add <name> [ssh-destination]');
       return 0;
     }
-    const results = await fetchFleet({ hosts });
+    // A human at a real terminal reaches sshEnvForHost's interactive
+    // prompt-passthrough branch (ssh prompts directly on the console); the
+    // daemon/resumer path never sets this, so it always needs a stored
+    // credential and falls to needs-auth for a bare `prompt` source.
+    const results = await fetchFleet({ hosts, interactive: !!process.stdin.isTTY });
     const actionable = results.some(r => (r.state === 'online' || r.state === 'stale')
       && (r.envelope?.sessions ?? []).some(s => s.status === 'stopped'));
     if (json) console.log(JSON.stringify(results, null, 2));

@@ -87,3 +87,30 @@ test('FleetTab renders host states, sessions, and attach hints', async () => {
   assert.match(out, /unreachable/);
   assert.match(out, /skew/);
 });
+
+test('FleetTab renders needs-auth as a distinct glyph (◐, warn) from unreachable (○, crit)', async () => {
+  const { renderToString } = await import('ink');
+  const React = (await import('react')).default;
+  const { FleetTab } = await import('../src/dashboard/tabs/FleetTab.js');
+  const data = [
+    { host: 'lap', state: 'needs-auth', at: Date.now(), dest: 'me@lap', error: 'no resolvable credential' },
+    { host: 'dead', state: 'unreachable', at: Date.now(), dest: 'dead', error: 'timeout' },
+  ];
+  const out = renderToString(React.createElement(FleetTab, { data, selected: 0 }));
+  assert.match(out, /needs-auth/);
+  assert.match(out, /◐/);
+  assert.match(out, /○/);
+});
+
+test('flattenFleetStopped carries the full host descriptor (entry) alongside dest, so R/C actions can use password auth', async () => {
+  const { flattenFleetStopped } = await import('../src/dashboard/data.js');
+  const entry = { dest: 'me@gpu', auth: 'password', source: 'command', cmd: 'op read x' };
+  const data = [
+    { host: 'gpu', state: 'online', dest: entry.dest, entry,
+      envelope: { sessions: [{ key: 'k1', status: 'stopped' }] } },
+  ];
+  const rows = flattenFleetStopped(data);
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].entry, entry);
+  assert.equal(rows[0].dest, 'me@gpu');
+});

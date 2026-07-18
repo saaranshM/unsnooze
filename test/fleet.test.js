@@ -210,7 +210,7 @@ test('status --json prints machine shape; resume core marks without typing', asy
 // ssh fan-out, cache, `unsnooze fleet`
 // ---------------------------------------------------------------------------
 
-function fakeSsh({ code = 0, stdout = '', delayMs = 5 }) {
+function fakeSsh({ code = 0, stdout = '', stderr = '', delayMs = 5 }) {
   return () => {
     const p = new EventEmitter();
     p.stdout = new EventEmitter();
@@ -218,6 +218,7 @@ function fakeSsh({ code = 0, stdout = '', delayMs = 5 }) {
     p.kill = () => { p.killed = true; p.emit('close', null, 'SIGKILL'); };
     setTimeout(() => {
       if (stdout) p.stdout.emit('data', Buffer.from(stdout));
+      if (stderr) p.stderr.emit('data', Buffer.from(stderr));
       p.emit('close', code);
     }, delayMs);
     return p;
@@ -474,4 +475,163 @@ test('remoteAction: password host askpass env present; secret/cmd never in argv'
   assert.equal(seen.opts.env.SSH_ASKPASS_REQUIRE, 'force');
   assert.equal(seen.opts.env.UNSNOOZE_ASKPASS_HOST, 'gpu');
   assert.ok(!JSON.stringify(seen.args).includes('op read'));
+});
+
+// ---------------------------------------------------------------------------
+// Task 6: needs-auth surfacing, hosts test, interactive wiring
+// ---------------------------------------------------------------------------
+
+test('fetchHost: sshEnvForHost needsAuth short-circuits to needs-auth (no ssh spawn)', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  let spawned = false;
+  const spawnFn = () => { spawned = true; return fakeSshOk(); };
+  // A `prompt` source with no interactive terminal (the daemon path) has
+  // nothing to prompt from — sshEnvForHost marks it needsAuth up front.
+  const r = await fetchHost('lap', { dest: 'me@lap', auth: 'password', source: 'prompt' },
+    { spawnFn, interactive: false });
+  assert.equal(r.state, 'needs-auth');
+  assert.equal(spawned, false, 'ssh must never spawn when there is no resolvable credential');
+});
+
+test('fetchHost: ssh exit 255 with auth-failure stderr on a password host → needs-auth; key host stays unreachable', async () => {
+  const { fetchHost } = await import('../src/fleet.js');
+  const denied = fakeSsh({ code: 255, stderr: 'Permission denied (publickey,password).\n' });
+  const pwResult = await fetchHost('gpu', { dest: 'me@gpu', auth: 'password', source: 'command', cmd: 'op read x' },
+    { spawnFn: denied, detect: () => ({ bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' }), timeoutMs: 200 });
+  assert.equal(pwResult.state, 'needs-auth');
+
+  // A key host getting the exact same stderr is a genuine key problem, not
+  // an auth-source issue — it must stay unreachable, never needs-auth.
+  const keyResult = await fetchHost('build1', { dest: 'build1', auth: 'key' },
+    { spawnFn: fakeSsh({ code: 255, stderr: 'Permission denied (publickey).\n' }), timeoutMs: 200 });
+  assert.equal(keyResult.state, 'unreachable');
+});
+
+test('remoteAction: needsAuth short-circuit and auth-failure stderr classification mirror fetchHost', async () => {
+  const { remoteAction } = await import('../src/fleet.js');
+  let spawned = false;
+  const shortCircuited = await remoteAction('lap', { dest: 'me@lap', auth: 'password', source: 'prompt' },
+    'resume', 'k1', { spawnFn: () => { spawned = true; return fakeSshOk(); }, interactive: false });
+  assert.equal(shortCircuited.ok, false);
+  assert.equal(shortCircuited.needsAuth, true);
+  assert.equal(spawned, false);
+
+  const denied = fakeSsh({ code: 255, stderr: 'Permission denied (password).\n' });
+  const pw = await remoteAction('gpu', { dest: 'me@gpu', auth: 'password', source: 'command', cmd: 'op read x' },
+    'resume', 'k1', { spawnFn: denied, detect: () => ({ bin: 'ssh', askpass: true, multiplex: true, flavor: 'unix' }), timeoutMs: 200 });
+  assert.equal(pw.ok, false);
+  assert.equal(pw.needsAuth, true);
+
+  const key = await remoteAction('build1', { dest: 'build1', auth: 'key' }, 'resume', 'k1',
+    { spawnFn: fakeSsh({ code: 255, stderr: 'Permission denied (publickey).\n' }), timeoutMs: 200 });
+  assert.equal(key.ok, false);
+  assert.ok(!key.needsAuth);
+});
+
+test('formatFleetTui: needs-auth renders a distinct glyph from unreachable', async () => {
+  const { formatFleetTui } = await import('../src/fleet.js');
+  const results = [
+    { host: 'lap', state: 'needs-auth', at: Date.now(), error: 'no resolvable credential' },
+    { host: 'dead', state: 'unreachable', at: Date.now(), error: 'timeout' },
+  ];
+  const out = formatFleetTui(results, { color: false, hosts: {} });
+  assert.match(out, /◐ needs-auth/);
+  assert.match(out, /✗ unreachable/);
+});
+
+test('fetchFleet threads interactive through to fetchHost/sshEnvForHost: interactive+prompt host reaches the ssh-prompts path, non-interactive gets needs-auth', async () => {
+  const { fetchFleet } = await import('../src/fleet.js');
+  const hosts = { lap: { dest: 'me@lap', auth: 'password', source: 'prompt' } };
+
+  // interactive:true → sshEnvForHost returns batch:false (no BatchMode=yes)
+  // and ssh is actually spawned to prompt on the console — the previously
+  // dead interactive branch is now reachable end to end.
+  let seenArgs;
+  const spawnFn = (bin, args) => { seenArgs = args; return fakeSsh({ stdout: GOOD })(); };
+  const interactiveResults = await fetchFleet({ hosts, spawnFn, interactive: true, timeoutMs: 200 });
+  assert.equal(interactiveResults[0].state, 'online');
+  assert.ok(seenArgs, 'ssh must be spawned for the interactive prompt path');
+  assert.doesNotMatch(seenArgs.join(' '), /BatchMode/);
+
+  // interactive:false (the daemon/default) → needsAuth short-circuit,
+  // ssh never spawned, state is needs-auth.
+  seenArgs = undefined;
+  const daemonResults = await fetchFleet({ hosts, spawnFn, interactive: false, timeoutMs: 200 });
+  assert.equal(daemonResults[0].state, 'needs-auth');
+  assert.equal(seenArgs, undefined, 'ssh must never spawn without a resolvable credential');
+});
+
+test('cmdHosts test: env source resolves ok when var set → auth ok, secret never printed', async () => {
+  const { cmdHosts, writeHosts } = await import('../src/fleet.js');
+  writeHosts({ envhost: { dest: 'me@envhost', auth: 'password', source: 'env', env: 'UNSNOOZE_TEST_PW' } });
+  process.env.UNSNOOZE_TEST_PW = 'tdd-super-secret-value';
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => logs.push(a.join(' '));
+  let code;
+  try {
+    code = await cmdHosts(['test', 'envhost'], { spawnFn: fakeSshOk, timeoutMs: 200 });
+  } finally {
+    console.log = origLog;
+    delete process.env.UNSNOOZE_TEST_PW;
+  }
+  const out = logs.join('\n');
+  assert.equal(code, 0);
+  assert.match(out, /auth: source resolved ok/);
+  assert.match(out, /auth ok/);
+  assert.ok(!out.includes('tdd-super-secret-value'), 'secret value must never appear in output');
+});
+
+test('cmdHosts test: env source unset → clear message, needs-setup, no network probe, secret absent', async () => {
+  const { cmdHosts, writeHosts } = await import('../src/fleet.js');
+  writeHosts({ envhost2: { dest: 'me@envhost2', auth: 'password', source: 'env', env: 'UNSNOOZE_TEST_PW2' } });
+  delete process.env.UNSNOOZE_TEST_PW2;
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => logs.push(a.join(' '));
+  let spawned = false;
+  let code;
+  try {
+    code = await cmdHosts(['test', 'envhost2'], { spawnFn: () => { spawned = true; return fakeSshOk(); }, timeoutMs: 200 });
+  } finally {
+    console.log = origLog;
+  }
+  const out = logs.join('\n');
+  assert.equal(code, 1);
+  assert.match(out, /auth: .*not set/);
+  assert.match(out, /needs-setup/);
+  assert.ok(!/UNSNOOZE_TEST_PW2=/.test(out));
+  assert.equal(spawned, false, 'no point probing ssh when the credential could not resolve');
+});
+
+test('cmdHosts test: key host runs a real reachability probe and prints key ok / needs-setup', async () => {
+  const { cmdHosts, writeHosts } = await import('../src/fleet.js');
+  writeHosts({ keyhost: 'ubuntu@keyhost' });
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => logs.push(a.join(' '));
+  let code;
+  try {
+    code = await cmdHosts(['test', 'keyhost'], { spawnFn: fakeSshOk, timeoutMs: 200 });
+  } finally {
+    console.log = origLog;
+  }
+  assert.equal(code, 0);
+  assert.match(logs.join('\n'), /key ok/);
+
+  logs.length = 0;
+  console.log = (...a) => logs.push(a.join(' '));
+  try {
+    code = await cmdHosts(['test', 'keyhost'], { spawnFn: fakeSsh({ code: 255 }), timeoutMs: 200 });
+  } finally {
+    console.log = origLog;
+  }
+  assert.equal(code, 1);
+  assert.match(logs.join('\n'), /needs-setup/);
+});
+
+test('cmdHosts test: unknown host and missing name are rejected cleanly', async () => {
+  const { cmdHosts } = await import('../src/fleet.js');
+  assert.equal(await cmdHosts(['test', 'nope-not-registered']), 1);
+  assert.equal(await cmdHosts(['test']), 2);
 });

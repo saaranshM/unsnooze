@@ -225,9 +225,13 @@ function Dashboard({ initialTab = 'status' } = {}) {
     if (rows.length === 0) return;
     const row = rows[Math.min(selected, rows.length - 1)];
     if (!row) return;
-    const { host, dest, session } = row;
+    const { host, dest, entry, session } = row;
     const id8 = session.key ? session.key.slice(0, 8) : (session.sessionId || '').slice(0, 8);
-    remoteAction(host, dest, verb, session.key)
+    // Prefer the full host descriptor (carries auth/source/etc) so a
+    // password-auth host resumed/cancelled from the dashboard actually uses
+    // its configured auth instead of silently falling back to key auth —
+    // a bare dest string loses those fields.
+    remoteAction(host, entry || dest, verb, session.key)
       .then((res) => {
         setErr(res.ok
           ? `fleet: ${verb} ${host}/${id8} ok`
