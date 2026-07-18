@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="assets/logo.svg" alt="unsnooze logo — a crescent moon cradling the terminal prompt" width="92"/>
-
 <img src="assets/banner.svg" alt="unsnooze — wakes every limit-stopped AI session the moment the limit resets" width="880"/>
 
 <br/>

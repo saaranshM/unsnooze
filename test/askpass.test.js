@@ -46,20 +46,28 @@ test('resolveCommand: non-zero exit (run throws) throws AuthError', () => {
   assert.throws(() => resolveCommand({ cmd: 'false' }, { run }), AuthError);
 });
 
-// M1: resolveCommand's AuthError echoes the failing command's stderr — a
-// secret tool debug-printing to stderr could otherwise leak a huge or
-// control-char-laden blob into a message that ends up on a user's screen
-// (`hosts test` output, logs). Cap it and strip control chars.
-test('resolveCommand: uncapped/control-char stderr from a failing command is capped and stripped in the AuthError message', () => {
-  const huge = 'x'.repeat(5000);
-  const run = () => { throw new Error(`exit 1: \x1b[31m${huge}\x1b[0m`); };
-  try {
-    resolveCommand({ cmd: 'evil-tool' }, { run });
-    assert.fail('should have thrown');
-  } catch (e) {
+// A secret-manager command that debug-prints the password to its own stderr
+// on failure must not have that output surface in resolveCommand's AuthError
+// message (which reaches `hosts test` output / logs). The message is built
+// from the exit code alone — the command's stdout/stderr is never included.
+test('resolveCommand: a failing command\'s stderr never appears in the AuthError message', () => {
+  const SECRET = 'S3CRET-marker-value';
+  // Real defaultShellRun path: exit 1 with the secret on stderr.
+  const err = (() => {
+    try { resolveCommand({ cmd: `sh -c 'echo ${SECRET} >&2; exit 3'` }); }
+    catch (e) { return e; }
+  })();
+  assert.ok(err instanceof AuthError);
+  assert.doesNotMatch(err.message, new RegExp(SECRET), 'command stderr (incl. a secret) must never reach the message');
+  assert.match(err.message, /exit 3/, 'the exit code is still surfaced for debugging');
+
+  // Also robust when an injected `run` throws its own message containing output.
+  const run = () => { const e = new Error('ignored raw message'); e.status = 7; throw e; };
+  try { resolveCommand({ cmd: 'evil-tool' }, { run }); assert.fail('should have thrown'); }
+  catch (e) {
     assert.ok(e instanceof AuthError);
-    assert.ok(e.message.length < 300, `message should be capped, was ${e.message.length} chars`);
-    assert.doesNotMatch(e.message, /\x1b/, 'control chars (e.g. ANSI escapes) must be stripped');
+    assert.doesNotMatch(e.message, /ignored raw message/, 'the runner\'s raw message is never echoed');
+    assert.match(e.message, /exit 7/);
   }
 });
 

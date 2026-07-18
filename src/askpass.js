@@ -22,19 +22,18 @@ function defaultRun(bin, args, opts) {
 function defaultShellRun(cmd, opts) {
   const res = spawnSync(cmd, { shell: true, encoding: 'utf-8', ...opts });
   if (res.error) throw res.error;
-  if (res.status !== 0) throw new Error(`exited ${res.status}: ${res.stderr || ''}`.trim());
+  // Carry the exit code but NOT the command's stderr: a secret tool that
+  // debug-prints the password to stderr must not leak it into an error
+  // message. resolveCommand builds its message from `.status` alone.
+  if (res.status !== 0) {
+    const err = new Error(`command source exited ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
   return res.stdout;
 }
 
 const trimPw = (s) => String(s ?? '').replace(/\r?\n$/, '');
-
-// Minimal control-char strip for text surfaced in an error message to the
-// user (a secret command's own stderr, potentially attacker/tool-controlled
-// debug output). Mirrors fleet.js's stripRemoteText, but inlined rather
-// than imported — fleet.js imports from this module, so importing back
-// would create a circular top-level import (cmdAskpass already sidesteps
-// this the same way, via a dynamic `await import('./fleet.js')`).
-const stripControlChars = (s) => String(s ?? '').replace(/[\x00-\x1f\x7f]/g, '');
 
 export function resolveEnv(entry, { env = process.env } = {}) {
   const v = env[entry.env];
@@ -50,11 +49,11 @@ export function resolveCommand(entry, { run = defaultShellRun } = {}) {
   let out;
   try { out = run(cmd, { shell: true }); }
   catch (e) {
-    // e.message may embed the command's own uncapped stderr (a secret tool
-    // debug-printing to stderr could otherwise leak a huge or
-    // control-char-laden blob into `hosts test` output/logs) — cap and
-    // strip before it ever reaches a message.
-    throw new AuthError(`command source failed: ${stripControlChars(e.message).slice(0, 200)}`);
+    // Build the message from the exit code ONLY — never from e.message, which
+    // may embed the command's own stderr (a secret tool debug-printing the
+    // password to stderr would otherwise leak it into `hosts test`/logs).
+    const code = Number.isInteger(e?.status) ? `exit ${e.status}` : 'could not run';
+    throw new AuthError(`command source failed (${code}) — check the --cmd command`);
   }
   const pw = trimPw(out);
   if (!pw) throw new AuthError('command source produced no output');
