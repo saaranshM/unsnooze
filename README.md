@@ -282,6 +282,11 @@ unsnooze preview [id]                  # dry-run: what WOULD happen right now, a
 unsnooze sessions                      # list unsnooze-owned mux sessions + panes
 unsnooze reap [--dry-run|--yes]        # close finished panes / empty sessions (default dry-run)
 unsnooze doctor [--fix]                # install health check + retire old csg leftovers
+unsnooze prompt add [--agent id] [--project path] [--at time|--now] "text"
+                                       # queue a prompt for a NEW session (see Queued prompts)
+unsnooze prompt list [--json]          # list queued prompts
+unsnooze prompt remove <id>            # cancel a queued prompt
+unsnooze prompt clear                  # cancel all pending queued prompts
 unsnooze config list                   # settings (see below)
 unsnooze config set <k> <v>            # e.g. autoResume off
 unsnooze logs [-f]                     # what unsnooze has been doing
@@ -292,6 +297,75 @@ unsnooze report [agent]                # capture a pane to report an undetected 
 unsnooze uninstall [--purge]           # remove wrappers + hooks (+ state with --purge)
 unsnooze help                          # full command list (also -h / --help)
 ```
+
+## Queued prompts
+
+Queue a prompt now; unsnooze types it into a **brand-new** agent session — a
+fresh window in a project directory — once a usage limit clears (or at a time
+you choose). It's one-shot: each entry is delivered at most once.
+
+```sh
+unsnooze prompt add "run the full test suite and fix any failures"
+# → interactive agent picker on a TTY; queued for next-reset in the cwd
+
+unsnooze prompt add --agent codex --project ~/code/api --now "ship the release"
+unsnooze prompt add --at "+2h30m" "rebase onto main"   # relative duration
+unsnooze prompt add --at "9pm" "nightly cleanup pass"  # next occurrence of a clock time
+unsnooze prompt add --at 1755000000 "..."              # epoch (seconds or ms), or an ISO-8601 timestamp
+
+unsnooze prompt list [--json]   # id, agent, due, status, cwd, prompt preview
+unsnooze prompt remove <id>     # cancel one pending/launching entry
+unsnooze prompt clear           # cancel every pending/launching entry
+```
+
+Modes:
+
+- **next-reset** (default) — delivered once no future reset time is known for
+  that agent, i.e. once the current limit clears. If unsnooze holds **no
+  reset signal at all** for that agent when you add the entry, there's
+  nothing to wait on — it delivers on the very next daemon tick, and
+  `prompt add` prints a notice to that effect right away. Use `--at` if you
+  want a specific time instead.
+- `--now` — deliver on the next daemon tick, no reset wait at all.
+- `--at <time>` — deliver at a specific time: epoch (seconds or
+  milliseconds), an ISO-8601 timestamp, a `+2h30m`-style relative duration,
+  or a bare clock time (`9pm`, `2:05pm`, `14:30`) rolled to its next local
+  occurrence.
+
+If a delivery attempt lands on a pane that's still limited — the reset
+hadn't actually cleared, or a fresh `--now`/`--at` session hits the wall
+immediately — the entry goes back to pending behind a backoff floor before
+it's retried. That floor applies to every mode, so a failing `--now`/`--at`
+entry can't burn through every retry in the first few seconds the way an
+unthrottled retry loop would. Verified delivery (capped at 5 attempts,
+same as resume) marks it `failed` and sends a notification.
+
+`autoResume` does **not** gate prompt delivery — the queue runs independently
+of session tracking, even with `autoResume off`.
+
+**Fleet:** `--host <name>` queues on a registered host instead of locally.
+`--project` (an absolute remote path) and `--agent` are both required — there's
+no local cwd to default to and no interactive picker over an ssh round-trip.
+The remote host re-validates everything server-side. Delivery feedback comes
+from `unsnooze fleet` / the dashboard's Fleet tab (per-host queued count) and
+that host's own notifications (ntfy reaches your phone from any host, not
+just the one you're sitting at). A host can refuse all queue traffic with
+`remoteQueue: false` (`unsnooze config set remoteQueue off`, env
+`UNSNOOZE_REMOTE_QUEUE=0`, **set on the host being controlled**) — the queue
+verbs then answer a typed "disabled" instead of silently dropping; a remote
+that predates this feature reports a clear "too old" error instead of
+failing silently.
+
+```sh
+unsnooze prompt add --host gpu-box --project /home/me/repo --agent claude --now "..."
+unsnooze prompt list --host gpu-box
+```
+
+**Dashboard:** the **Prompts** tab (`7`) lists queued entries; `a` opens an
+add form (path → agent → when — with a time prompt if you pick "at" — → a
+host step if you have hosts registered → prompt text), `d`/`x` removes the
+selected entry. The Status tab shows a `<n> prompt(s) queued — tab 7` hint
+whenever entries are pending or launching.
 
 ## Fleet: sessions on every machine
 
@@ -434,6 +508,7 @@ password hosts on Windows; a plain `ssh <host>` prompt works with native
 | `ntfyServer` | `https://ntfy.sh` | ntfy server base URL (self-hosted servers welcome). |
 | `ntfyToken` | `""` | Optional `tk_…` access token (`Authorization: Bearer`) for reserved topics / authed servers. |
 | `ntfyPrivacy` | `full` | `terse` keeps directory paths out of pushed bodies (titles only) — recommended on public ntfy.sh topics. |
+| `remoteQueue` | `true` | Set **on the host being controlled**: may other hosts queue prompts on this one (`unsnooze prompt add --host <this>`)? Off = the queue verbs answer a typed `disabled` instead of silently dropping. Env: `UNSNOOZE_REMOTE_QUEUE`. |
 
 Every setting also has a `UNSNOOZE_*` env override (see `src/settings.js`), and
 all timings/paths are tunable via `UNSNOOZE_*` env vars (see `src/config.js`).

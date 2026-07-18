@@ -22,6 +22,7 @@ const SECTIONS = [
   ['settings', 'Settings'],
   ['usage', 'Usage forecast'],
   ['fleet', 'Multi-host fleet'],
+  ['prompts', 'Queued prompts'],
   ['notifications', 'Notifications'],
   ['gui', 'GUI surfaces'],
   ['guards', 'Guards'],
@@ -162,6 +163,12 @@ Usage:
   unsnooze hosts test <name>       pre-flight a host: resolves its credential
                                    and probes reachability (secret never shown)
   unsnooze fleet [--json]          all hosts' sessions (hosts add <name> first)
+  unsnooze prompt add [text...]    queue a prompt to start a NEW session in a
+                                   project when the limit resets ([--agent id]
+                                   [--project path] [--at time|--now])
+  unsnooze prompt list [--json]    list queued prompts
+  unsnooze prompt remove <id>      cancel a queued prompt
+  unsnooze prompt clear            cancel all pending queued prompts
   unsnooze usage [--json]          account burn rate & time-to-limit forecast
                                    (--install-statusline for exact Claude %,
                                     --uninstall-statusline to remove it)
@@ -209,6 +216,7 @@ Usage:
                     <tr><td><C>reapIdleAfter</C></td><td><C>604800000</C> (7d)</td><td>Idle age (ms) before an opt-in auto-reap closes a resumed pane.</td></tr>
                     <tr><td><C>updateCheck</C></td><td><C>true</C></td><td>Daily new-version check — a plain GET to the npm registry, nothing identifying.</td></tr>
                     <tr><td><C>ntfyTopic</C> / <C>ntfyServer</C> / <C>ntfyToken</C> / <C>ntfyPrivacy</C></td><td><C>""</C> / ntfy.sh / <C>""</C> / <C>full</C></td><td>Phone push via <a href="https://ntfy.sh">ntfy</a> — off until a topic is set. See <a href="#notifications">Notifications</a>.</td></tr>
+                    <tr><td><C>remoteQueue</C></td><td><C>true</C></td><td>Set <strong>on the host being controlled</strong>: may other hosts queue prompts on this one (<C>prompt add --host &lt;this&gt;</C>)? Off = the queue verbs answer a typed <C>disabled</C> instead of silently dropping. See <a href="#prompts">Queued prompts</a>.</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -395,6 +403,70 @@ $ unsnooze hosts test gpu
                   in-process, for that one ssh child. unsnooze stores no plaintext:
                   keychain/command delegate to the OS store or your manager.</li>
               </ul>
+            </section>
+
+            <section className="doc-sec" id="prompts">
+              <h2>Queued prompts</h2>
+              <p>Queue a prompt now; unsnooze types it into a <strong>brand-new</strong> agent
+                session — a fresh window in a project directory — once a usage limit clears (or
+                at a time you choose). It's one-shot: each entry is delivered at most once.</p>
+              <Shell title="prompt queue">{`$ unsnooze prompt add "run the full test suite and fix any failures"
+# → interactive agent picker on a TTY; queued for next-reset in the cwd
+
+$ unsnooze prompt add --agent codex --project ~/code/api --now "ship the release"
+$ unsnooze prompt add --at "+2h30m" "rebase onto main"   # relative duration
+$ unsnooze prompt add --at "9pm" "nightly cleanup pass"  # next occurrence of a clock time
+$ unsnooze prompt add --at 1755000000 "..."              # epoch (seconds or ms), or an ISO-8601 timestamp
+
+$ unsnooze prompt list [--json]   # id, agent, due, status, cwd, prompt preview
+$ unsnooze prompt remove <id>     # cancel one pending/launching entry
+$ unsnooze prompt clear           # cancel every pending/launching entry`}</Shell>
+              <h3>Modes</h3>
+              <ul>
+                <li><strong>next-reset</strong> (default) — delivered once no future reset time
+                  is known for that agent, i.e. once the current limit clears. If unsnooze holds{' '}
+                  <strong>no reset signal at all</strong> for that agent when you add the entry,
+                  there's nothing to wait on — it delivers on the very next daemon tick, and{' '}
+                  <C>prompt add</C> prints a notice to that effect right away. Use <C>--at</C> if
+                  you want a specific time instead.</li>
+                <li><strong><C>--now</C></strong> — deliver on the next daemon tick, no reset
+                  wait at all.</li>
+                <li><strong><C>--at &lt;time&gt;</C></strong> — deliver at a specific time: epoch
+                  (seconds or milliseconds), an ISO-8601 timestamp, a <C>+2h30m</C>-style relative
+                  duration, or a bare clock time (<C>9pm</C>, <C>2:05pm</C>, <C>14:30</C>) rolled
+                  to its next local occurrence.</li>
+              </ul>
+              <p>If a delivery attempt lands on a pane that's still limited — the reset hadn't
+                actually cleared, or a fresh <C>--now</C>/<C>--at</C> session hits the wall
+                immediately — the entry goes back to pending behind a backoff floor before it's
+                retried. That floor applies to every mode, so a failing <C>--now</C>/<C>--at</C>{' '}
+                entry can't burn through every retry in the first few seconds. Verified delivery
+                (capped at 5 attempts, same as resume) marks it <C>failed</C> and sends a
+                notification.</p>
+              <p><C>autoResume</C> does <strong>not</strong> gate prompt delivery — the queue runs
+                independently of session tracking, even with <C>autoResume off</C>.</p>
+              <h3>Fleet</h3>
+              <p><C>--host &lt;name&gt;</C> queues on a registered host instead of locally.{' '}
+                <C>--project</C> (an absolute remote path) and <C>--agent</C> are both
+                required — there's no local cwd to default to and no interactive picker over an
+                ssh round-trip. The remote host re-validates everything server-side. Delivery
+                feedback comes from <C>unsnooze fleet</C> / the dashboard's Fleet tab (per-host
+                queued count) and that host's own notifications (ntfy reaches your phone from any
+                host, not just the one you're sitting at). A host can refuse all queue traffic
+                with <C>remoteQueue: false</C> (<C>unsnooze config set remoteQueue off</C>, env{' '}
+                <C>UNSNOOZE_REMOTE_QUEUE=0</C>, <strong>set on the host being controlled</strong>)
+                — the queue verbs then answer a typed "disabled" instead of silently dropping; a
+                remote that predates this feature reports a clear "too old" error instead of
+                failing silently.</p>
+              <Shell title="fleet prompt queue">{`$ unsnooze prompt add --host gpu-box --project /home/me/repo --agent claude --now "..."
+$ unsnooze prompt list --host gpu-box`}</Shell>
+              <h3>Dashboard</h3>
+              <p>The <strong>Prompts</strong> tab (<C>7</C>) lists queued entries; <C>a</C> opens
+                an add form (path → agent → when — with a time prompt if you pick "at" — → a host
+                step if you have hosts registered → prompt text), <C>d</C>/<C>x</C> removes the
+                selected entry. The Status tab shows a{' '}
+                <C>&lt;n&gt; prompt(s) queued — tab 7</C> hint whenever entries are pending or
+                launching.</p>
             </section>
 
             <section className="doc-sec" id="notifications">

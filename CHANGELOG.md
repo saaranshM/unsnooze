@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 1.14.0 — 2026-07-19
+
+- **Queued prompts**: `unsnooze prompt add [--agent id] [--project path]
+  [--at time|--now] <text...>` (plus `list`/`remove`/`clear`) queues a
+  one-shot prompt that spawns a **brand-new** agent session in a project
+  directory once a usage limit clears. `--now`/`--at` (epoch, ISO-8601,
+  `+2h30m`, or a bare clock time) skip the reset wait; with no reset signal
+  at all, a `next-reset` entry delivers on the very next daemon tick and
+  `prompt add` prints a notice to that effect. Delivery is verified against
+  a fresh limit banner and backs off on failure — the same backoff floor
+  applies to every mode, capped at 5 attempts (same as resume) before an
+  entry is marked failed. `autoResume` does not gate delivery. Dashboard:
+  a new **Prompts** tab (`7`) — list, `a` to add, `d`/`x` to remove — plus a
+  queued-count hint on the Status tab. Fleet: `--host <name>` relays the
+  same subcommands to a registered host's own queue (`--project`/`--agent`
+  required, everything re-validated server-side); the new `remoteQueue`
+  setting (default on) lets a host opt out of all queue traffic, answering
+  a typed `disabled` instead of silently dropping it.
 - **Fleet password auth**: hosts can now use a password instead of an ssh key
   — `unsnooze hosts add <name> <dest> --auth password --source
   prompt|env|keychain|command` (`prompt` is interactive no-echo and the
