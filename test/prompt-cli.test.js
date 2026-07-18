@@ -15,6 +15,8 @@ import { EventEmitter } from 'node:events';
 // state.js/settings.js read UNSNOOZE_STATE_DIR at import time — set it BEFORE
 // importing anything that touches state.
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-prompt-cli-test-'));
+// cross-platform project fixture: a real dir (a hardcoded unix path does not exist on win32)
+const PROJ = mkdtempSync(join(tmpdir(), 'unsnooze-prompt-proj-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
 process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 
@@ -24,7 +26,7 @@ const { queueList, queueAdd } = await import('../src/prompt-queue.js');
 const { updateState } = await import('../src/state.js');
 const { writeHosts, frameEnvelope } = await import('../src/fleet.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => { rmSync(DIR, { recursive: true, force: true }); rmSync(PROJ, { recursive: true, force: true }); });
 
 function resetState() {
   updateState(state => { state.sessions = {}; state.promptQueue = []; return state; });
@@ -53,7 +55,7 @@ async function runPrompt(args, opts) {
 
 test('add happy path: non-TTY defaults to claude and writes a pending entry', async () => {
   resetState();
-  const r = await runPrompt(['add', '--project', '/tmp', 'finish', 'the', 'refactor']);
+  const r = await runPrompt(['add', '--project', PROJ, 'finish', 'the', 'refactor']);
   assert.equal(r.code, 0);
   assert.match(r.stdout, /queued prompt p-[0-9a-f]{8} for claude in/);
   const entries = queueList();
@@ -61,7 +63,7 @@ test('add happy path: non-TTY defaults to claude and writes a pending entry', as
   assert.equal(entries[0].agent, 'claude');
   assert.equal(entries[0].prompt, 'finish the refactor');
   assert.equal(entries[0].mode, 'next-reset');
-  assert.equal(entries[0].cwd, '/tmp');
+  assert.equal(entries[0].cwd, PROJ);
 });
 
 test('add --project resolves to an absolute path and defaults to cwd', async () => {
@@ -91,7 +93,7 @@ test('add --project pointing at a file (not a directory) errors', async () => {
 
 test('add --agent invalid lists the valid ids', async () => {
   resetState();
-  const r = await runPrompt(['add', '--project', '/tmp', '--agent', 'nope', 'hi']);
+  const r = await runPrompt(['add', '--project', PROJ, '--agent', 'nope', 'hi']);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /unknown or disabled agent "nope"/);
   assert.match(r.stderr, /claude/);
@@ -99,14 +101,14 @@ test('add --agent invalid lists the valid ids', async () => {
 
 test('add --agent disabled-but-registered (grok, off by default) is rejected', async () => {
   resetState();
-  const r = await runPrompt(['add', '--project', '/tmp', '--agent', 'grok', 'hi']);
+  const r = await runPrompt(['add', '--project', PROJ, '--agent', 'grok', 'hi']);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /unknown or disabled agent "grok"/);
 });
 
 test('add --agent valid (codex, enabled by default) succeeds', async () => {
   resetState();
-  const r = await runPrompt(['add', '--project', '/tmp', '--agent', 'codex', 'hi']);
+  const r = await runPrompt(['add', '--project', PROJ, '--agent', 'codex', 'hi']);
   assert.equal(r.code, 0);
   assert.equal(queueList()[0].agent, 'codex');
 });
@@ -115,7 +117,7 @@ test('add: injectable prompter supplies the agent when --agent is omitted', asyn
   resetState();
   let askedWith = null;
   const prompter = async ids => { askedWith = ids; return 'codex'; };
-  const r = await runPrompt(['add', '--project', '/tmp', 'hi'], { prompter });
+  const r = await runPrompt(['add', '--project', PROJ, 'hi'], { prompter });
   assert.equal(r.code, 0);
   assert.deepEqual(askedWith, ['claude', 'codex']);
   assert.equal(queueList()[0].agent, 'codex');
@@ -124,7 +126,7 @@ test('add: injectable prompter supplies the agent when --agent is omitted', asyn
 test('add: injectable prompter cancel (returns null) aborts without queuing', async () => {
   resetState();
   const prompter = async () => null;
-  const r = await runPrompt(['add', '--project', '/tmp', 'hi'], { prompter });
+  const r = await runPrompt(['add', '--project', PROJ, 'hi'], { prompter });
   assert.equal(r.code, 1);
   assert.match(r.stderr, /cancelled/);
   assert.equal(queueList().length, 0);
@@ -132,21 +134,21 @@ test('add: injectable prompter cancel (returns null) aborts without queuing', as
 
 test('add --at and --now together is an error', async () => {
   resetState();
-  const r = await runPrompt(['add', '--project', '/tmp', '--at', '9pm', '--now', 'hi']);
+  const r = await runPrompt(['add', '--project', PROJ, '--at', '9pm', '--now', 'hi']);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /--at and --now cannot both be given/);
 });
 
 test('add --now queues mode "now"', async () => {
   resetState();
-  const r = await runPrompt(['add', '--project', '/tmp', '--now', 'hi']);
+  const r = await runPrompt(['add', '--project', PROJ, '--now', 'hi']);
   assert.equal(r.code, 0);
   assert.equal(queueList()[0].mode, 'now');
 });
 
 test('add --at with an unparseable time errors', async () => {
   resetState();
-  const r = await runPrompt(['add', '--project', '/tmp', '--at', 'whenever', 'hi']);
+  const r = await runPrompt(['add', '--project', PROJ, '--at', 'whenever', 'hi']);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /could not parse --at/);
   assert.equal(queueList().length, 0);
@@ -154,7 +156,7 @@ test('add --at with an unparseable time errors', async () => {
 
 test('add --at with a valid time queues mode "at" with the resolved atMs', async () => {
   resetState();
-  const r = await runPrompt(['add', '--project', '/tmp', '--at', '+45m', 'hi']);
+  const r = await runPrompt(['add', '--project', PROJ, '--at', '+45m', 'hi']);
   assert.equal(r.code, 0);
   const entry = queueList()[0];
   assert.equal(entry.mode, 'at');
@@ -163,17 +165,17 @@ test('add --at with a valid time queues mode "at" with the resolved atMs', async
 
 test('add: no active limit → informational next-daemon-tick message', async () => {
   resetState();
-  const r = await runPrompt(['add', '--project', '/tmp', 'hi']);
+  const r = await runPrompt(['add', '--project', PROJ, 'hi']);
   assert.equal(r.code, 0);
   assert.match(r.stdout, /no active limit detected for claude.*next daemon tick/);
 });
 
 test('add: duplicate (same cwd/agent/prompt, still pending) errors mentioning the existing id', async () => {
   resetState();
-  const first = await runPrompt(['add', '--project', '/tmp', 'dup', 'me']);
+  const first = await runPrompt(['add', '--project', PROJ, 'dup', 'me']);
   assert.equal(first.code, 0);
   const existingId = queueList()[0].id;
-  const second = await runPrompt(['add', '--project', '/tmp', 'dup', 'me']);
+  const second = await runPrompt(['add', '--project', PROJ, 'dup', 'me']);
   assert.equal(second.code, 1);
   assert.match(second.stderr, new RegExp(`duplicate.*${existingId}`));
   assert.equal(queueList().length, 1);
@@ -228,7 +230,7 @@ test('list: empty queue prints "no queued prompts" and exits 0', async () => {
 test('list: plain output shows id/agent/status/cwd/truncated prompt', async () => {
   resetState();
   const longPrompt = 'x'.repeat(120);
-  queueAdd({ cwd: '/tmp', agent: 'claude', prompt: longPrompt, spawn: false });
+  queueAdd({ cwd: PROJ, agent: 'claude', prompt: longPrompt, spawn: false });
   const r = await runPrompt(['list']);
   assert.equal(r.code, 0);
   assert.match(r.stdout, /1 queued prompt/);
@@ -241,7 +243,7 @@ test('list: plain output shows id/agent/status/cwd/truncated prompt', async () =
 
 test('list --json returns the raw queueList() shape', async () => {
   resetState();
-  queueAdd({ cwd: '/tmp', agent: 'claude', prompt: 'hi', spawn: false });
+  queueAdd({ cwd: PROJ, agent: 'claude', prompt: 'hi', spawn: false });
   const r = await runPrompt(['list', '--json']);
   assert.equal(r.code, 0);
   const parsed = JSON.parse(r.stdout);
@@ -260,7 +262,7 @@ test('remove: unknown id errors, exit 1', async () => {
 
 test('remove: known pending id succeeds', async () => {
   resetState();
-  const { entry } = queueAdd({ cwd: '/tmp', agent: 'claude', prompt: 'hi', spawn: false });
+  const { entry } = queueAdd({ cwd: PROJ, agent: 'claude', prompt: 'hi', spawn: false });
   const r = await runPrompt(['remove', entry.id]);
   assert.equal(r.code, 0);
   assert.match(r.stdout, new RegExp(entry.id));
@@ -268,8 +270,8 @@ test('remove: known pending id succeeds', async () => {
 
 test('clear: cancels every pending/launching entry and reports the count', async () => {
   resetState();
-  queueAdd({ cwd: '/tmp', agent: 'claude', prompt: 'a', spawn: false });
-  queueAdd({ cwd: '/tmp', agent: 'claude', prompt: 'b', spawn: false });
+  queueAdd({ cwd: PROJ, agent: 'claude', prompt: 'a', spawn: false });
+  queueAdd({ cwd: PROJ, agent: 'claude', prompt: 'b', spawn: false });
   const r = await runPrompt(['clear']);
   assert.equal(r.code, 0);
   assert.match(r.stdout, /cleared 2 queued prompt/);
@@ -314,7 +316,7 @@ test('--host: unknown host name errors the same way `hosts test` does', async ()
 // subcommand, without ever touching local state or an ssh round trip.
 test('--host with no value: errors instead of silently routing to local (add)', async () => {
   resetState();
-  const r = await runPrompt(['add', '--project', '/tmp', 'hi', '--host']);
+  const r = await runPrompt(['add', '--project', PROJ, 'hi', '--host']);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /--host requires a host name/);
   assert.equal(queueList().length, 0, 'must not fall through to a local queueAdd');
@@ -329,7 +331,7 @@ test('--host with no value: errors instead of silently routing to local (list)',
 
 test('--host with no value: errors instead of silently routing to local (remove)', async () => {
   resetState();
-  const added = queueAdd({ cwd: '/tmp', agent: 'claude', prompt: 'keep me', spawn: false });
+  const added = queueAdd({ cwd: PROJ, agent: 'claude', prompt: 'keep me', spawn: false });
   const r = await runPrompt(['remove', added.entry.id, '--host']);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /--host requires a host name/);
@@ -338,8 +340,8 @@ test('--host with no value: errors instead of silently routing to local (remove)
 
 test('--host with no value: errors instead of silently routing to local (clear) — the destructive-misdirection case', async () => {
   resetState();
-  queueAdd({ cwd: '/tmp', agent: 'claude', prompt: 'a', spawn: false });
-  queueAdd({ cwd: '/tmp', agent: 'claude', prompt: 'b', spawn: false });
+  queueAdd({ cwd: PROJ, agent: 'claude', prompt: 'a', spawn: false });
+  queueAdd({ cwd: PROJ, agent: 'claude', prompt: 'b', spawn: false });
   const r = await runPrompt(['clear', '--host']);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /--host requires a host name/);
