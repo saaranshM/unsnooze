@@ -263,6 +263,10 @@ function extractHostFlag(args) {
   const idx = args.indexOf('--host');
   if (idx === -1) return { host: undefined, rest: args };
   const host = args[idx + 1];
+  // A bare trailing --host (no value follows) must never silently fall
+  // through to local routing — that would make e.g. `prompt clear --host`
+  // clear the LOCAL queue instead of erroring, a destructive misdirection.
+  if (host === undefined) return { host: undefined, rest: args, error: true };
   return { host, rest: [...args.slice(0, idx), ...args.slice(idx + 2)] };
 }
 
@@ -384,7 +388,12 @@ async function cmdPromptHost(sub, hostName, args, opts) {
 
 export async function cmdPrompt(rest = [], opts = {}) {
   const [sub, ...args] = rest;
-  const { host, rest: cleanArgs } = extractHostFlag(args);
+  const { host, rest: cleanArgs, error } = extractHostFlag(args);
+
+  if (error) {
+    console.error('unsnooze prompt: --host requires a host name');
+    return 1;
+  }
 
   if (host !== undefined) {
     return cmdPromptHost(sub, host, cleanArgs, opts);

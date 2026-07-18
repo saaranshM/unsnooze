@@ -18,10 +18,10 @@ process.env.UNSNOOZE_VERIFY_DELAY_MS = '20000';   // keep the real default — t
 
 const { readState, updateState, upsertSession } = await import('../src/state.js');
 const {
-  queueAdd, queueList, dispatchPromptEntry, verifyPromptEntry, tickPromptQueue,
+  queueAdd, queueList, queueRemove, dispatchPromptEntry, verifyPromptEntry, tickPromptQueue,
 } = await import('../src/prompt-queue.js');
 const { runResumer, retryBackoffMs } = await import('../src/resumer.js');
-const { RESUME_SESSION_NAME, VERIFY_DELAY_MS, MAX_RESUME_ATTEMPTS, RESET_MARGIN_MS, PROBE_INTERVAL_MS } = await import('../src/config.js');
+const { RESUME_SESSION_NAME, VERIFY_DELAY_MS, MAX_RESUME_ATTEMPTS, RESET_MARGIN_MS, PROBE_INTERVAL_MS, READY_TIMEOUT_MS } = await import('../src/config.js');
 const { parseResetTime, resetAtMs } = await import('../src/time-parser.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
@@ -77,17 +77,21 @@ test('dispatchPromptEntry: idle pane → prompt sent, entry recorded as launchin
   assert.equal(updated.pane, '%501');
   assert.equal(updated.muxSession, RESUME_SESSION_NAME);
   assert.ok(updated.leaseId);
-  assert.equal(updated.sentAt, now);
+  // Real send time (Date.now() when awaitReadyAndSend actually resolves
+  // 'sent'), not the tick-start `now` passed in — its poll loop spends real
+  // time waiting for the pane to go idle first.
+  assert.ok(updated.sentAt >= now, 'sentAt must not predate dispatch start');
   assert.deepEqual(sent, [{ pane: '%501', text: 'do the thing' }]);
 
   // Not yet due for verification.
-  const tooSoon = await verifyPromptEntry(updated, { mux, now: now + 1 });
+  const tooSoon = await verifyPromptEntry(updated, { mux, now: updated.sentAt + 1 });
   assert.equal(tooSoon.status, 'launching');
 
-  // Later verify (inject now past VERIFY_DELAY_MS) → delivered.
-  const verified = await verifyPromptEntry(updated, { mux, now: now + VERIFY_DELAY_MS + 1000 });
+  // Later verify (inject now past VERIFY_DELAY_MS measured from the REAL
+  // sentAt) → delivered.
+  const verified = await verifyPromptEntry(updated, { mux, now: updated.sentAt + VERIFY_DELAY_MS + 1000 });
   assert.equal(verified.status, 'delivered');
-  assert.equal(verified.deliveredAt, now + VERIFY_DELAY_MS + 1000);
+  assert.equal(verified.deliveredAt, updated.sentAt + VERIFY_DELAY_MS + 1000);
   assert.equal(verified.lastError, null);
 });
 
@@ -98,7 +102,7 @@ test('verifyPromptEntry: pane unreadable (window closed) counts as delivered-unv
   const now = Date.now();
   const dispatched = await dispatchPromptEntry(entry, { mux, now });
   const closedMux = { ...mux, capturePane: async () => { throw new Error('no such pane'); } };
-  const verified = await verifyPromptEntry(dispatched, { mux: closedMux, now: now + VERIFY_DELAY_MS + 1 });
+  const verified = await verifyPromptEntry(dispatched, { mux: closedMux, now: dispatched.sentAt + VERIFY_DELAY_MS + 1 });
   assert.equal(verified.status, 'delivered');
   assert.equal(verified.lastError, null);
 });
@@ -202,6 +206,140 @@ test('dispatchPromptEntry: entry already launching (lost the pending→launching
 
   assert.equal(opened, false, 'a caller that lost the CAS must never open a window');
   assert.equal(updated.status, 'launching', 'status must be left exactly as the winner set it');
+});
+
+test('dispatchPromptEntry: cancelled mid-dispatch-poll → stays cancelled, never resurrected, no delivered/failed notify', async () => {
+  resetState();
+  const entry = addEntry();
+  const resetLine = '· resets 3:30pm (UTC)';
+  const bannerText = `⚠ You've hit your 5-hour limit\n${resetLine}\n> `;
+  // capturePane is the seam awaitReadyAndSend's poll loop uses — cancel the
+  // entry (as if the dashboard's 'x'/'d' + 'y' confirm ran concurrently)
+  // right as the fresh pane comes up against a limit banner.
+  const mux = idleMux({
+    capturePane: async () => { queueRemove(entry.id); return bannerText; },
+  });
+  const toasts = [];
+  const now = Date.now();
+  const updated = await dispatchPromptEntry(entry, {
+    mux, now, notifier: (title, message, opts) => toasts.push({ title, message, opts }),
+  });
+
+  assert.equal(updated.status, 'cancelled', 'a cancel that lands mid-poll must win — never resurrected to pending');
+  assert.equal(toasts.length, 0, 'a CAS loss must never fire a delivered/failed notification');
+  assert.equal(queueList().find(e => e.id === entry.id).status, 'cancelled');
+});
+
+test('dispatchPromptEntry: "sent" outcome leaves the fresh pane open (nothing to verify from otherwise)', async () => {
+  resetState();
+  const entry = addEntry();
+  let closed = null;
+  const mux = idleMux({ closePane: async (pane) => { closed = pane; } });
+  const now = Date.now();
+  const updated = await dispatchPromptEntry(entry, { mux, now });
+
+  assert.equal(updated.status, 'launching');
+  assert.equal(closed, null, 'a successfully sent prompt must not close its own pane');
+});
+
+test('dispatchPromptEntry: "limit" outcome kills the abandoned window (best-effort)', async () => {
+  resetState();
+  const entry = addEntry();
+  let closed = null;
+  const resetLine = '· resets 3:30pm (UTC)';
+  const bannerText = `⚠ You've hit your 5-hour limit\n${resetLine}\n> `;
+  const mux = idleMux({
+    capturePane: async () => bannerText,
+    closePane: async (pane) => { closed = pane; },
+  });
+  const now = Date.now();
+  const updated = await dispatchPromptEntry(entry, { mux, now });
+
+  assert.equal(updated.status, 'pending');
+  assert.equal(closed, '%501', 'the just-opened pane must be closed so no phantom monitor picks it up later');
+});
+
+test('dispatchPromptEntry: "timeout" outcome kills the abandoned window too', async () => {
+  resetState();
+  const entry = addEntry();
+  let closed = null;
+  const mux = idleMux({
+    capturePane: async () => '✻ Cogitating… (esc to interrupt)',
+    closePane: async (pane) => { closed = pane; },
+  });
+  const now = Date.now();
+  const updated = await dispatchPromptEntry(entry, { mux, now, readyTimeoutMs: 50 });
+
+  assert.equal(updated.status, 'pending');
+  assert.equal(closed, '%501');
+});
+
+test('dispatchPromptEntry: closePane absence on the mux is tolerated (best-effort, not required)', async () => {
+  resetState();
+  const entry = addEntry();
+  const resetLine = '· resets 3:30pm (UTC)';
+  const bannerText = `⚠ You've hit your 5-hour limit\n${resetLine}\n> `;
+  const mux = idleMux({ capturePane: async () => bannerText });   // no closePane at all
+  const now = Date.now();
+  const updated = await dispatchPromptEntry(entry, { mux, now });
+
+  assert.equal(updated.status, 'pending');
+});
+
+// --- tickPromptQueue: stranded-launch recovery ------------------------------
+
+test('tickPromptQueue: crash-stranded launching entry (no sentAt, launchedAt long past) recovers to pending', async () => {
+  resetState();
+  // mode 'at' far in the future so, once reclaimed to 'pending', it is not
+  // itself due — keeps this test to the pure recovery behavior without also
+  // exercising a redispatch through the mux.
+  const entry = addEntry({ mode: 'at', atMs: Date.now() + 999_999_999 });
+  const staleLaunchedAt = Date.now() - (READY_TIMEOUT_MS + 30_000 + 1);
+  updateState(state => {
+    const e = state.promptQueue.find(x => x.id === entry.id);
+    e.status = 'launching';
+    e.sentAt = null;
+    e.launchedAt = staleLaunchedAt;
+    e.pane = '%777';
+    return state;
+  });
+
+  let muxTouched = false;
+  const trapMux = new Proxy({ name: 'tmux' }, {
+    get(target, prop) {
+      if (prop === 'name') return 'tmux';
+      muxTouched = true;
+      return () => {};
+    },
+  });
+
+  await tickPromptQueue({ mux: trapMux, now: Date.now() });
+
+  const after = queueList().find(e => e.id === entry.id);
+  assert.equal(after.status, 'pending');
+  assert.equal(after.attempts, 1);
+  assert.equal(after.lastError, 'stranded launch');
+  assert.equal(muxTouched, false, 'recovery is pure state — a not-yet-due reclaimed entry must never touch the mux');
+});
+
+test('tickPromptQueue: a "launching" entry that already has sentAt is left to verifyPromptEntry, not swept as stranded', async () => {
+  resetState();
+  const entry = addEntry();
+  const staleLaunchedAt = Date.now() - (READY_TIMEOUT_MS + 60_000);
+  updateState(state => {
+    const e = state.promptQueue.find(x => x.id === entry.id);
+    e.status = 'launching';
+    e.sentAt = Date.now() - VERIFY_DELAY_MS - 1000;   // already sent, past verify delay
+    e.launchedAt = staleLaunchedAt;
+    e.pane = '%778';
+    return state;
+  });
+  const mux = idleMux();
+
+  await tickPromptQueue({ mux, now: Date.now() });
+
+  const after = queueList().find(e => e.id === entry.id);
+  assert.equal(after.status, 'delivered', 'a sent entry must go through verify, never get reclassified as a stranded launch');
 });
 
 // --- tickPromptQueue -------------------------------------------------------

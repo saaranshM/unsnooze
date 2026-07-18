@@ -425,3 +425,30 @@ test('PromptsTab: reports form-open/closed via onFormOpenChange — App.js\'s on
   }));
   assert.deepEqual(events, [false, false], 'closed on mount, still closed on unmount');
 });
+
+// The y/n remove-confirmation must suppress the same global keys the add-form
+// does — otherwise 'q' during a pending confirm quits the whole dashboard
+// (instead of being read as "not y/n, ignore") and j/k moves the list
+// selection out from under the entry awaiting confirmation. Mounted directly
+// via the initialConfirmId test seam (mirrors initialForm above) since there
+// is no live-stdin harness to drive the 'd'/'x' keypress that would normally
+// set it.
+test('PromptsTab: reports form-open via onFormOpenChange while a remove confirmation (confirmId) is pending, not only while the add-form is open', () => {
+  const events = [];
+  const onFormOpenChange = (open) => events.push(open);
+
+  renderToString(React.createElement(PromptsTab, {
+    data: [{ id: 'p-deadbeef', cwd: '/tmp', agent: 'claude', prompt: 'x', status: 'pending' }],
+    now: Date.now(), selected: 0, initialConfirmId: 'p-deadbeef', onFormOpenChange,
+  }));
+  assert.deepEqual(events, [true, false],
+    'open on mount with a pending confirm, closed again on unmount — confirmId alone must gate suppression');
+
+  // No form AND no confirm: must report closed, same as before.
+  events.length = 0;
+  renderToString(React.createElement(PromptsTab, {
+    data: [{ id: 'p-deadbeef', cwd: '/tmp', agent: 'claude', prompt: 'x', status: 'pending' }],
+    now: Date.now(), selected: 0, onFormOpenChange,
+  }));
+  assert.deepEqual(events, [false, false]);
+});

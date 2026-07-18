@@ -308,6 +308,44 @@ test('--host: unknown host name errors the same way `hosts test` does', async ()
   assert.match(r.stderr, /no such host: nope-not-registered/);
 });
 
+// A bare trailing --host (no value) used to silently fall through to LOCAL
+// routing — `prompt clear --host` would clear the local queue instead of
+// erroring, a destructive misdirection. It must error instead, for every
+// subcommand, without ever touching local state or an ssh round trip.
+test('--host with no value: errors instead of silently routing to local (add)', async () => {
+  resetState();
+  const r = await runPrompt(['add', '--project', '/tmp', 'hi', '--host']);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /--host requires a host name/);
+  assert.equal(queueList().length, 0, 'must not fall through to a local queueAdd');
+});
+
+test('--host with no value: errors instead of silently routing to local (list)', async () => {
+  resetState();
+  const r = await runPrompt(['list', '--host']);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /--host requires a host name/);
+});
+
+test('--host with no value: errors instead of silently routing to local (remove)', async () => {
+  resetState();
+  const added = queueAdd({ cwd: '/tmp', agent: 'claude', prompt: 'keep me', spawn: false });
+  const r = await runPrompt(['remove', added.entry.id, '--host']);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /--host requires a host name/);
+  assert.equal(queueList().find(e => e.id === added.entry.id).status, 'pending', 'must not fall through to a local queueRemove');
+});
+
+test('--host with no value: errors instead of silently routing to local (clear) — the destructive-misdirection case', async () => {
+  resetState();
+  queueAdd({ cwd: '/tmp', agent: 'claude', prompt: 'a', spawn: false });
+  queueAdd({ cwd: '/tmp', agent: 'claude', prompt: 'b', spawn: false });
+  const r = await runPrompt(['clear', '--host']);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /--host requires a host name/);
+  assert.ok(queueList().every(e => e.status === 'pending'), 'must NOT clear the local queue');
+});
+
 test('--host add: missing --project errors without an ssh round trip', async () => {
   resetState();
   writeHosts({ h1: 'me@h1' });

@@ -10,7 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { updateState, readState, prune } from './state.js';
 import { listAgents, getAgent } from './agents/index.js';
-import { resolveClaudeResetAnchor, readUsageStore } from './usage.js';
+import { resolveClaudeResetAnchor, readUsageStore, readExactClaudeFromStatusline } from './usage.js';
 import { spawnResumerIfNeeded, UNSNOOZE_BIN } from './spawn.js';
 import { getMultiplexer } from './multiplexer.js';
 import { createLeaseId } from './lease.js';
@@ -23,6 +23,7 @@ import { awaitReadyAndSend, retryBackoffMs } from './resumer.js';
 import {
   RESUME_SESSION_NAME, VERIFY_DELAY_MS, STAGGER_MS, CAPTURE_LINES,
   PANE_SCAN_LINES, RESET_MARGIN_MS, PROBE_INTERVAL_MS, MAX_RESUME_ATTEMPTS,
+  READY_TIMEOUT_MS,
 } from './config.js';
 
 const log = makeLogger('prompt-queue');
@@ -116,6 +117,7 @@ export function queueAdd({
       lastError: null,
       deliveredAt: null,
       sentAt: null,
+      launchedAt: null,
       pane: null,
       muxSession: null,
       leaseId: null,
@@ -186,7 +188,8 @@ function bestRecordAnchor(agentId, sessions, now) {
 // signal → { resetAtMs: null, source: null }.
 export function resolveAgentResetAnchor(agentId, { sessions = null, now = Date.now() } = {}) {
   if (agentId === 'claude') {
-    const { resetAtMs, source } = resolveClaudeResetAnchor({ sessions, now });
+    const exactClaude = readExactClaudeFromStatusline({ now });
+    const { resetAtMs, source } = resolveClaudeResetAnchor({ exactClaude, sessions, now });
     return { resetAtMs, source };
   }
   if (agentId === 'codex') {
@@ -274,22 +277,40 @@ function updateEntry(id, patch) {
 }
 
 // Shared "give up on this attempt, back off" landing spot for timeout /
-// unparseable-limit / new-window-threw outcomes.
+// unparseable-limit / new-window-threw outcomes. CAS-guarded on 'launching':
+// a concurrent queueRemove (dashboard 'x'/'d', or another process) may have
+// already moved the entry to 'cancelled' between the caller's read and this
+// write — a cancelled entry must never be resurrected back to 'pending'.
+// updateEntry always returns the current post-CAS row (winner's write, or
+// the loser's unchanged snapshot), so returning it either way is correct.
 function retryPromptEntry(entry, { notBefore, lastError }) {
-  return updateEntry(entry.id, e => ({
-    status: 'pending',
-    attempts: (e.attempts || 0) + 1,
-    notBefore,
-    lastError,
-  }));
+  return updateEntry(entry.id, e => {
+    if (e.status !== 'launching') return {};
+    return {
+      status: 'pending',
+      attempts: (e.attempts || 0) + 1,
+      notBefore,
+      lastError,
+    };
+  });
 }
 
+// Same CAS concern as retryPromptEntry, but this one fires before the
+// pending→launching transition (attempts-cap check at the top of
+// dispatchPromptEntry), so the guard is on 'pending' instead — and only a
+// winning transition may fire the "failed" notification (a CAS loss must
+// stay silent: no bogus notify for an entry someone else already moved).
 function failPromptEntry(entry, lastError, { mux = null, notifier = notify } = {}) {
-  const updated = updateEntry(entry.id, { status: 'failed', lastError });
-  if (updated) {
+  let transitioned = false;
+  const updated = updateEntry(entry.id, e => {
+    if (e.status !== 'pending') return {};
+    transitioned = true;
+    return { status: 'failed', lastError };
+  });
+  if (transitioned && updated) {
     notifier(
       'queued prompt failed ⚠️',
-      `${updated.cwd}: ${updated.attempts} attempts failed — check \`unsnooze queue list\``,
+      `${updated.cwd}: ${updated.attempts} attempts failed — check \`unsnooze prompt list\``,
       { context: queueNotifyContext(mux, updated.pane), priority: 4 },
     );
   }
@@ -331,7 +352,7 @@ export async function dispatchPromptEntry(entry, {
   const cased = updateEntry(entry.id, e => {
     if (e.status !== 'pending') return {};
     transitioned = true;
-    return { status: 'launching' };
+    return { status: 'launching', launchedAt: now };
   });
   if (!cased || !transitioned) {
     // Someone else already moved it (or it's gone) — nothing to do.
@@ -379,16 +400,29 @@ export async function dispatchPromptEntry(entry, {
     readyTimeoutMs != null ? { timeoutMs: readyTimeoutMs } : undefined);
   if (outcome === 'sent') {
     log(`${cased.id}: prompt sent to new pane ${address.pane}`);
-    return updateEntry(cased.id, { sentAt: now });
+    // Real send time, not the tick-start `now` — verifyPromptEntry measures
+    // its VERIFY_DELAY_MS wait from this timestamp, and awaitReadyAndSend can
+    // have spent real time polling for the pane to go idle first.
+    return updateEntry(cased.id, { sentAt: Date.now() });
+  }
+  // 'limit' or 'timeout': the entry is going straight back to pending, so the
+  // just-opened window is abandoned — unlike resumer's own reopen(), which
+  // leaves a still-limited fresh pane open because verifyOne reschedules from
+  // it later. Here there's no verify step to reschedule from, so an
+  // abandoned pane is pure liability: an unwatched monitor could later
+  // discover it and register a phantom session that auto-resume revives. Read
+  // the pane BEFORE closing it (the 'limit' branch still needs its text to
+  // parse a reset banner) and close best-effort after — the window may
+  // already be gone, or the mux backend may not support closePane at all.
+  let text = null;
+  if (outcome === 'limit') {
+    try { text = await mux.capturePane(address.pane, CAPTURE_LINES); } catch { /* window may already be gone */ }
+  }
+  if (typeof mux.closePane === 'function') {
+    try { await mux.closePane(address.pane); } catch { /* best-effort */ }
   }
   if (outcome === 'limit') {
     // The limit hadn't actually reset — the fresh session hit it immediately.
-    // Note: unlike reopen(), we don't kill the just-opened window — resumer's
-    // own reopen() leaves a still-limited fresh pane open too (verifyOne
-    // reschedules from it later); there's no verify step here since we're
-    // going straight back to pending, so the window is simply abandoned.
-    let text = null;
-    try { text = await mux.capturePane(address.pane, CAPTURE_LINES); } catch { /* window may already be gone */ }
     const d = text ? detectLimit(text, PANE_SCAN_LINES, agent.patterns) : { hit: false, resetLine: null };
     const attemptsAfter = (cased.attempts || 0) + 1;
     return retryPromptEntry(cased, {
@@ -434,8 +468,17 @@ export async function verifyPromptEntry(entry, { mux, now = Date.now(), notifier
     }
   }
 
-  const updated = updateEntry(entry.id, { status: 'delivered', deliveredAt: now, lastError: null });
-  if (updated) {
+  // CAS on 'launching' — a concurrent queueRemove may have cancelled this
+  // entry while we were off capturing/parsing the pane above; a cancelled
+  // entry must never flip to 'delivered', and must never fire the "delivered"
+  // notification for a session the user just cancelled.
+  let transitioned = false;
+  const updated = updateEntry(entry.id, e => {
+    if (e.status !== 'launching') return {};
+    transitioned = true;
+    return { status: 'delivered', deliveredAt: now, lastError: null };
+  });
+  if (transitioned && updated) {
     const session = updated.muxSession || RESUME_SESSION_NAME;
     const hint = attachHint(mux?.name, session);
     const where = hint ? ` in ${session} — attach: ${hint}` : '';
@@ -449,12 +492,40 @@ export async function verifyPromptEntry(entry, { mux, now = Date.now(), notifier
   return updated;
 }
 
+// A 'launching' entry with no sentAt whose launchedAt is far enough in the
+// past never got as far as awaitReadyAndSend's own timeout — the process
+// that opened its window (daemon or a transient resumer) died mid-dispatch,
+// stranding it forever between 'pending' and 'launching'. CAS-guarded same
+// as retryPromptEntry: a concurrent cancel must win over recovery too.
+function reclaimStrandedEntry(entry) {
+  return updateEntry(entry.id, e => {
+    if (e.status !== 'launching') return {};
+    return {
+      status: 'pending',
+      attempts: (e.attempts || 0) + 1,
+      lastError: 'stranded launch',
+    };
+  });
+}
+
+const STRANDED_LAUNCH_MS = READY_TIMEOUT_MS + 30_000;
+
 // tickPromptQueue: called from the resumer's own loop each tick, after
 // session dispatch (see resumer.js runResumer). Must never throw — every
 // internal step is wrapped so a queue bug can never skip or delay a session
 // resume, which is the one thing this feature must never touch.
 export async function tickPromptQueue({ mux = null, now = Date.now(), notifier = notify } = {}) {
   try {
+    // Crash recovery first — pure state, no mux involved, so it must run
+    // even on an otherwise-idle tick (a stranded entry alone should not need
+    // a live mux to get itself unstuck, and it re-enters `due` below once
+    // reclaimed).
+    for (const entry of queueList().filter(e => e.status === 'launching' && e.sentAt == null)) {
+      if (!Number.isFinite(entry.launchedAt) || now - entry.launchedAt <= STRANDED_LAUNCH_MS) continue;
+      reclaimStrandedEntry(entry);
+      log(`${entry.id}: reclaimed stranded launch (no send after ${Math.round((now - entry.launchedAt) / 1000)}s)`);
+    }
+
     const due = duePromptEntries(now);
     const launching = queueList().filter(e => e.status === 'launching');
     if (due.length === 0 && launching.length === 0) return;   // nothing to do — never touch a mux

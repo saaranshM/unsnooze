@@ -343,6 +343,10 @@ same as resume) marks it `failed` and sends a notification.
 `autoResume` does **not** gate prompt delivery — the queue runs independently
 of session tracking, even with `autoResume off`.
 
+A far-future `--at` entry is expected to keep a transient resumer process
+alive (checking in each tick) until its delivery time arrives, however long
+that is — this is intended, not a leak.
+
 **Fleet:** `--host <name>` queues on a registered host instead of locally.
 `--project` (an absolute remote path) and `--agent` are both required — there's
 no local cwd to default to and no interactive picker over an ssh round-trip.

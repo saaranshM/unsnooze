@@ -330,16 +330,22 @@ export function PromptsTab({
   initialForm = null, // test seam only — App.js never passes this; lets tests
                        // mount straight into a given wizard step without
                        // needing to simulate raw keypresses through useInput.
+  initialConfirmId = null, // test seam only, same idea as initialForm — lets
+                            // a test mount straight into the y/n remove
+                            // confirmation without simulating raw keypresses.
 } = {}) {
   const [form, setForm] = useState(initialForm);
-  const [confirmId, setConfirmId] = useState(null);
+  const [confirmId, setConfirmId] = useState(initialConfirmId);
   const entries = data || [];
 
-  // Tell the parent whenever the form opens/closes, so it can suppress the
-  // global tab-switch/quit/refresh keys while a TextInput has focus — and on
-  // unmount (e.g. a mouse click away to another tab mid-form) so that flag
-  // can never get stuck true and lock out keyboard input.
-  useEffect(() => { onFormOpenChange?.(form != null); }, [form]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Tell the parent whenever the form OR the remove y/n confirmation is
+  // active, so it can suppress the global tab-switch/quit/refresh/selection
+  // keys — otherwise 'q' during a confirm quits the whole dashboard instead
+  // of being swallowed by the "everything but y/n/esc" guard below, and j/k
+  // moves the list selection out from under the entry being confirmed. And
+  // on unmount (e.g. a mouse click away to another tab mid-form/confirm) so
+  // that flag can never get stuck true and lock out keyboard input.
+  useEffect(() => { onFormOpenChange?.(form != null || confirmId != null); }, [form, confirmId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => onFormOpenChange?.(false), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dispatch = (event) => setForm(prev => (prev == null ? prev : formReduce(prev, event)));

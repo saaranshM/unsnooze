@@ -3,13 +3,19 @@
 // src/state.js changes it depends on.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // state.js reads UNSNOOZE_STATE_DIR at import time, so set it BEFORE importing.
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-prompt-queue-test-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
+// resolveAgentResetAnchor's claude branch reads a statusline drop dir under
+// CLAUDE_DIR (config.js resolves it at import time too) — isolate it so this
+// suite never reads a real ~/.claude/unsnooze on the machine it runs on.
+const CLAUDE_DIR = mkdtempSync(join(tmpdir(), 'unsnooze-prompt-queue-claude-'));
+process.env.UNSNOOZE_CLAUDE_DIR = CLAUDE_DIR;
+const STATUSLINE_DIR = join(CLAUDE_DIR, 'unsnooze');
 
 const { readState, updateState, prune } = await import('../src/state.js');
 const STATE_FILE_PATH = join(DIR, 'state.json');
@@ -19,7 +25,7 @@ const {
   resolveAgentResetAnchor, duePromptEntries,
 } = await import('../src/prompt-queue.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => { rmSync(DIR, { recursive: true, force: true }); rmSync(CLAUDE_DIR, { recursive: true, force: true }); });
 
 function resetState() {
   rmSync(STATE_FILE_PATH, { force: true });
@@ -378,6 +384,35 @@ test('resolveAgentResetAnchor: claude delegates to resolveClaudeResetAnchor via 
   const anchor = resolveAgentResetAnchor('claude', { sessions: state.sessions, now });
   assert.notEqual(anchor.resetAtMs, null);
   assert.ok(anchor.resetAtMs > now);
+});
+
+test('resolveAgentResetAnchor: claude prefers a fresh statusline exact reset over a stopped record', () => {
+  resetState();
+  rmSync(STATUSLINE_DIR, { recursive: true, force: true });
+  mkdirSync(STATUSLINE_DIR, { recursive: true });
+  const now = Date.now();
+  // Older/weaker signal: a stopped-record anchor 2h out.
+  const state = updateState(s => {
+    s.sessions['sess-claude'] = {
+      key: 'sess-claude', agent: 'claude', status: 'stopped', pane: '%1', mux: 'tmux',
+      detectedAt: now, resetAt: now + 2 * 3_600_000, resetSource: 'absolute',
+    };
+    return s;
+  });
+  // Fresher/exact signal: a statusline drop file with its own resets_at,
+  // 4h out — seeded the same way test/usage.test.js seeds exactClaude, but
+  // via the actual drop-file mechanism readExactClaudeFromStatusline reads
+  // (see src/usage.js:1121), since resolveAgentResetAnchor no longer takes
+  // exactClaude as an injectable param — it resolves it itself.
+  // Exact-second boundary so the seconds round-trip through readExactClaudeFromStatusline/normalizeResetsAtMs without any sub-second rounding loss.
+  const statuslineResetAtMs = Math.floor((now + 4 * 3_600_000) / 1000) * 1000;
+  writeFileSync(join(STATUSLINE_DIR, 'usage-123.json'), JSON.stringify({
+    rate_limits: { five_hour: { used_percentage: 42, resets_at: Math.floor(statuslineResetAtMs / 1000) } },
+  }));
+
+  const anchor = resolveAgentResetAnchor('claude', { sessions: state.sessions, now });
+  assert.equal(anchor.source, 'statusline');
+  assert.equal(anchor.resetAtMs, statuslineResetAtMs);
 });
 
 test('resolveAgentResetAnchor: unknown agent with no records returns null anchor', () => {
