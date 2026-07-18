@@ -20,7 +20,7 @@ import { addressHash } from './lease.js';
 
 const log = makeLogger('state');
 
-const EMPTY = () => ({ version: 1, resumerPid: null, sessions: {}, calibration: {} });
+const EMPTY = () => ({ version: 1, resumerPid: null, sessions: {}, calibration: {}, promptQueue: [] });
 
 function sleepSync(ms) {
   const buf = new SharedArrayBuffer(4);
@@ -96,6 +96,8 @@ function normalizeState(state) {
   if (!state.calibration || typeof state.calibration !== 'object' || Array.isArray(state.calibration)) {
     state.calibration = {};
   }
+  // One-shot prompt queue — always an array; corrupt/missing values reset empty.
+  if (!Array.isArray(state.promptQueue)) state.promptQueue = [];
   for (const rec of Object.values(state.sessions)) normalizeRecord(rec);
   return state;
 }
@@ -248,6 +250,13 @@ export function prune(state) {
     const terminal = ['resumed', 'failed', 'cancelled'].includes(s.status);
     const ts = s.lastAttemptAt || s.detectedAt || 0;
     if (terminal && ts < cutoff) delete state.sessions[key];
+  }
+  if (Array.isArray(state.promptQueue)) {
+    state.promptQueue = state.promptQueue.filter(e => {
+      const terminal = ['delivered', 'failed', 'cancelled'].includes(e.status);
+      const ts = e.deliveredAt ?? e.createdAt ?? 0;
+      return !(terminal && ts < cutoff);
+    });
   }
 }
 
