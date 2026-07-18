@@ -911,3 +911,175 @@ test('M4: hosts test failure does not repeat the full reason text twice', async 
   assert.equal(occurrences, 1, `the reason text must appear once, not duplicated (got ${occurrences})`);
   assert.match(out, /needs-setup/);
 });
+
+// ---------------------------------------------------------------------------
+// Task 5: fleet prompt queue — queue-verb sshArgs hardening, remoteQueueAdd/
+// List/Remove/Clear transport, sanitizeQueueList ingest sanitization.
+// ---------------------------------------------------------------------------
+
+test('sshArgs: accepts the four queue verbs with valid args', () => {
+  const payload = 'a'.repeat(100);
+  const add = sshArgs('build1', ['queue-add', payload]);
+  assert.deepEqual(add.slice(add.indexOf('build1') + 1), ['unsnooze', '_remote', 'queue-add', payload]);
+
+  const remove = sshArgs('build1', ['queue-remove', 'p-deadbeef']);
+  assert.deepEqual(remove.slice(remove.indexOf('build1') + 1), ['unsnooze', '_remote', 'queue-remove', 'p-deadbeef']);
+
+  const list = sshArgs('build1', ['queue-list']);
+  assert.deepEqual(list.slice(list.indexOf('build1') + 1), ['unsnooze', '_remote', 'queue-list']);
+
+  const clear = sshArgs('build1', ['queue-clear']);
+  assert.deepEqual(clear.slice(clear.indexOf('build1') + 1), ['unsnooze', '_remote', 'queue-clear']);
+});
+
+test('sshArgs: rejects oversize/hostile queue-add and queue-remove args', () => {
+  assert.throws(() => sshArgs('build1', ['queue-add', 'a'.repeat(8193)]), /invalid remote arg/);          // over PAYLOAD_RE's cap
+  assert.throws(() => sshArgs('build1', ['queue-add', 'not+valid/base64=']), /invalid remote arg/);        // not base64url alphabet
+  assert.throws(() => sshArgs('build1', ['queue-add', 'a;rm -rf /']), /invalid remote arg/);               // shell metachars
+  assert.throws(() => sshArgs('build1', ['queue-remove', 'not-an-id']), /invalid remote arg/);
+  assert.throws(() => sshArgs('build1', ['queue-remove', 'p-deadbee']), /invalid remote arg/);             // 7 hex chars, not 8
+});
+
+function queueAddEnvelope(extra) {
+  return frameIt({ schema: S, minSchema: 1, cli: '9.9.9', host: 'h', caps: ['resume', 'cancel', 'queue'], ...extra });
+}
+
+test('remoteQueueAdd: encodes {cwd,agent,prompt,mode,atMs} as the queue-add base64url arg; success envelope parsed', async () => {
+  const { remoteQueueAdd } = await import('../src/fleet.js');
+  let seenArgs;
+  const spawnFn = (bin, args) => {
+    seenArgs = args;
+    return fakeSsh({ stdout: queueAddEnvelope({ result: 'ok', id: 'p-deadbeef' }) })();
+  };
+  const res = await remoteQueueAdd('h', { cwd: '/remote/proj', agent: 'claude', prompt: 'hi', mode: 'now' }, { spawnFn, timeoutMs: 200 });
+  assert.equal(res.ok, true);
+  assert.equal(res.id, 'p-deadbeef');
+
+  const payloadArg = seenArgs[seenArgs.indexOf('queue-add') + 1];
+  assert.match(payloadArg, /^[A-Za-z0-9_-]+$/, 'wire arg is base64url');
+  const decoded = JSON.parse(Buffer.from(payloadArg, 'base64url').toString('utf8'));
+  assert.deepEqual(decoded, { cwd: '/remote/proj', agent: 'claude', prompt: 'hi', mode: 'now', atMs: null });
+});
+
+test('remoteQueueAdd: a bogus remote-supplied id (fails QUEUE_ID_RE) is dropped, not trusted verbatim', async () => {
+  const { remoteQueueAdd } = await import('../src/fleet.js');
+  const spawnFn = fakeSsh({ stdout: queueAddEnvelope({ result: 'ok', id: 'not-a-real-id; rm -rf /' }) });
+  const res = await remoteQueueAdd('h', { cwd: '/p', agent: 'claude', prompt: 'hi', mode: 'now' }, { spawnFn, timeoutMs: 200 });
+  assert.equal(res.ok, true);
+  assert.equal(res.id, null, 'a malformed id from the remote must never be passed through');
+});
+
+test('remoteQueueAdd: too-large payload fails client-side without an ssh round trip', async () => {
+  const { remoteQueueAdd } = await import('../src/fleet.js');
+  let spawned = false;
+  const spawnFn = () => { spawned = true; return fakeSshOk(); };
+  const res = await remoteQueueAdd('h', { cwd: '/p', agent: 'claude', prompt: 'x'.repeat(7000), mode: 'now' }, { spawnFn, timeoutMs: 200 });
+  assert.equal(res.ok, false);
+  assert.equal(spawned, false);
+});
+
+test('remoteQueueAdd/List/Remove/Clear: "disabled" and an old remote (no "queue" cap) surface distinct, typed errors', async () => {
+  const { remoteQueueAdd, remoteQueueList, remoteQueueRemove, remoteQueueClear } = await import('../src/fleet.js');
+  const disabledSpawn = fakeSsh({ stdout: queueAddEnvelope({ result: 'disabled' }) });
+  const oldRemoteSpawn = fakeSsh({
+    stdout: frameIt({ schema: S, minSchema: 1, cli: '1.12.0', host: 'h', caps: ['resume', 'cancel'], result: 'bad-request' }),
+  });
+
+  const dAdd = await remoteQueueAdd('h', { cwd: '/p', agent: 'claude', prompt: 'hi', mode: 'now' }, { spawnFn: disabledSpawn, timeoutMs: 200 });
+  assert.equal(dAdd.ok, false);
+  assert.equal(dAdd.disabled, true);
+  assert.match(dAdd.error, /remoteQueue disabled/);
+
+  const oAdd = await remoteQueueAdd('h', { cwd: '/p', agent: 'claude', prompt: 'hi', mode: 'now' }, { spawnFn: oldRemoteSpawn, timeoutMs: 200 });
+  assert.equal(oAdd.ok, false);
+  assert.match(oAdd.error, /too old for prompt queue/);
+
+  const dList = await remoteQueueList('h', { spawnFn: disabledSpawn, timeoutMs: 200 });
+  assert.equal(dList.ok, false);
+  assert.equal(dList.disabled, true);
+
+  const oList = await remoteQueueList('h', { spawnFn: oldRemoteSpawn, timeoutMs: 200 });
+  assert.equal(oList.ok, false);
+  assert.match(oList.error, /too old for prompt queue/);
+
+  const oRemove = await remoteQueueRemove('h', 'p-deadbeef', { spawnFn: oldRemoteSpawn, timeoutMs: 200 });
+  assert.equal(oRemove.ok, false);
+  assert.match(oRemove.error, /too old for prompt queue/);
+
+  const oClear = await remoteQueueClear('h', { spawnFn: oldRemoteSpawn, timeoutMs: 200 });
+  assert.equal(oClear.ok, false);
+  assert.match(oClear.error, /too old for prompt queue/);
+});
+
+test('remoteQueueRemove: rejects a malformed id client-side, never reaching the transport', async () => {
+  const { remoteQueueRemove } = await import('../src/fleet.js');
+  let spawned = false;
+  const res = await remoteQueueRemove('h', 'a;rm -rf /', { spawnFn: () => { spawned = true; return fakeSshOk(); } });
+  assert.equal(res.ok, false);
+  assert.equal(spawned, false);
+});
+
+test('remoteQueueList/Clear: needsAuth short-circuits exactly like remoteAction (no ssh spawn)', async () => {
+  const { remoteQueueList, remoteQueueClear } = await import('../src/fleet.js');
+  let spawned = false;
+  const spawnFn = () => { spawned = true; return fakeSshOk(); };
+  const entry = { name: 'lap', dest: 'me@lap', auth: 'password', source: 'prompt' };
+  const list = await remoteQueueList('lap', { entryOrDest: entry, spawnFn, interactive: false });
+  assert.equal(list.ok, false);
+  assert.equal(list.needsAuth, true);
+  const clear = await remoteQueueClear('lap', { entryOrDest: entry, spawnFn, interactive: false });
+  assert.equal(clear.ok, false);
+  assert.equal(clear.needsAuth, true);
+  assert.equal(spawned, false);
+});
+
+test('sanitizeQueueList: strips ANSI/C1 from every string field, caps at 50, fresh literal', async () => {
+  const { sanitizeQueueList } = await import('../src/fleet.js');
+  const dirty = Array.from({ length: 55 }, (_, i) => ({
+    id: `p-dirty\x1b[31m${i}`,
+    agent: 'claude\x9b31m',
+    cwd: '/tmp/\x1b]0;x\x07evil',
+    status: 'pending\x07',
+    mode: 'now',
+    atMs: null,
+    notBefore: 0,
+    attempts: 0,
+    deliveredAt: null,
+    lastError: 'oops\x1b[0m',
+    promptPreview: 'hi\x9b31mthere',
+  }));
+  const clean = sanitizeQueueList(dirty);
+  assert.equal(clean.length, 50, 'capped at 50');
+  for (const e of clean) {
+    for (const field of ['id', 'agent', 'cwd', 'status', 'mode', 'lastError', 'promptPreview']) {
+      if (e[field] != null) assert.doesNotMatch(String(e[field]), /[\x1b\x9b]/, `${field} must be ANSI/C1-clean`);
+    }
+  }
+  assert.equal(clean[0].agent, 'claude');
+  assert.equal(clean[0].cwd, '/tmp/evil');
+  assert.equal(clean[0].status, 'pending');
+});
+
+test('sanitizeQueueList: never spreads the input — a hostile __proto__ key in a remote-shaped entry is inert', async () => {
+  const { sanitizeQueueList } = await import('../src/fleet.js');
+  // Same construction rule as the remote.test.js __proto__ regression test:
+  // a raw JSON string round-tripped through JSON.parse so "__proto__" lands
+  // as a genuine own property, not consumed by object-literal syntax.
+  const rawJson = '[{"id":"p-deadbeef","agent":"claude","cwd":"/p","status":"pending","mode":"now",'
+    + '"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}}}]';
+  const parsed = JSON.parse(rawJson);
+  const clean = sanitizeQueueList(parsed);
+  assert.equal(clean.length, 1);
+  assert.equal('polluted' in clean[0], false);
+  assert.equal(({}).polluted, undefined, 'Object.prototype must never be polluted');
+});
+
+test('sanitizeEnvelope: status envelope\'s queue field goes through the same sanitizer', async () => {
+  const { sanitizeEnvelope } = await import('../src/fleet.js');
+  const env = sanitizeEnvelope({
+    schema: 1, minSchema: 1, cli: 'x', host: 'h', caps: ['queue'], sessions: [],
+    queue: [{ id: 'p-abc12345', agent: 'claude', cwd: '/p\x1b[31mX', status: 'pending', mode: 'now', promptPreview: 'hi' }],
+  });
+  assert.equal(env.queue.length, 1);
+  assert.equal(env.queue[0].cwd, '/pX');
+});

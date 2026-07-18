@@ -68,6 +68,15 @@ the *same* session by typing a message (or reopening it via the agent's own
 - **Keep all state local** under `~/.unsnooze` (`UNSNOOZE_STATE_DIR` to relocate),
   writing state atomically (temp file + rename) and quarantining corrupt state
   rather than crashing. *(src/state.js)*
+- **Fleet: relay a queued prompt to a remote host's own prompt queue**
+  (`unsnooze prompt add --host <name>`), which types it into a **new** agent
+  session there once that host's usage limit clears. This is a new capability,
+  not a new trust boundary — see item 7 below. It rides the same SSH forced
+  command and sentinel-framed envelope as `fleet`/`hosts`; the queue verbs are
+  refused (a typed `{result:'disabled'}` reply, never a silent drop) with
+  `unsnooze config set remoteQueue off` (or `UNSNOOZE_REMOTE_QUEUE=0`) run on
+  the host being controlled — not the controller. *(src/remote.js, src/fleet.js,
+  src/prompt-queue.js)*
 - **Back up and cleanly reverse what it edits.** `~/.claude/settings.json` and your
   `~/.zshrc`/`~/.bashrc` get two backup tiers — `*.unsnooze-orig` (pristine, written
   once) and `*.unsnooze-bak` (rolls per run); `~/.qwen/settings.json` gets
@@ -121,6 +130,24 @@ residual risks:
 6. **Config and state are plaintext under `~/.unsnooze`.** They contain session
    metadata and your resume message(s), not credentials — but they are readable by
    anything running as your user.
+7. **The fleet prompt queue delivers arbitrary text into a NEW remote agent
+   session — arbitrary-instruction delivery by design**, since an agent that
+   receives a prompt goes on to execute tools with it. This does not expand
+   the fleet trust model from items above: whoever holds a host's key (or a
+   configured password source) already has resume/cancel over that host and,
+   transitively, a shell on it — a queued prompt is no more powerful than
+   logging in and typing it yourself. Payloads are size-capped (8192 bytes,
+   base64url-only on the wire), and every field is re-validated **server-side**
+   into a fresh object literal — cwd (absolute, exists, is a directory on that
+   host), agent (a known id), prompt (control-chars/ANSI stripped, non-empty),
+   mode — never trusting, and never `Object.assign`/spreading, the parsed
+   payload (prototype-pollution / field-smuggling defense). Prompt text never
+   touches a shell on either side: it travels argv → JSON → `state.json` → a
+   literal keystroke send, exactly like a local `unsnooze prompt add`. Per-host
+   opt-out: `remoteQueue: false`, set **on the host being controlled**, makes
+   all four queue verbs answer `{result: 'disabled'}` rather than silently
+   drop the request. *(src/remote.js's `decodeQueueAddPayload`, src/fleet.js's
+   `sanitizeQueueList`)*
 
 ## Scope
 
@@ -128,7 +155,8 @@ In scope: keystroke-authorization bypass (typing into a pane unsnooze shouldn't
 own), the version-check or ntfy requests leaking unexpected data,
 install/uninstall corrupting or failing to back up user files, the hook/daemon
 crashing or blocking the host CLI, privilege escalation via the launchd/systemd
-units.
+units, a fleet prompt-queue payload bypassing the server-side field validation
+described in item 7 above.
 
 Out of scope: vulnerabilities in the agent CLIs themselves (Claude Code, Codex,
 etc.), prompt injection / malicious-repo RCE against those agents, and issues

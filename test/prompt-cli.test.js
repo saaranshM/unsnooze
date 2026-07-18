@@ -1,12 +1,16 @@
 // `unsnooze prompt` local CLI: add/list/remove/clear, --at parsing, the
-// --host Task-5 stub, and the cmdStatus queue block. Every queueAdd path
-// here goes through cmdPrompt with spawn suppressed — never a real forked
-// resumer (see prompt-dispatch.test.js's header for why that matters).
+// --host fleet fan-out, and the cmdStatus queue block. Every local queueAdd
+// path here goes through cmdPrompt with spawn suppressed — never a real
+// forked resumer (see prompt-dispatch.test.js's header for why that
+// matters). --host paths never touch a real ssh binary either: spawnFn is
+// mocked at the fleet transport boundary (same pattern as test/fleet.test.js
+// fakeSsh), so no real subprocess, network, or forked daemon exists.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
 
 // state.js/settings.js read UNSNOOZE_STATE_DIR at import time — set it BEFORE
 // importing anything that touches state.
@@ -18,6 +22,7 @@ const { cmdPrompt, parseAtTime } = await import('../src/prompt.js');
 const { cmdStatus } = await import('../src/cli.js');
 const { queueList, queueAdd } = await import('../src/prompt-queue.js');
 const { updateState } = await import('../src/state.js');
+const { writeHosts, frameEnvelope } = await import('../src/fleet.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
@@ -270,23 +275,172 @@ test('clear: cancels every pending/launching entry and reports the count', async
   assert.match(r.stdout, /cleared 2 queued prompt/);
 });
 
-// --- --host stub (Task 5 seam) --------------------------------------------
+// --- --host fan-out ----------------------------------------------------
 
-test('--host with add prints the fleet-update stub and exits 1', async () => {
+// A fake ssh child process: never a real subprocess, never real ssh, never
+// a forked daemon. Mirrors test/fleet.test.js's fakeSsh exactly so the
+// mocking boundary matches the one already established for fleet transport
+// tests.
+function fakeSsh({ code = 0, stdout = '', stderr = '', delayMs = 1 } = {}) {
+  return () => {
+    const p = new EventEmitter();
+    p.stdout = new EventEmitter();
+    p.stderr = new EventEmitter();
+    p.kill = () => { p.killed = true; p.emit('close', null, 'SIGKILL'); };
+    setTimeout(() => {
+      if (stdout) p.stdout.emit('data', Buffer.from(stdout));
+      if (stderr) p.stderr.emit('data', Buffer.from(stderr));
+      p.emit('close', code);
+    }, delayMs);
+    return p;
+  };
+}
+
+const REMOTE_OK_CAPS = ['resume', 'cancel', 'queue'];
+function remoteEnvelope(extra) {
+  return frameEnvelope({ schema: 1, minSchema: 1, cli: '9.9.9', host: 'remotebox', caps: REMOTE_OK_CAPS, ...extra });
+}
+
+test('--host: unknown host name errors the same way `hosts test` does', async () => {
   resetState();
-  const r = await runPrompt(['add', '--host', 'my-host', '--project', '/tmp', 'hi']);
+  const r = await runPrompt(['list', '--host', 'nope-not-registered']);
   assert.equal(r.code, 1);
-  assert.equal(r.stderr, 'prompt: --host support lands with the fleet update');
-  assert.equal(queueList().length, 0);
+  assert.match(r.stderr, /no such host: nope-not-registered/);
 });
 
-test('--host with list/remove/clear all hit the same stub', async () => {
+test('--host add: missing --project errors without an ssh round trip', async () => {
   resetState();
-  for (const args of [['list', '--host', 'h'], ['remove', 'p-1', '--host', 'h'], ['clear', '--host', 'h']]) {
-    const r = await runPrompt(args);
-    assert.equal(r.code, 1);
-    assert.equal(r.stderr, 'prompt: --host support lands with the fleet update');
-  }
+  writeHosts({ h1: 'me@h1' });
+  let spawned = false;
+  const remote = { spawnFn: () => { spawned = true; return fakeSsh()(); } };
+  const r = await runPrompt(['add', '--host', 'h1', '--agent', 'claude', 'hi'], { remote });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /--project is required/);
+  assert.equal(spawned, false, 'must fail fast, before ever touching the transport');
+});
+
+test('--host add: missing --agent errors (no interactive picker over ssh)', async () => {
+  resetState();
+  writeHosts({ h1: 'me@h1' });
+  let spawned = false;
+  const remote = { spawnFn: () => { spawned = true; return fakeSsh()(); } };
+  const r = await runPrompt(['add', '--host', 'h1', '--project', '/remote/proj', 'hi'], { remote });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /--agent is required/);
+  assert.equal(spawned, false);
+});
+
+test('--host add: --project must be an absolute (remote) path', async () => {
+  resetState();
+  writeHosts({ h1: 'me@h1' });
+  const r = await runPrompt(['add', '--host', 'h1', '--agent', 'claude', '--project', 'relative/path', 'hi'], {
+    remote: { spawnFn: fakeSsh() },
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /absolute remote path/);
+});
+
+test('--host add: happy path delegates to remoteQueueAdd and prints the remote id', async () => {
+  resetState();
+  writeHosts({ h1: 'me@h1' });
+  const remote = { spawnFn: fakeSsh({ stdout: remoteEnvelope({ result: 'ok', id: 'p-deadbeef' }) }), timeoutMs: 200 };
+  const r = await runPrompt(['add', '--host', 'h1', '--agent', 'claude', '--project', '/remote/proj', 'finish', 'it'], { remote });
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /queued prompt p-deadbeef for claude on h1:\/remote\/proj/);
+  assert.equal(queueList().length, 0, 'a --host add must never touch local state');
+});
+
+test('--host add: remote bad-request (e.g. non-existent remote cwd) surfaces as an error, not a crash', async () => {
+  resetState();
+  writeHosts({ h1: 'me@h1' });
+  const remote = { spawnFn: fakeSsh({ stdout: remoteEnvelope({ result: 'bad-request' }) }), timeoutMs: 200 };
+  const r = await runPrompt(['add', '--host', 'h1', '--agent', 'claude', '--project', '/remote/proj', 'hi'], { remote });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /add --host h1:/);
+});
+
+test('--host add: remoteQueue disabled on the target host surfaces a clear message', async () => {
+  resetState();
+  writeHosts({ h1: 'me@h1' });
+  const remote = { spawnFn: fakeSsh({ stdout: remoteEnvelope({ result: 'disabled' }) }), timeoutMs: 200 };
+  const r = await runPrompt(['add', '--host', 'h1', '--agent', 'claude', '--project', '/remote/proj', 'hi'], { remote });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /remoteQueue disabled/);
+});
+
+test('--host add: an old remote (no "queue" cap) gets a clear update-the-remote message', async () => {
+  resetState();
+  writeHosts({ h1: 'me@h1' });
+  const oldEnvelope = frameEnvelope({ schema: 1, minSchema: 1, cli: '1.12.0', host: 'remotebox', caps: ['resume', 'cancel'], result: 'bad-request' });
+  const remote = { spawnFn: fakeSsh({ stdout: oldEnvelope }), timeoutMs: 200 };
+  const r = await runPrompt(['add', '--host', 'h1', '--agent', 'claude', '--project', '/remote/proj', 'hi'], { remote });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /too old for prompt queue/);
+});
+
+test('--host add: needs-auth prints hosts-test guidance, no ssh spawn', async () => {
+  resetState();
+  writeHosts({ h1: { dest: 'me@h1', auth: 'password', source: 'prompt' } });
+  let spawned = false;
+  const remote = { spawnFn: () => { spawned = true; return fakeSsh()(); }, interactive: false };
+  const r = await runPrompt(['add', '--host', 'h1', '--agent', 'claude', '--project', '/remote/proj', 'hi'], { remote });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /needs-setup/);
+  assert.match(r.stderr, /hosts test h1/);
+  assert.equal(spawned, false);
+});
+
+test('--host list: delegates and renders the shared table with a host header', async () => {
+  resetState();
+  writeHosts({ h1: 'me@h1' });
+  const queue = [{
+    id: 'p-cafebabe', agent: 'claude', cwd: '/remote/proj', status: 'pending', mode: 'now',
+    atMs: null, notBefore: 0, attempts: 0, deliveredAt: null, lastError: null, promptPreview: 'do the remote thing',
+  }];
+  const remote = { spawnFn: fakeSsh({ stdout: remoteEnvelope({ result: 'ok', queue }) }), timeoutMs: 200 };
+  const r = await runPrompt(['list', '--host', 'h1'], { remote });
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /queued prompt\(s\) on h1/);
+  assert.match(r.stdout, /p-cafebabe/);
+  assert.match(r.stdout, /do the remote thing/);
+});
+
+test('--host list --json: prints the sanitized remote queue array', async () => {
+  resetState();
+  writeHosts({ h1: 'me@h1' });
+  const queue = [{
+    id: 'p-cafebabe', agent: 'claude', cwd: '/remote/proj', status: 'pending', mode: 'now',
+    atMs: null, notBefore: 0, attempts: 0, deliveredAt: null, lastError: null, promptPreview: 'hi',
+  }];
+  const remote = { spawnFn: fakeSsh({ stdout: remoteEnvelope({ result: 'ok', queue }) }), timeoutMs: 200 };
+  const r = await runPrompt(['list', '--host', 'h1', '--json'], { remote });
+  assert.equal(r.code, 0);
+  const parsed = JSON.parse(r.stdout);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].id, 'p-cafebabe');
+});
+
+test('--host remove: not-found and ok both delegate correctly', async () => {
+  resetState();
+  writeHosts({ h1: 'me@h1' });
+  const notFound = { spawnFn: fakeSsh({ stdout: remoteEnvelope({ result: 'not-found' }) }), timeoutMs: 200 };
+  const r1 = await runPrompt(['remove', 'p-deadbeef', '--host', 'h1'], { remote: notFound });
+  assert.equal(r1.code, 1);
+  assert.match(r1.stderr, /no pending\/launching prompt/);
+
+  const ok = { spawnFn: fakeSsh({ stdout: remoteEnvelope({ result: 'ok' }) }), timeoutMs: 200 };
+  const r2 = await runPrompt(['remove', 'p-deadbeef', '--host', 'h1'], { remote: ok });
+  assert.equal(r2.code, 0);
+  assert.match(r2.stdout, /removed prompt p-deadbeef on h1/);
+});
+
+test('--host clear: delegates and prints the remote cleared count', async () => {
+  resetState();
+  writeHosts({ h1: 'me@h1' });
+  const remote = { spawnFn: fakeSsh({ stdout: remoteEnvelope({ result: 'ok', cleared: 3 }) }), timeoutMs: 200 };
+  const r = await runPrompt(['clear', '--host', 'h1'], { remote });
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /cleared 3 queued prompt\(s\) on h1/);
 });
 
 // --- cmdStatus queue block --------------------------------------------------

@@ -40,6 +40,10 @@ export const DEFAULTS = {
   // user will return to. Explicit cleanup: `unsnooze reap --yes`.
   reapResumed: false,
   reapIdleAfter: 7 * 86_400_000,
+  // Per-host opt-out for the fleet prompt queue's four remote verbs (set on
+  // THIS host — the one being controlled — not the controller); a forced
+  // command that answers 'disabled' still returns a valid framed envelope.
+  remoteQueue: true,
   resumeMessage: 'Continue where you left off. The session was interrupted by a usage limit which has now reset — pick up the task you were working on and finish it.',
   resumeMessages: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '' },  // per-agent override; '' = use resumeMessage
   agents: { claude: true, codex: true, grok: false, qwen: false, kimi: false, opencode: false, agy: false },   // experimental agents default off
@@ -66,6 +70,7 @@ const ENV_NAMES = {
   mouse: 'UNSNOOZE_MOUSE',
   reapResumed: 'UNSNOOZE_REAP_RESUMED',
   reapIdleAfter: 'UNSNOOZE_REAP_IDLE_AFTER',
+  remoteQueue: 'UNSNOOZE_REMOTE_QUEUE',
   resumeMessage: 'UNSNOOZE_RESUME_MESSAGE',
   'resumeMessages.claude': 'UNSNOOZE_RESUME_MESSAGE_CLAUDE',
   'resumeMessages.codex': 'UNSNOOZE_RESUME_MESSAGE_CODEX',

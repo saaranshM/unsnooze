@@ -22,12 +22,17 @@ export const END = '___UNSNOOZE_END___';
 export const HOST_RE = /^[A-Za-z0-9][A-Za-z0-9_.@-]*$/;
 // Session keys as produced by state.js (uuid or pane:<hash>:<ts>).
 export const KEY_RE = /^[A-Za-z0-9:%._-]{1,128}$/;
+// queue-add's single arg: a base64url (no padding) blob of the JSON payload.
+export const PAYLOAD_RE = /^[A-Za-z0-9_-]{1,8192}$/;
+// queue-remove's single arg: a prompt-queue entry id, as minted by
+// prompt-queue.js's queueAdd (`p-` + 8 hex chars).
+export const QUEUE_ID_RE = /^p-[0-9a-f]{8}$/;
 
 export function validHostToken(s) {
   return typeof s === 'string' && s.length > 0 && s.length <= 128 && HOST_RE.test(s);
 }
 
-const REMOTE_VERBS = new Set(['status', 'resume', 'cancel']);
+const REMOTE_VERBS = new Set(['status', 'resume', 'cancel', 'queue-add', 'queue-list', 'queue-remove', 'queue-clear']);
 
 // ssh -V prints to STDERR; capture it. Returns '' on any failure.
 function defaultRun(bin, args) {
@@ -85,8 +90,13 @@ export function sshArgs(dest, remoteCmd, { multiplex = true, batch = true } = {}
   if (!validHostToken(dest)) throw new Error(`invalid host: ${JSON.stringify(dest)}`);
   const [verb, ...rest] = remoteCmd;
   if (!REMOTE_VERBS.has(verb)) throw new Error(`invalid remote verb: ${verb}`);
+  // Per-verb arg shape: queue-add carries a much larger base64url payload,
+  // queue-remove carries an entry id; every other verb (including the
+  // no-arg queue-list/queue-clear, which simply have an empty `rest`) keeps
+  // the original session-key shape.
+  const argRe = verb === 'queue-add' ? PAYLOAD_RE : verb === 'queue-remove' ? QUEUE_ID_RE : KEY_RE;
   for (const a of rest) {
-    if (!KEY_RE.test(String(a))) throw new Error(`invalid remote arg: ${JSON.stringify(a)}`);
+    if (!argRe.test(String(a))) throw new Error(`invalid remote arg: ${JSON.stringify(a)}`);
   }
   const opts = [];
   if (batch) opts.push('-o', 'BatchMode=yes');
@@ -490,6 +500,38 @@ function sanitizeSession(s) {
   };
 }
 
+const MAX_QUEUE_ENTRIES = 50;
+
+// Same explicit field-by-field philosophy as sanitizeSession: a fresh
+// literal, never Object.assign/spread of the remote-supplied object, every
+// string run through stripRemoteText. Shared by the `status` envelope's
+// `queue` field and remoteQueueList's raw reply — both are remote-controlled
+// data and neither gets to skip client-side re-sanitization just because the
+// server already sanitized on ingest (see prompt-queue.js's queueAdd).
+function sanitizeQueueEntry(e) {
+  if (!e || typeof e !== 'object') return null;
+  return {
+    id: str(e.id, 32) || '',
+    agent: str(e.agent, 128) || 'claude',
+    cwd: str(e.cwd, 1024),
+    status: str(e.status, 64) || 'unknown',
+    mode: str(e.mode, 32),
+    atMs: num(e.atMs),
+    notBefore: num(e.notBefore),
+    attempts: Number.isFinite(e.attempts) ? e.attempts : 0,
+    deliveredAt: num(e.deliveredAt),
+    lastError: str(e.lastError, 256),
+    promptPreview: str(e.promptPreview, 80),
+  };
+}
+
+// Exported so prompt.js's --host list path can re-sanitize a queue-list
+// reply with the exact same rules as the status envelope's queue field.
+export function sanitizeQueueList(arr) {
+  const in_ = Array.isArray(arr) ? arr.slice(0, MAX_QUEUE_ENTRIES) : [];
+  return in_.map(sanitizeQueueEntry).filter(Boolean);
+}
+
 export function sanitizeEnvelope(env) {
   const sessionsIn = Array.isArray(env?.sessions) ? env.sessions.slice(0, MAX_SESSIONS) : [];
   return {
@@ -500,6 +542,7 @@ export function sanitizeEnvelope(env) {
     caps: Array.isArray(env?.caps) ? env.caps.slice(0, 16).map(c => str(c, 128)).filter(Boolean) : [],
     resumerAlive: !!env?.resumerAlive,
     sessions: sessionsIn.map(sanitizeSession).filter(Boolean),
+    queue: sanitizeQueueList(env?.queue),
   };
 }
 
@@ -597,6 +640,94 @@ export async function remoteAction(name, entryOrDest, verb, key, {
   const result = str(parsed.result, 128) || '';
   if (result === 'ok') return { ok: true, result };
   return { ok: false, result, error: `remote: ${result || 'unknown'}` };
+}
+
+// ---------------------------------------------------------------------------
+// Prompt-queue remote verbs — same composeSshSpawn/collectChild/envelope
+// plumbing as fetchHost/remoteAction, plus one thing they don't need: an
+// explicit "remote too old to understand this verb" classification. A
+// pre-Task-5 remote's handshake caps will never include 'queue' (it wasn't
+// added until this task), so any successfully-parsed envelope missing that
+// cap — regardless of what `result` it carried — means the verb reached a
+// binary that doesn't implement it, not a business-logic failure.
+// ---------------------------------------------------------------------------
+
+const OLD_REMOTE_ERROR = 'remote unsnooze too old for prompt queue — update it';
+
+async function queueVerbCall(name, remoteCmd, {
+  entryOrDest, spawnFn = spawn, timeoutMs = 8000, detect = detectSsh, interactive = false,
+} = {}) {
+  let entry, child;
+  try {
+    const composed = composeSshSpawn(name, entryOrDest ?? name, remoteCmd, { spawnFn, detect, interactive });
+    entry = composed.entry;
+    if (composed.needsAuth) {
+      return { ok: false, error: composed.error || 'no resolvable credential', needsAuth: true };
+    }
+    child = composed.child;
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+  const { code, stdout, stderr, timedOut } = await collectChild(child, timeoutMs);
+  if (timedOut) return { ok: false, error: 'timeout' };
+  if (code === 255) {
+    if (isPasswordAuthFailure(entry, stderr)) {
+      return { ok: false, error: 'ssh auth failed', needsAuth: true };
+    }
+    return { ok: false, error: `ssh exit ${code}` };
+  }
+  const parsed = extractEnvelope(stdout);
+  if (!parsed) return { ok: false, error: 'bad or missing response frame' };
+  const v = validateEnvelope(parsed);
+  if (!v.ok) return { ok: false, error: v.reason };
+  if (!Array.isArray(parsed.caps) || !parsed.caps.includes('queue')) {
+    return { ok: false, error: OLD_REMOTE_ERROR };
+  }
+  const result = str(parsed.result, 128) || '';
+  if (result === 'disabled') {
+    return { ok: false, result, error: `${name}: remote has remoteQueue disabled (set on that host)`, disabled: true };
+  }
+  if (result !== 'ok') {
+    return { ok: false, result, error: `remote: ${result || 'unknown'}` };
+  }
+  return { ok: true, envelope: parsed };
+}
+
+// Encodes {cwd, agent, prompt, mode, atMs} as base64url JSON itself — the
+// wire format queue-add expects (see src/remote.js). Field validation is the
+// remote's job (it never trusts what arrives over SSH_ORIGINAL_COMMAND); this
+// side only guards the one thing that would otherwise fail confusingly deep
+// in ssh plumbing — a payload too large to fit PAYLOAD_RE's cap.
+export async function remoteQueueAdd(name, { cwd, agent, prompt, mode = 'next-reset', atMs = null } = {}, opts = {}) {
+  const payload = Buffer.from(JSON.stringify({ cwd, agent, prompt, mode, atMs }), 'utf8').toString('base64url');
+  if (!PAYLOAD_RE.test(payload)) return { ok: false, error: 'prompt/cwd too large to queue remotely' };
+  const r = await queueVerbCall(name, ['queue-add', payload], opts);
+  if (!r.ok) return r;
+  const rawId = r.envelope.id;
+  const id = typeof rawId === 'string' && QUEUE_ID_RE.test(rawId) ? rawId : null;
+  return { ok: true, id };
+}
+
+export async function remoteQueueList(name, opts = {}) {
+  const r = await queueVerbCall(name, ['queue-list'], opts);
+  if (!r.ok) return r;
+  return { ok: true, queue: sanitizeQueueList(r.envelope.queue) };
+}
+
+export async function remoteQueueRemove(name, id, opts = {}) {
+  if (!QUEUE_ID_RE.test(String(id))) return { ok: false, error: `invalid prompt id: ${JSON.stringify(id)}` };
+  const r = await queueVerbCall(name, ['queue-remove', id], opts);
+  if (!r.ok) {
+    if (r.result === 'not-found') return { ok: false, error: 'not found', notFound: true };
+    return r;
+  }
+  return { ok: true };
+}
+
+export async function remoteQueueClear(name, opts = {}) {
+  const r = await queueVerbCall(name, ['queue-clear'], opts);
+  if (!r.ok) return r;
+  return { ok: true, cleared: Number.isFinite(r.envelope.cleared) ? r.envelope.cleared : 0 };
 }
 
 export function readFleetCache() {
