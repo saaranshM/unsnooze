@@ -1,5 +1,7 @@
 // Password source resolvers: env/command/keychain/prompt, dispatch, AuthError.
-// Every OS branch is exercised via injected `platform` — no platform-skip.
+// Every OS branch is exercised via injected `platform`. The only platform-skips
+// are the 0700-mode assertions: unix permission bits aren't representable on a
+// Windows filesystem no matter what `platform` is injected.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -9,6 +11,8 @@ import { join } from 'node:path';
 import {
   resolveEnv, resolveCommand, resolveKeychain, resolvePrompt, resolveSecret, AuthError,
 } from '../src/askpass.js';
+
+const SKIP_WIN32 = process.platform === 'win32' ? 'unix file modes (0700) not representable on a Windows filesystem' : false;
 
 test('resolveEnv: reads the var; missing throws AuthError', () => {
   assert.equal(resolveEnv({ env: 'PW' }, { env: { PW: 's3cret' } }), 's3cret');
@@ -237,7 +241,7 @@ test("ensureAskpassHelper: unix writes an executable shebang wrapper", async () 
   rmSync(sd, { recursive: true, force: true });
 });
 
-test('ensureAskpassHelper: unix wrapper is 0700', async () => {
+test('ensureAskpassHelper: unix wrapper is 0700', { skip: SKIP_WIN32 }, async () => {
   const { ensureAskpassHelper } = await import('../src/askpass.js');
   const sd = mkdtempSync(join(tmpdir(), 'unsnooze-helper2-'));
   const p = ensureAskpassHelper({ platform: 'darwin', stateDir: sd, nodePath: '/usr/bin/node', scriptPath: '/x/bin/unsnooze.js' });
@@ -260,7 +264,7 @@ test('ensureAskpassHelper: win32 writes a .cmd wrapper referencing the host env 
 // low-1: the write must be atomic (write-tmp + rename), never a partial
 // file visible at the final path, and a stale/wrong mode on a pre-existing
 // file must still be corrected back to 0700.
-test('ensureAskpassHelper: write is atomic (no leftover tmp files) and re-provisioning a pre-existing file still yields 0700', async () => {
+test('ensureAskpassHelper: write is atomic (no leftover tmp files) and re-provisioning a pre-existing file still yields 0700', { skip: SKIP_WIN32 }, async () => {
   const { readdirSync, chmodSync } = await import('node:fs');
   const { ensureAskpassHelper } = await import('../src/askpass.js');
   const sd = mkdtempSync(join(tmpdir(), 'unsnooze-helper-atomic-'));

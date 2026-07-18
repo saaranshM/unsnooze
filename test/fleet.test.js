@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-fleet-test-'));
+const SKIP_WIN32 = process.platform === 'win32' ? 'fake ssh is a POSIX shell script (not executable on Windows)' : false;
 process.env.UNSNOOZE_STATE_DIR = DIR;
 
 after(() => {
@@ -712,7 +713,7 @@ test('C1: AUTH_FAIL_RE tightened — a non-auth 255 whose banner merely mentions
 // codebase provisions, exactly as real ssh would. This is spawned as a real
 // child process (never the real system `ssh`, never a real host) so it pins
 // actual OpenSSH gate-ordering semantics rather than a JS mock's assumptions.
-test('C1 regression: real-OpenSSH-shaped fake ssh refuses password auth under BatchMode, succeeds without it', async () => {
+test('C1 regression: real-OpenSSH-shaped fake ssh refuses password auth under BatchMode, succeeds without it', { skip: SKIP_WIN32 }, async () => {
   const { fetchHost, writeHosts, readHosts } = await import('../src/fleet.js');
   const { execFileSync } = await import('node:child_process');
 

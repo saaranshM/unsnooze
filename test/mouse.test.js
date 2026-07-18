@@ -168,7 +168,8 @@ test('press dispatch filters to onClick zones so wheel-only containers do not sw
 test('installMouseCleanup writes disable-all on process exit exactly once', async () => {
   const { execFileSync } = await import('node:child_process');
   const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
-    const { installMouseCleanup } = await import(process.cwd() + '/src/dashboard/run.js');
+    const { pathToFileURL } = await import('node:url');
+    const { installMouseCleanup } = await import(pathToFileURL(process.cwd() + '/src/dashboard/run.js'));
     installMouseCleanup(process.stdout);
     installMouseCleanup(process.stdout); // second install must not double-write
     process.exit(0);
