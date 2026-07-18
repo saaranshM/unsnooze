@@ -114,3 +114,23 @@ test('flattenFleetStopped carries the full host descriptor (entry) alongside des
   assert.deepEqual(rows[0].entry, entry);
   assert.equal(rows[0].dest, 'me@gpu');
 });
+
+test('FleetTab shows a per-host auth badge (key vs pw:<source>)', async () => {
+  const { renderToString } = await import('ink');
+  const React = (await import('react')).default;
+  const { FleetTab } = await import('../src/dashboard/tabs/FleetTab.js');
+  const data = [
+    { host: 'vpc', state: 'online', dest: 'ubuntu@vpc', entry: { dest: 'ubuntu@vpc', auth: 'key' }, envelope: { sessions: [] } },
+    { host: 'gpu', state: 'online', dest: 'me@gpu', entry: { dest: 'me@gpu', auth: 'password', source: 'command', cmd: 'op read x' }, envelope: { sessions: [] } },
+    { host: 'lap', state: 'needs-auth', dest: 'me@lap', entry: { dest: 'me@lap', auth: 'password', source: 'prompt' }, error: 'no resolvable credential' },
+  ];
+  const out = renderToString(React.createElement(FleetTab, { data, selected: 0 }));
+  assert.match(out, /\bkey\b/);          // key host badge
+  assert.match(out, /pw:command/);        // password/command host
+  assert.match(out, /pw:prompt/);         // password/prompt host (needs-auth) still shows its auth
+  // A host with no descriptor (e.g. legacy/absent) renders no badge and doesn't crash
+  const bare = renderToString(React.createElement(FleetTab, {
+    data: [{ host: 'x', state: 'online', dest: 'x', envelope: { sessions: [] } }], selected: 0,
+  }));
+  assert.match(bare, /x/);
+});

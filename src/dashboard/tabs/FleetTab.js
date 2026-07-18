@@ -7,6 +7,15 @@ import { attachHintRemote } from '../../fleet.js';
 
 const h = React.createElement;
 
+// Per-host auth badge: `key` (default) or `pw:<source>` (env/keychain/command/
+// prompt), so you can tell at a glance what a host authenticates with — and,
+// for a needs-auth host, why. Null when the descriptor is absent (legacy row).
+function authBadge(entry) {
+  if (!entry || !entry.auth) return null;
+  if (entry.auth === 'password') return `pw:${entry.source || 'prompt'}`;
+  return 'key';
+}
+
 // Host-header glyph/label/color for each fetchFleet() state.
 function hostHeader(r, now) {
   if (r.state === 'online') {
@@ -49,12 +58,14 @@ export function FleetTab({ data, selected = 0, onSelect } = {}) {
     h(Text, null, ' '),
     ...data.map((r) => {
       const head = hostHeader(r, now);
+      const badge = authBadge(r.entry);
       const sessions = (r.envelope?.sessions ?? []).filter(s => s.status === 'stopped');
       return h(Box, { key: r.host, flexDirection: 'column', marginBottom: 1 },
         h(Text, null,
           h(Text, { color: head.color }, `${head.glyph} `),
           h(Text, { color: theme.bright, bold: true }, r.host),
           h(Text, { color: head.color }, ` ${head.label}`),
+          badge ? h(Text, { color: theme.muted, dimColor: true }, `  · ${badge}`) : null,
         ),
         sessions.length === 0
           ? h(Text, { color: theme.muted, dimColor: true }, '    (no stopped sessions)')
