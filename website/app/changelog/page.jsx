@@ -1,3 +1,4 @@
+import Stars from '../../components/Stars.jsx';
 import SiteNav from '../../components/SiteNav.jsx';
 import SubFooter from '../../components/SubFooter.jsx';
 import { readChangelog } from '../../lib/changelog.js';
@@ -20,6 +21,7 @@ export default async function ChangelogPage() {
 
   return (
     <div className="subpage">
+      <div className="stars-layer stars-dim" aria-hidden="true"><Stars /></div>
       <JsonLd data={breadcrumbs([['unsnooze', '/'], ['Changelog', '/changelog/']])} />
       <SiteNav page="changelog" />
       <main className="wrap subpage-main">

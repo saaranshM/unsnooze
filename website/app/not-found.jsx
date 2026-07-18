@@ -1,3 +1,4 @@
+import Stars from '../components/Stars.jsx';
 import SiteNav from '../components/SiteNav.jsx';
 import SubFooter from '../components/SubFooter.jsx';
 
@@ -9,6 +10,7 @@ export const metadata = {
 export default function NotFound() {
   return (
     <div className="subpage">
+      <div className="stars-layer stars-dim" aria-hidden="true"><Stars /></div>
       <SiteNav page="404" />
       <main className="wrap subpage-main">
         <header className="sub-hero">

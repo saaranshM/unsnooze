@@ -78,7 +78,13 @@ code.chip {
   background: #cdd6e4;
   animation: twinkle 4.5s ease-in-out infinite;
 }
-@keyframes twinkle { 0%, 100% { opacity: 0.14; } 50% { opacity: 0.55; } }
+.stars-layer span.bright { animation-name: twinkle-bright; }
+.stars-dim { opacity: 0.5; }
+@keyframes twinkle { 0%, 100% { opacity: 0.12; } 50% { opacity: 0.6; } }
+@keyframes twinkle-bright {
+  0%, 100% { opacity: 0.18; transform: scale(1); box-shadow: none; }
+  50% { opacity: 0.95; transform: scale(1.3); box-shadow: 0 0 6px 1px rgba(205, 214, 228, 0.45); }
+}
 
 #app { position: relative; z-index: 1; }
 

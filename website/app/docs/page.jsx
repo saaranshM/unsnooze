@@ -1,3 +1,4 @@
+import Stars from '../../components/Stars.jsx';
 import SiteNav from '../../components/SiteNav.jsx';
 import SubFooter from '../../components/SubFooter.jsx';
 import { JsonLd, breadcrumbs } from '../../lib/jsonld.js';
@@ -44,6 +45,7 @@ const C = ({ children }) => <code className="chip">{children}</code>;
 export default function DocsPage() {
   return (
     <div className="subpage">
+      <div className="stars-layer stars-dim" aria-hidden="true"><Stars /></div>
       <JsonLd data={breadcrumbs([['unsnooze', '/'], ['Docs', '/docs/']])} />
       <SiteNav page="docs" />
       <main className="wrap subpage-main">

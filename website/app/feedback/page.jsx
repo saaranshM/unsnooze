@@ -1,3 +1,4 @@
+import Stars from '../../components/Stars.jsx';
 import SiteNav from '../../components/SiteNav.jsx';
 import SubFooter from '../../components/SubFooter.jsx';
 import FeedbackClient from '../../components/FeedbackClient.jsx';
@@ -44,6 +45,7 @@ export default async function FeedbackPage() {
 
   return (
     <div className="subpage">
+      <div className="stars-layer stars-dim" aria-hidden="true"><Stars /></div>
       <JsonLd data={breadcrumbs([['unsnooze', '/'], ['Feedback', '/feedback/']])} />
       <SiteNav page="feedback" />
       <main className="wrap subpage-main">
