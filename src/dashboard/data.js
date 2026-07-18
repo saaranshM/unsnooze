@@ -2,6 +2,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { readState } from '../state.js';
 import { getConfig } from '../settings.js';
 import { LOG_FILE } from '../config.js';
+import { queueList } from '../prompt-queue.js';
 import {
   buildUsageReport,
   collectClaudeSamples,
@@ -30,6 +31,7 @@ export function loadStatusSnapshot() {
     daemonRunning,
     paused: !getConfig('autoResume'),
     now: Date.now(),
+    promptQueue: queueList(),
   };
 }
 

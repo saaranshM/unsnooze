@@ -8,8 +8,9 @@ const h = React.createElement;
 
 export function StatusTab({ data, selected = 0, onSelect } = {}) {
   if (!data) return h(Text, { color: theme.muted }, 'Loading…');
-  const { sessions, paused, now } = data;
+  const { sessions, paused, now, promptQueue } = data;
   const sorted = [...sessions].sort((a, b) => (a.resetAt || 0) - (b.resetAt || 0));
+  const queuedCount = (promptQueue || []).filter(e => e.status === 'pending' || e.status === 'launching').length;
 
   return h(Box, { flexDirection: 'column' },
     h(Text, null,
@@ -50,5 +51,8 @@ export function StatusTab({ data, selected = 0, onSelect } = {}) {
           ),
         );
       }),
+    queuedCount > 0
+      ? h(Text, { color: theme.muted }, `${queuedCount} prompt(s) queued — tab 7`)
+      : null,
   );
 }

@@ -134,3 +134,69 @@ test('FleetTab shows a per-host auth badge (key vs pw:<source>)', async () => {
   }));
   assert.match(bare, /x/);
 });
+
+test('StatusTab: non-terminal promptQueue entries render the "N prompt(s) queued — tab 7" hint', async () => {
+  const { renderToString } = await import('ink');
+  const React = (await import('react')).default;
+  const { StatusTab } = await import('../src/dashboard/tabs/StatusTab.js');
+  const withQueue = renderToString(React.createElement(StatusTab, {
+    data: {
+      sessions: [],
+      paused: false,
+      now: Date.now(),
+      promptQueue: [
+        { id: 'p-1', status: 'pending' },
+        { id: 'p-2', status: 'launching' },
+      ],
+    },
+    selected: 0,
+  }));
+  assert.match(withQueue, /2 prompt\(s\) queued — tab 7/);
+
+  // Terminal-only entries (delivered/failed/cancelled) → no hint line.
+  const terminalOnly = renderToString(React.createElement(StatusTab, {
+    data: {
+      sessions: [],
+      paused: false,
+      now: Date.now(),
+      promptQueue: [{ id: 'p-3', status: 'delivered' }, { id: 'p-4', status: 'failed' }],
+    },
+    selected: 0,
+  }));
+  assert.doesNotMatch(terminalOnly, /queued — tab 7/);
+
+  // Absent promptQueue (older snapshot shape) → identical to no-hint case, no crash.
+  const noField = renderToString(React.createElement(StatusTab, {
+    data: { sessions: [], paused: false, now: Date.now() },
+    selected: 0,
+  }));
+  assert.doesNotMatch(noField, /queued — tab 7/);
+});
+
+test('FleetTab: host with non-terminal envelope.queue entries shows "· N queued"', async () => {
+  const { renderToString } = await import('ink');
+  const React = (await import('react')).default;
+  const { FleetTab } = await import('../src/dashboard/tabs/FleetTab.js');
+  const data = [
+    {
+      host: 'gpu', state: 'online', dest: 'ubuntu@10.0.0.7', at: Date.now(),
+      envelope: { sessions: [], queue: [{ id: 'p-1', status: 'pending' }, { id: 'p-2', status: 'delivered' }] },
+    },
+  ];
+  const out = renderToString(React.createElement(FleetTab, { data, selected: 0 }));
+  assert.match(out, /· 1 queued/);
+
+  // envelope without a queue field at all (pre-Task-5 cached envelope) renders unchanged — no crash, no "queued" text.
+  const noQueue = renderToString(React.createElement(FleetTab, {
+    data: [{ host: 'old', state: 'online', dest: 'old', at: Date.now(), envelope: { sessions: [] } }],
+    selected: 0,
+  }));
+  assert.doesNotMatch(noQueue, /queued/);
+
+  // empty queue array → also renders unchanged
+  const emptyQueue = renderToString(React.createElement(FleetTab, {
+    data: [{ host: 'idle', state: 'online', dest: 'idle', at: Date.now(), envelope: { sessions: [], queue: [] } }],
+    selected: 0,
+  }));
+  assert.doesNotMatch(emptyQueue, /queued/);
+});

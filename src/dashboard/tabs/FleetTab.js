@@ -60,12 +60,14 @@ export function FleetTab({ data, selected = 0, onSelect } = {}) {
       const head = hostHeader(r, now);
       const badge = authBadge(r.entry);
       const sessions = (r.envelope?.sessions ?? []).filter(s => s.status === 'stopped');
+      const queuedCount = (r.envelope?.queue ?? []).filter(e => e.status === 'pending' || e.status === 'launching').length;
       return h(Box, { key: r.host, flexDirection: 'column', marginBottom: 1 },
         h(Text, null,
           h(Text, { color: head.color }, `${head.glyph} `),
           h(Text, { color: theme.bright, bold: true }, r.host),
           h(Text, { color: head.color }, ` ${head.label}`),
           badge ? h(Text, { color: theme.muted, dimColor: true }, `  · ${badge}`) : null,
+          queuedCount > 0 ? h(Text, { color: theme.muted, dimColor: true }, `  · ${queuedCount} queued`) : null,
         ),
         sessions.length === 0
           ? h(Text, { color: theme.muted, dimColor: true }, '    (no stopped sessions)')
