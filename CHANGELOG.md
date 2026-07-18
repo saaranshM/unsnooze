@@ -7,8 +7,8 @@
   prompt|env|keychain|command` (`prompt` is interactive no-echo and the
   default; `env`/`keychain`/`command` are daemon-capable). `keychain` is a
   macOS-only built-in; Windows and Linux use `--source command` with a
-  per-OS recipe (`pass`, `secret-tool`, `security`, `powershell`, `op read`
-  — see README). `unsnooze hosts test <name>` pre-flights a host without
+  per-OS recipe (Linux `pass`/`secret-tool`, Windows `powershell`/`op read`;
+  `security` is the macOS recipe — see README's per-OS table). `unsnooze hosts test <name>` pre-flights a host without
   ever printing its secret. Auth-gapped hosts render as `needs-auth` in
   `fleet`/the dashboard, distinct from `unreachable`. Security: the password
   never touches argv, `ps`, or unsnooze's own environment — it flows through
