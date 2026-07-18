@@ -11,9 +11,10 @@ process.env.UNSNOOZE_NOTIFICATIONS = 'off';   // no desktop popups from tests
 process.env.UNSNOOZE_READY_TIMEOUT_MS = '6000';   // keep the reopen poll short in tests
 process.env.UNSNOOZE_VERIFY_DELAY_MS = '0';
 
-const { dispatchOne, verifyOne, routeDispatchOutcome, runResumer, probeFallback, reviveTarget } = await import('../src/resumer.js');
+const { dispatchOne, verifyOne, routeDispatchOutcome, runResumer, probeFallback, reviveTarget, awaitReadyAndSend } = await import('../src/resumer.js');
 const { upsertSession, readState, setStatus, updateState, sweepRecords, markStaleAbandoned } = await import('../src/state.js');
 const { RESUME_SESSION_NAME, LOG_FILE } = await import('../src/config.js');
+const { getAgent } = await import('../src/agents/index.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
@@ -1008,4 +1009,54 @@ test('reopen logs new-window failures instead of failing silently', async () => 
   const after = readFileSync(LOG_FILE, 'utf-8');
   assert.match(after.slice(before.length), /new-window failed.*spawn tmux ENOENT/,
     'the failure must be visible in the log, not only in state');
+});
+
+// --- awaitReadyAndSend: the reopen ready-wait loop, extracted ---
+
+test('awaitReadyAndSend: idle pane → sent, message typed into the pane', async () => {
+  const agent = getAgent('claude');
+  const sent = [];
+  const mux = {
+    capturePane: async () => '❯ \n',
+    sendText: async (pane, text) => sent.push({ pane, text }),
+  };
+  const outcome = await awaitReadyAndSend(mux, '%9', agent, 'go on');
+  assert.equal(outcome, 'sent');
+  assert.deepEqual(sent, [{ pane: '%9', text: 'go on' }]);
+});
+
+test('awaitReadyAndSend: limit banner on the fresh pane → limit, nothing sent', async () => {
+  const agent = getAgent('claude');
+  const sent = [];
+  const mux = {
+    capturePane: async () => "⚠ You've hit your 5-hour limit\n· resets 9pm (UTC)\n> ",
+    sendText: async (...a) => sent.push(a),
+  };
+  const outcome = await awaitReadyAndSend(mux, '%9', agent, 'go on');
+  assert.equal(outcome, 'limit');
+  assert.deepEqual(sent, []);
+});
+
+test('awaitReadyAndSend: never idle → timeout', async () => {
+  const agent = getAgent('claude');
+  const sent = [];
+  const mux = {
+    capturePane: async () => '✻ Cogitating… (esc to interrupt)',
+    sendText: async (...a) => sent.push(a),
+  };
+  const outcome = await awaitReadyAndSend(mux, '%9', agent, 'go on', { timeoutMs: 50 });
+  assert.equal(outcome, 'timeout');
+  assert.deepEqual(sent, []);
+});
+
+test('awaitReadyAndSend: capturePane throwing keeps polling instead of crashing', async () => {
+  const agent = getAgent('claude');
+  let calls = 0;
+  const mux = {
+    capturePane: async () => { calls++; throw new Error('capture failed'); },
+    sendText: async () => { throw new Error('must not send'); },
+  };
+  const outcome = await awaitReadyAndSend(mux, '%9', agent, 'go on', { timeoutMs: 50 });
+  assert.equal(outcome, 'timeout');
+  assert.ok(calls >= 1, 'capturePane was polled despite throwing');
 });

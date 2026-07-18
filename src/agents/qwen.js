@@ -101,6 +101,8 @@ export default {
   resumeArgs(sessionId) {
     return { args: sessionId ? ['--resume', sessionId] : ['--continue'], messageViaPane: true };
   },
+  // v1: every agent launches the bare TUI and gets the prompt typed once idle.
+  launchArgs(message) { return { args: [], messageViaPane: true }; },
   latestSessionId,
   isForegroundCommand(cmd) {
     return cmd === 'qwen' || cmd === 'node' || cmd === 'unsnooze';

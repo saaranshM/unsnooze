@@ -87,6 +87,8 @@ export default {
   resumeArgs(sessionId) {
     return { args: sessionId ? ['--resume', sessionId] : ['-c'], messageViaPane: true };
   },
+  // v1: every agent launches the bare TUI and gets the prompt typed once idle.
+  launchArgs(message) { return { args: [], messageViaPane: true }; },
   // Session file format is undocumented; null keeps it conservative — the
   // reopen path then uses `grok -c`, which Grok itself scopes to the cwd.
   latestSessionId() {

@@ -96,6 +96,8 @@ export default {
   resumeArgs(sessionId) {
     return { args: sessionId ? ['-s', sessionId] : ['--continue'], messageViaPane: true };
   },
+  // v1: every agent launches the bare TUI and gets the prompt typed once idle.
+  launchArgs(message) { return { args: [], messageViaPane: true }; },
   latestSessionId,
   isForegroundCommand(cmd) {
     // The npm-shipped bun binary reports pane_current_command "opencode.exe"

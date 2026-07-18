@@ -123,6 +123,8 @@ export default {
       messageViaPane: false,
     };
   },
+  // v1: every agent launches the bare TUI and gets the prompt typed once idle.
+  launchArgs(message) { return { args: [], messageViaPane: true }; },
   latestSessionId,
   isForegroundCommand(cmd) {
     return cmd === 'codex' || cmd === 'node' || cmd === 'unsnooze';

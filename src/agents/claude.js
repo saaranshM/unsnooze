@@ -92,6 +92,8 @@ export default {
   resumeArgs(sessionId) {
     return { args: sessionId ? ['--resume', sessionId] : ['-c'], messageViaPane: true };
   },
+  // v1: every agent launches the bare TUI and gets the prompt typed once idle.
+  launchArgs(message) { return { args: [], messageViaPane: true }; },
   latestSessionId,
   // Estimated tokens the API re-reads on a cold wake (prompt cache long
   // expired). null → unknown, contextGuard skips. Adapters without this

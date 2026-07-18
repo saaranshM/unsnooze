@@ -566,23 +566,15 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
   if (!resume.messageViaPane) { onDelivered(); return 'reopen'; }
 
   // Wait for the TUI to be ready (input prompt visible), then send the message.
-  const deadline = Date.now() + READY_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await sleep(2000);
-    let text;
-    try { text = await mux.capturePane(address.pane, CAPTURE_LINES); }
-    catch { continue; }
-    if ((agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES)) || detectLimit(text, PANE_SCAN_LINES, agent.patterns).hit) {
-      // Limit hadn't actually reset — the fresh session hit it immediately.
-      return 'reopen';
-    }
-    // The idle input box: a prompt glyph with no busy footer.
-    if (!isBusy(text, agent.patterns.busyPatterns) && agent.patterns.idleRegex.test(text)) {
-      await mux.sendText(address.pane, resumeMessage);
-      log(`${key}: resume message sent to new pane ${address.pane}`);
-      onDelivered();
-      return 'reopen';
-    }
+  const outcome = await awaitReadyAndSend(mux, address.pane, agent, resumeMessage);
+  if (outcome === 'limit') {
+    // Limit hadn't actually reset — the fresh session hit it immediately.
+    return 'reopen';
+  }
+  if (outcome === 'sent') {
+    log(`${key}: resume message sent to new pane ${address.pane}`);
+    onDelivered();
+    return 'reopen';
   }
   setStatus(key, 'stopped', {
     attempts: (rec.attempts || 0) + 1,
@@ -590,6 +582,31 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
     verifyRetries: 0,
   });
   return 'retry';
+}
+
+// The reopen ready-wait loop, extracted so other launch paths (e.g. a fresh
+// session with no prior sessionId) can reuse the identical wait-then-type
+// behavior. Pure move from reopen(): same 2s poll cadence, same
+// capturePane-throws-continue, same limit/idle detection.
+export async function awaitReadyAndSend(mux, pane, agent, message, {
+  timeoutMs = READY_TIMEOUT_MS,
+} = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(2000);
+    let text;
+    try { text = await mux.capturePane(pane, CAPTURE_LINES); }
+    catch { continue; }
+    if ((agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES)) || detectLimit(text, PANE_SCAN_LINES, agent.patterns).hit) {
+      return 'limit';
+    }
+    // The idle input box: a prompt glyph with no busy footer.
+    if (!isBusy(text, agent.patterns.busyPatterns) && agent.patterns.idleRegex.test(text)) {
+      await mux.sendText(pane, message);
+      return 'sent';
+    }
+  }
+  return 'timeout';
 }
 
 function recordVerifyRetry(rec, lastError) {
