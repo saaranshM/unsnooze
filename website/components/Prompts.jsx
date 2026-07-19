@@ -41,8 +41,8 @@ export default function Prompts() {
         </p>
       </Reveal>
       <Reveal delay={0.1}>
-        <TermWindow title="unsnooze prompt">
-          <pre className="term-body">
+        <TermWindow title="unsnooze prompt" className="queue-term">
+          <pre className="term-body queue-term-body">
             <span className="d-amber">$</span> <span className="d-ink">unsnooze prompt add</span> --project ~/work/payments <span className="d-faint">"run the full test suite and fix any failures"</span>{'\n'}
             <span className="d-dim">prompts: queued p-3f9a1c2e for claude in ~/work/payments — delivering after the reset</span>{'\n\n'}
             <span className="d-faint">  03:00:07</span> <span className="d-amber">queue</span>{'    '}new claude window in ~/work/payments · typing queued prompt{'\n'}

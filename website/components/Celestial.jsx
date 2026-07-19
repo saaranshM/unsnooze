@@ -72,13 +72,15 @@ export default function Celestial() {
       cy = lerp(1.16, 0.3, seg(p, 0.62, DOCK)) * vh;
     }
 
-    // Base fade over the night, plus a strong dim on narrow screens while the
-    // body travels through the text column — restored as it lands in the
-    // footer's open space.
+    // Base fade over the night, plus a strong dim while the body travels
+    // through the text column — narrow screens dim the whole journey, wide
+    // screens dim the center-rising sun — restored to full as it docks into
+    // the footer's open space.
     let op = p < 0.45 ? lerp(1, 0.9, seg(p, 0, 0.45))
       : p < 0.55 ? lerp(0.9, 0.5, seg(p, 0.45, 0.55))
         : p < 0.65 ? lerp(0.5, 1, seg(p, 0.55, 0.65)) : 1;
     if (narrow) op *= lerp(0.4, 1, seg(p, DOCK, 1));
+    else if (p >= 0.55) op *= lerp(0.35, 1, seg(p, DOCK, 1));
 
     const r = size / 2;
     let visibleBottom = cy + r; // where the lowest visible pixel sits

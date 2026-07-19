@@ -394,6 +394,9 @@ h1 .wake {
 
 /* ---------- guards ---------- */
 .guards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+/* a guards grid that follows a terminal block (not a lede) needs its own air */
+#prompts .guards { margin-top: 18px; }
+.queue-term-body { white-space: pre; overflow-x: auto; min-height: 0; margin: 0; }
 .guard {
   background: var(--panel); border: 1px solid var(--line-soft); border-radius: 12px;
   padding: 20px 22px;
