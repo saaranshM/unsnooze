@@ -1,7 +1,7 @@
 {
   "name": "unsnooze",
   "version": "1.14.0",
-  "description": "Auto-resume Claude Code, Codex CLI, Grok, Qwen Code, Kimi CLI, OpenCode & Antigravity when the 5-hour/weekly usage limit resets — tmux, Zellij, VS Code & desktop apps. Wakes every limit-stopped AI coding session automatically.",
+  "description": "Auto-resume Claude Code, Codex CLI, Grok, Qwen Code, Kimi CLI, OpenCode & Antigravity when the 5-hour/weekly usage limit resets \u2014 tmux, Zellij, VS Code & desktop apps. Wakes every limit-stopped AI coding session automatically.",
   "keywords": [
     "claude",
     "claude-code",
@@ -49,7 +49,7 @@
   "bugs": {
     "url": "https://github.com/saaranshM/unsnooze/issues"
   },
-  "homepage": "https://github.com/saaranshM/unsnooze#readme",
+  "homepage": "https://unsnooze.combustortech.in",
   "type": "module",
   "bin": {
     "unsnooze": "bin/unsnooze.js"
