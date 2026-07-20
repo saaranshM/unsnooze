@@ -197,25 +197,61 @@ h1 .wake {
 .lede { color: var(--dim); max-width: 60ch; font-size: 18.5px; }
 .lede strong { color: var(--ink); font-weight: 600; }
 
+/* The whole pill is the copy trigger: a live terminal line with a blinking
+   caret. On copy the command dims to sleep and a tiny sun rises inside the
+   pill with "copied" — the site's night-to-dawn arc in miniature. */
 .install {
-  display: inline-flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  position: relative; display: inline-block; max-width: 100%;
   margin: 36px 0 12px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   padding: 14px 18px;
-  font-family: var(--mono); font-size: 15px;
+  font-family: var(--mono); font-size: 15px; text-align: left; color: inherit;
   box-shadow: 0 0 54px rgba(245, 158, 11, 0.09);
+  cursor: pointer; appearance: none; -webkit-appearance: none;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.15s ease;
 }
-.install code .p { color: var(--amber); user-select: none; }
+.install:hover { border-color: rgba(245, 158, 11, 0.55); box-shadow: 0 0 60px rgba(245, 158, 11, 0.16); }
+.install:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+.install:active { transform: scale(0.98); }
+.install .cmd { display: block; transition: opacity 0.3s ease; }
+.install code .p { color: var(--amber); }
 .install code .amp { color: var(--faint); }
-.copy-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  color: var(--dim); background: var(--panel-2);
-  border: 1px solid var(--line); border-radius: 6px;
-  padding: 6px; cursor: pointer;
+.install .caret {
+  display: inline-block; width: 8px; height: 1.05em;
+  margin-left: 7px; vertical-align: text-bottom;
+  background: var(--amber); border-radius: 1px;
+  animation: caret-blink 1.15s steps(2, jump-none) infinite;
 }
-.copy-btn svg { display: block; }
-.copy-btn:hover { color: var(--amber); border-color: var(--amber); }
-.copy-btn.copied { color: var(--amber); border-color: var(--amber); }
+@keyframes caret-blink { 0% { opacity: 1; } 100% { opacity: 0; } }
+.copy-fx {
+  position: absolute; inset: 0; overflow: hidden; border-radius: inherit;
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  opacity: 0; pointer-events: none; transition: opacity 0.2s ease;
+}
+.mini-sun {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: linear-gradient(to top, var(--amber), var(--rose));
+  box-shadow: 0 0 18px 4px rgba(245, 158, 11, 0.55);
+}
+.copied-word { color: var(--amber); letter-spacing: 0.08em; }
+.install.copied {
+  border-color: var(--amber);
+  box-shadow: 0 0 70px rgba(245, 158, 11, 0.3);
+}
+.install.copied .cmd { opacity: 0.1; }
+.install.copied .copy-fx { opacity: 1; }
+.install.copied .mini-sun { animation: sunrise 0.7s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.install.copied .copied-word { animation: sunrise 0.7s 0.08s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes sunrise {
+  from { transform: translateY(26px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .install { transition: none; }
+  .install:active { transform: none; }
+  .install .caret { animation: none; }
+  .install.copied .mini-sun, .install.copied .copied-word { animation: none; }
+}
 
 .badges {
   display: flex; gap: 18px; flex-wrap: wrap;

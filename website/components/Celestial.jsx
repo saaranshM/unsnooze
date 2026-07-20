@@ -10,6 +10,7 @@ const seg = (p, a, b) => Math.min(1, Math.max(0, (p - a) / (b - a)));
 
 const BASE = 112; // disc diameter at the top of the page
 const DOCK = 0.93; // scroll progress where the sun starts settling onto the footer horizon
+const LAND = 0.995; // fully landed just before exact full scroll — mobile browsers often settle a fraction of a pixel short of the true bottom
 const GLOW = 90; // how far the halo extends past the disc
 
 // One body crosses the whole page: a crescent moon in the hero that sinks as
@@ -79,8 +80,8 @@ export default function Celestial() {
     let op = p < 0.45 ? lerp(1, 0.9, seg(p, 0, 0.45))
       : p < 0.55 ? lerp(0.9, 0.5, seg(p, 0.45, 0.55))
         : p < 0.65 ? lerp(0.5, 1, seg(p, 0.55, 0.65)) : 1;
-    if (narrow) op *= lerp(0.4, 1, seg(p, DOCK, 1));
-    else if (p >= 0.55) op *= lerp(0.35, 1, seg(p, DOCK, 1));
+    if (narrow) op *= lerp(0.4, 1, seg(p, DOCK, LAND));
+    else if (p >= 0.55) op *= lerp(0.35, 1, seg(p, DOCK, LAND));
 
     const r = size / 2;
     let visibleBottom = cy + r; // where the lowest visible pixel sits
@@ -90,7 +91,7 @@ export default function Celestial() {
 
     const anchor = document.getElementById('sun-anchor');
     if (anchor && p > DOCK) {
-      const t = seg(p, DOCK, 1);
+      const t = seg(p, DOCK, LAND);
       const rect = anchor.getBoundingClientRect();
       cx = lerp(cx, rect.left + rect.width / 2, t);
       visibleBottom = lerp(visibleBottom, rect.bottom, t);
@@ -114,8 +115,23 @@ export default function Celestial() {
     if (reduced) return undefined;
     const sync = () => update(scrollYProgress.get());
     sync();
+    // The anchor's viewport position can move without scrollYProgress
+    // ticking — mobile URL-bar collapse, elastic overscroll at the page
+    // bottom (progress pinned at 1), late layout shifts — so re-measure on
+    // every signal that can move the horizon, not just progress changes.
     window.addEventListener('resize', sync);
-    return () => window.removeEventListener('resize', sync);
+    window.addEventListener('scroll', sync, { passive: true });
+    window.visualViewport?.addEventListener('resize', sync);
+    window.visualViewport?.addEventListener('scroll', sync);
+    const ro = new ResizeObserver(sync);
+    ro.observe(document.body);
+    return () => {
+      window.removeEventListener('resize', sync);
+      window.removeEventListener('scroll', sync);
+      window.visualViewport?.removeEventListener('resize', sync);
+      window.visualViewport?.removeEventListener('scroll', sync);
+      ro.disconnect();
+    };
   }, [reduced]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (reduced) return null;
