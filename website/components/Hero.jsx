@@ -10,7 +10,7 @@ const AGENTS = [
   'Claude desktop', 'tmux', 'Zellij',
 ];
 
-export default function Hero() {
+export default function Hero({ version }) {
   const reduced = useReducedMotion();
   const enter = (delay) => ({
     initial: reduced ? false : { opacity: 0, y: 30 },
@@ -38,7 +38,7 @@ export default function Hero() {
       <motion.div {...enter(0.28)}>
         <InstallPill />
         <div className="badges">
-          <span>v1.13</span><span>MIT</span><span>Node ≥ 20</span>
+          {version && <span>v{version}</span>}<span>MIT</span><span>Node ≥ 20</span>
           <span>tmux · Zellij</span><span>macOS · Linux · WSL</span><span>zero telemetry</span>
         </div>
       </motion.div>

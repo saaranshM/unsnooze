@@ -208,12 +208,14 @@ h1 .wake {
 .install code .p { color: var(--amber); user-select: none; }
 .install code .amp { color: var(--faint); }
 .copy-btn {
-  font-family: var(--mono); font-size: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
   color: var(--dim); background: var(--panel-2);
   border: 1px solid var(--line); border-radius: 6px;
-  padding: 5px 12px; cursor: pointer;
+  padding: 6px; cursor: pointer;
 }
+.copy-btn svg { display: block; }
 .copy-btn:hover { color: var(--amber); border-color: var(--amber); }
+.copy-btn.copied { color: var(--amber); border-color: var(--amber); }
 
 .badges {
   display: flex; gap: 18px; flex-wrap: wrap;

@@ -13,6 +13,7 @@ import Faq from '../components/Faq.jsx';
 import Footer from '../components/Footer.jsx';
 import { FAQ } from '../lib/faq-data.jsx';
 import { JsonLd, webSite, softwareApplication, faqPage } from '../lib/jsonld.js';
+import { readChangelog } from '../lib/changelog.js';
 
 export const metadata = {
   title: 'unsnooze — auto-resume Claude Code & Codex when the usage limit resets',
@@ -27,14 +28,16 @@ export const metadata = {
   },
 };
 
-export default function Home() {
+export default async function Home() {
+  // Newest shipped version, same npm-cross-checked source the changelog uses.
+  const [latest] = await readChangelog();
   return (
     <>
       <JsonLd data={webSite()} />
       <JsonLd data={softwareApplication()} />
       <JsonLd data={faqPage(FAQ)} />
       <HomeShell>
-        <Hero />
+        <Hero version={latest?.version} />
         <Compare />
         <Timeline />
         <Agents />
