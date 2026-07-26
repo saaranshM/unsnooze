@@ -14,6 +14,17 @@ export const metadata = {
     'claude code usage limit', 'auto resume claude code', 'codex rate limit',
     'claude code 5 hour limit', 'ai coding agent auto resume', 'tmux', 'zellij',
   ],
+  // Served from public/ rather than the app/icon.* convention: those emit a
+  // hashed route-handler URL with a hardcoded no-cache header, and Google reads
+  // the icon set off the home page markup. /favicon.ico goes first — it is the
+  // path every crawler, browser and feed reader requests blind.
+  icons: {
+    icon: [
+      { url: '/favicon.ico', sizes: '48x48', type: 'image/x-icon' },
+      { url: '/icon.svg', type: 'image/svg+xml' },
+    ],
+    apple: [{ url: '/apple-touch-icon.png', sizes: '180x180' }],
+  },
   robots: {
     index: true,
     follow: true,
