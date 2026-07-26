@@ -194,6 +194,15 @@ h1 .wake {
   -webkit-background-clip: text; background-clip: text;
   -webkit-text-fill-color: transparent; color: var(--amber);
 }
+/* The headline is a mood, not a description. This line lives inside the h1 so
+   the page's strongest heading actually names the product and the problem —
+   styled as a small mono caption so it reads as a subtitle, not a second lede. */
+.h1-sub {
+  display: block;
+  font-family: var(--mono); font-style: normal; font-weight: 500;
+  font-size: 14.5px; line-height: 1.5; letter-spacing: 0.01em;
+  color: var(--faint); max-width: 52ch; margin-top: 22px;
+}
 .lede { color: var(--dim); max-width: 60ch; font-size: 18.5px; }
 .lede strong { color: var(--ink); font-weight: 600; }
 
@@ -518,6 +527,21 @@ h1 .wake {
   padding: 6px 0 6px 16px; margin-left: -1px; border-left: 1px solid transparent;
 }
 .docs-side a:hover { color: var(--amber); border-left-color: var(--amber); }
+/* The sidebar lists all five docs routes; the current one expands to its own
+   sections. display:contents lets the wrapper span vanish from the flex flow. */
+.docs-nav-group { display: contents; }
+.docs-side .docs-nav-page.is-active { color: var(--ink); border-left-color: var(--amber); }
+.docs-side .docs-nav-sec { font-size: 12.5px; padding-left: 30px; color: var(--faint); }
+.docs-pager {
+  display: flex; justify-content: space-between; gap: 16px;
+  margin-top: 44px; padding-top: 22px; border-top: 1px solid var(--line-soft);
+  font-size: 14px;
+}
+.docs-pager a { color: var(--dim); text-decoration: none; }
+.docs-pager a:hover { color: var(--amber); }
+/* The feedback board is interactive but nearly wordless; this block gives the
+   page something to actually be about, for readers and for indexing. */
+.feedback-notes { margin-top: 64px; }
 @media (max-width: 860px) {
   .docs-layout { grid-template-columns: 1fr; gap: 10px; }
   .docs-side { position: static; overflow-x: auto; }
@@ -529,6 +553,10 @@ h1 .wake {
     border: 1px solid var(--line-soft); border-radius: 20px;
     padding: 5px 13px; margin: 0; font-size: 12.5px;
   }
+  /* Pills are already tight on a phone — the per-section anchors would double
+     the row length for links the page scroll already gives you. */
+  .docs-side .docs-nav-sec { display: none; }
+  .docs-side .docs-nav-page.is-active { border-color: var(--amber); color: var(--amber); }
 }
 .docs-content { min-width: 0; }
 .doc-sec { padding: 26px 0 30px; border-top: 1px solid var(--line-soft); scroll-margin-top: 90px; }
