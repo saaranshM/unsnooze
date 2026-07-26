@@ -37,7 +37,8 @@ export default function Prompts() {
           Resuming snoozed work is half the night. <code className="chip">unsnooze prompt add</code>{' '}
           pre-writes the <em>next</em> task per project: the moment the limit resets, a brand-new
           agent session opens in that directory and your prompt is typed as its first message.
-          Manage the queue from the dashboard's prompts tab, or entirely from the CLI.
+          Manage the queue from the dashboard's prompts tab, or entirely from the CLI — every
+          verb is in the <a href="/docs/commands/#prompts">queued prompts reference</a>.
         </p>
       </Reveal>
       <Reveal delay={0.1}>

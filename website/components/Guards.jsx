@@ -46,11 +46,12 @@ export default function Guards() {
     <section id="guards">
       <Reveal>
         <p className="eyebrow">04:15 <span className="tick">·</span> the details that hold</p>
-        <h2>Guards for everything <span className="hl">that can go wrong</span></h2>
+        <h2>Guards for everything <span className="hl">that can go wrong</span> when a session resumes</h2>
         <p className="section-lede">
           Every guard is a config key — set once in <code className="chip">unsnooze setup</code>,
           change any time with <code className="chip">unsnooze config set</code>, override per
-          environment with <code className="chip">UNSNOOZE_*</code> vars.
+          environment with <code className="chip">UNSNOOZE_*</code> vars. Every key is listed in
+          the <a href="/docs/settings/">settings and guards documentation</a>.
         </p>
       </Reveal>
       <div className="guards">

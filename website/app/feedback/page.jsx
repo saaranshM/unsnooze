@@ -60,6 +60,55 @@ export default async function FeedbackPage() {
           </p>
         </header>
         <FeedbackClient initialRows={initialRows} configured={Boolean(SUPABASE_URL && SUPABASE_KEY)} />
+
+        <section className="doc-sec feedback-notes">
+          <h2>What is worth reporting</h2>
+          <p>The most valuable reports are the ones nobody else can reproduce from the
+            outside. In rough order of usefulness:</p>
+          <ul>
+            <li><strong>A limit banner unsnooze did not recognise.</strong> Agents change their
+              wording without warning, and a banner that is not matched is a session that
+              never gets recorded. <code className="chip">unsnooze report</code> captures the
+              exact text — attach it and the adapter can be fixed in one release.</li>
+            <li><strong>A wake that did not happen.</strong> Say which agent, which
+              multiplexer, and what <code className="chip">unsnooze status</code> showed at the
+              time. If the reset time looked wrong, that detail matters most — a reset parsed
+              as relative rather than absolute is a different bug from a missed wake.</li>
+            <li><strong>A wake that happened at the wrong moment.</strong> Too early usually
+              means a misread reset; too late usually means the machine slept through it.</li>
+            <li><strong>Anything that typed into the wrong pane</strong>, which is treated as
+              the most serious class of bug this tool can have.</li>
+            <li><strong>Ideas.</strong> A flag you keep wishing existed, an agent that is not
+              supported yet, or a workflow that does not fit.</li>
+          </ul>
+
+          <h3>What the statuses mean</h3>
+          <p>Every item on the board carries one:</p>
+          <ul>
+            <li><code className="chip">new</code> — received, not yet triaged.</li>
+            <li><code className="chip">planned</code> — accepted and queued for a release.</li>
+            <li><code className="chip">in-progress</code> — being built now.</li>
+            <li><code className="chip">shipped</code> — released; the{' '}
+              <a href="/changelog/">changelog</a> records which version.</li>
+            <li><code className="chip">declined</code> — out of scope, with the reasoning
+              given rather than silence.</li>
+          </ul>
+
+          <h3>Here, or a GitHub issue?</h3>
+          <p>Use this board when you want to say something quickly and without an account —
+            it is the lower-friction path, and it is read. Open a{' '}
+            <a href="https://github.com/saaranshM/unsnooze/issues">GitHub issue</a> instead
+            when you have logs, a stack trace, or a{' '}
+            <code className="chip">unsnooze report</code> capture to attach, since files
+            cannot be uploaded here. Anything touching the security boundary should follow{' '}
+            <a href="https://github.com/saaranshM/unsnooze/blob/main/SECURITY.md">SECURITY.md</a>{' '}
+            rather than either public channel.</p>
+          <p>Before reporting a wake that did not fire, it is worth running{' '}
+            <code className="chip">unsnooze doctor</code> — it reports problems rather than a
+            checklist, so a healthy install answers in one line. The{' '}
+            <a href="/docs/troubleshooting/">troubleshooting guide</a> covers the common
+            causes.</p>
+        </section>
       </main>
       <SubFooter />
     </div>

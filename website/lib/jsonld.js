@@ -1,11 +1,31 @@
 import { SITE_URL } from './site.js';
 
+const ORG_ID = `${SITE_URL}/#organization`;
+
+// Anchors the brand as an entity: the logo feeds a knowledge panel, and the
+// name reinforces what Google shows as the site name in a result.
+export function organization() {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'Organization',
+    '@id': ORG_ID,
+    name: 'unsnooze',
+    url: `${SITE_URL}/`,
+    logo: `${SITE_URL}/icon-512.png`,
+    sameAs: [
+      'https://github.com/saaranshM/unsnooze',
+      'https://www.npmjs.com/package/unsnooze',
+    ],
+  };
+}
+
 export function webSite() {
   return {
     '@context': 'https://schema.org',
     '@type': 'WebSite',
     name: 'unsnooze',
     url: `${SITE_URL}/`,
+    publisher: { '@id': ORG_ID },
   };
 }
 
@@ -48,7 +68,8 @@ export function breadcrumbs(items) {
       '@type': 'ListItem',
       position: i + 1,
       name,
-      item: `${SITE_URL}${path}`,
+      // The final crumb is the current page, which Google asks you not to link.
+      ...(i === items.length - 1 ? {} : { item: `${SITE_URL}${path}` }),
     })),
   };
 }

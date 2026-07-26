@@ -25,11 +25,12 @@ export default function Commands() {
     <section id="commands">
       <Reveal>
         <p className="eyebrow">the toolbox</p>
-        <h2>You mostly just run <span className="hl">claude</span></h2>
+        <h2>You mostly just run <span className="hl">claude</span> — unsnooze watches tmux and Zellij</h2>
         <p className="section-lede">
           Day to day nothing changes — the shell wrapper watches <code className="chip">claude</code>,
           <code className="chip">codex</code> and friends automatically. The rest of the CLI is
-          for looking around.
+          for looking around — see the{' '}
+          <a href="/docs/commands/">full command reference</a> for every flag and example.
         </p>
       </Reveal>
       <Reveal delay={0.1}>

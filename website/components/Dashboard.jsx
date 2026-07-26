@@ -84,7 +84,7 @@ export default function Dashboard() {
     <section id="dashboard">
       <Reveal>
         <p className="eyebrow">01:30 <span className="tick">·</span> if you're up anyway</p>
-        <h2>A dashboard for <span className="hl">the small hours</span></h2>
+        <h2>A usage-limit dashboard for <span className="hl">the small hours</span></h2>
         <p className="section-lede">
           <code className="chip">unsnooze dashboard</code> is a full-screen terminal UI —
           status, usage forecast, sessions, install doctor, live logs, queued prompts, and

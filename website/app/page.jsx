@@ -12,13 +12,15 @@ import Commands from '../components/Commands.jsx';
 import Faq from '../components/Faq.jsx';
 import Footer from '../components/Footer.jsx';
 import { FAQ } from '../lib/faq-data.jsx';
-import { JsonLd, webSite, softwareApplication, faqPage } from '../lib/jsonld.js';
+import { JsonLd, organization, webSite, softwareApplication, faqPage } from '../lib/jsonld.js';
 import { readChangelog } from '../lib/changelog.js';
 
 export const metadata = {
   title: 'unsnooze — auto-resume Claude Code & Codex when the usage limit resets',
+  // Front-loaded: Google shows ~155 chars, so the payoff has to land before the
+  // adapter list rather than after it.
   description:
-    'Hit the Claude Code 5-hour or weekly usage limit overnight? unsnooze tracks every limit-stopped AI coding session — Claude Code, Codex CLI, Grok, Qwen, Kimi, OpenCode, Antigravity — wakes each one in tmux or Zellij the moment the limit resets, and starts queued prompts as fresh sessions.',
+    'Hit the Claude Code 5-hour or weekly usage limit overnight? unsnooze wakes every limit-stopped session in tmux or Zellij the moment the limit resets — Claude Code, Codex CLI, Grok, Qwen, Kimi, OpenCode and Antigravity, across all your projects.',
   alternates: { canonical: '/' },
   openGraph: {
     title: 'unsnooze — while you sleep, the work continues',
@@ -33,6 +35,7 @@ export default async function Home() {
   const [latest] = await readChangelog();
   return (
     <>
+      <JsonLd data={organization()} />
       <JsonLd data={webSite()} />
       <JsonLd data={softwareApplication()} />
       <JsonLd data={faqPage(FAQ)} />

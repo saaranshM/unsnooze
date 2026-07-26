@@ -12,9 +12,14 @@ const AGENTS = [
 
 export default function Hero({ version }) {
   const reduced = useReducedMotion();
+  // Deliberately no opacity in the initial state. The h1 here is the page's LCP
+  // element, and an element at opacity:0 is not an LCP candidate — it would wait
+  // on the whole JS bundle to hydrate before it could count as painted. The
+  // slide-up alone still reads as an entrance, and it is visible in first paint.
+  // (Reveal, used below the fold, keeps its fade — it is never the LCP element.)
   const enter = (delay) => ({
-    initial: reduced ? false : { opacity: 0, y: 30 },
-    animate: { opacity: 1, y: 0 },
+    initial: reduced ? false : { y: 30 },
+    animate: { y: 0 },
     transition: { duration: 0.55, delay: delay * 0.6, ease: [0.22, 1, 0.36, 1] },
   });
   const track = [...AGENTS, ...AGENTS];
@@ -26,6 +31,9 @@ export default function Hero({ version }) {
       </motion.p>
       <motion.h1 {...enter(0.08)}>
         While you sleep,<br />the work <span className="wake">continues</span>.
+        <span className="h1-sub">
+          unsnooze auto-resumes Claude Code and Codex when the usage limit resets
+        </span>
       </motion.h1>
       <motion.p className="lede" {...enter(0.18)}>
         When Claude Code, Codex, or any of your AI coding agents hits the 5-hour or

@@ -45,7 +45,7 @@ export default function Timeline() {
     <section id="night">
       <Reveal>
         <p className="eyebrow">one night <span className="tick">·</span> how it works</p>
-        <h2>Anatomy of a <span className="hl">night shift</span></h2>
+        <h2>Anatomy of a <span className="hl">night shift</span>, from usage limit to resumed session</h2>
         <p className="section-lede">
           unsnooze is a scheduler that presses your keys — nothing more. It records the
           stop, waits out the reset, and resumes the <em>same</em> session. Here is one

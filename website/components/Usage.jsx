@@ -26,12 +26,14 @@ export default function Usage() {
     <section id="usage">
       <Reveal>
         <p className="eyebrow">20:41 <span className="tick">·</span> before the wall</p>
-        <h2>Know the wall <span className="hl">before you hit it</span></h2>
+        <h2>Know the 5-hour limit wall <span className="hl">before you hit it</span></h2>
         <p className="section-lede">
           Recovery is only half the job. <code className="chip">unsnooze usage</code> forecasts
           your burn rate and time-to-limit so you can <code className="chip">/compact</code>,
           pause, or switch models <em>before</em> a stop — see it live in the usage tab of the
           dashboard above, or <code className="chip">--json</code> it into your own tooling.
+          The <a href="/docs/commands/#usage">usage forecast documentation</a> covers how each
+          figure is derived.
         </p>
       </Reveal>
       <div className="guards">

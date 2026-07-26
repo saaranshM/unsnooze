@@ -51,7 +51,8 @@ export default function Contract() {
         <p className="section-lede">
           A tool that types into your terminal at 3am has to earn that. unsnooze is a
           scheduler, not an auto-approver — it never changes how your agent handles
-          permissions.
+          permissions. The <a href="/docs/troubleshooting/#security">security model</a> spells
+          out the boundaries.
         </p>
       </Reveal>
       {/* Reveal renders the div itself so the dl's children are single-level

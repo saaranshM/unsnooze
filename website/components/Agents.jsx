@@ -57,11 +57,12 @@ export default function Agents() {
     <section id="agents">
       <Reveal>
         <p className="eyebrow">who it watches</p>
-        <h2>Seven CLIs, <span className="hl">one ledger</span></h2>
+        <h2>Seven AI coding CLIs, <span className="hl">one ledger</span></h2>
         <p className="section-lede">
           Terminal sessions are watched through the shell wrapper and your multiplexer;
           GUI sessions through the files they already write. One shared ledger, one daemon,
-          every project at once.
+          every project at once — and across{' '}
+          <a href="/docs/fleet/">every machine in your ssh fleet</a>.
         </p>
       </Reveal>
 

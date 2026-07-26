@@ -17,7 +17,7 @@ export default function Compare() {
     <section id="why">
       <Reveal>
         <p className="eyebrow">the problem</p>
-        <h2>Every other tool solves <span className="hl">a slice</span>.</h2>
+        <h2>Every other Claude Code auto-resume tool solves <span className="hl">a slice</span>.</h2>
         <p className="section-lede">
           Overnight and long-running agent work dies at the 5-hour or weekly cap — one
           pane retried, one CLI covered, or your session abandoned for a different
