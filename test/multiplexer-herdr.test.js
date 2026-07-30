@@ -361,7 +361,7 @@ test('ensureSessionRunning raises SessionCreateError when the server never becom
   );
 });
 
-test('newWindow ensures the session, creates a workspace, then runs raw argv without --', async () => {
+test('newWindow puts whitelisted launch env on workspace and runs bare argv', async () => {
   const spawner = fakeSpawner((_file, args, options) => {
     if (args.join(' ') === 'session list --json') return runningNamedSession;
     if (args.includes('workspace') && args.includes('create')) return workspaceCreated;
@@ -372,16 +372,28 @@ test('newWindow ensures the session, creates a workspace, then runs raw argv wit
   const mux = createHerdr({ spawner, env: {} });
   const launchSpec = {
     file: '/usr/bin/node', args: ['agent.js', '--resume', 'abc'],
-    env: { LEASE: 'xyz', EMPTY: '', OMIT: undefined },
+    env: {
+      UNSNOOZE_MUX: 'herdr',
+      UNSNOOZE_PANE_OWNER: 'revival',
+      UNSNOOZE_MESSAGE: 'hello world "quoted"',
+      LEASE: 'xyz', EMPTY: '', OMIT: undefined,
+    },
   };
 
   assert.deepEqual(await mux.newWindow('revival', '/tmp/project', launchSpec), {
     pane: 'w1:p1', paneOwner: 'revival',
   });
+  const workspace = spawner.calls.find(call => call.args.includes('workspace'));
+  assert.deepEqual(workspace.args, [
+    '--session', 'revival', 'workspace', 'create', '--cwd', '/tmp/project', '--label', 'unsnooze',
+    '--env', 'UNSNOOZE_MUX=herdr',
+    '--env', 'UNSNOOZE_PANE_OWNER=revival',
+    '--env', 'UNSNOOZE_MESSAGE=hello world "quoted"',
+  ]);
   const run = spawner.calls.find(call => call.args.includes('run'));
   assert.deepEqual(run.args, [
     '--session', 'revival', 'pane', 'run', 'w1:p1',
-    '/usr/bin/env', 'LEASE=xyz', 'EMPTY=', '/usr/bin/node', 'agent.js', '--resume', 'abc',
+    '/usr/bin/node', 'agent.js', '--resume', 'abc',
   ]);
   assert.equal(run.args.includes('--'), false);
 });
@@ -437,7 +449,20 @@ test('launchWrapped sidesteps a taken session name and attaches synchronously', 
   });
   const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'unsnooze' } });
 
-  assert.equal(mux.launchWrapped({ file: 'node', args: ['agent.js'], env: { FOO: 'bar' } }), 0);
+  assert.equal(mux.launchWrapped({
+    file: 'node', args: ['agent.js'],
+    env: { UNSNOOZE_LEASE_ID: 'lease with spaces', UNSNOOZE_SESSION_NAME: 'revival', FOO: 'bar' },
+  }), 0);
+  const workspace = spawner.calls.find(call => call.args.includes('workspace'));
+  assert.deepEqual(workspace.args, [
+    '--session', 'unsnooze-2', 'workspace', 'create', '--cwd', process.cwd(), '--label', 'unsnooze',
+    '--env', 'UNSNOOZE_LEASE_ID=lease with spaces',
+    '--env', 'UNSNOOZE_SESSION_NAME=revival',
+  ]);
+  const run = spawner.calls.find(call => call.args.includes('run'));
+  assert.deepEqual(run.args, [
+    '--session', 'unsnooze-2', 'pane', 'run', 'w1:p1', 'node', 'agent.js',
+  ]);
   const attach = spawner.calls.find(call => call.args[0] === 'session' && call.args[1] === 'attach');
   assert.deepEqual(attach.args, ['session', 'attach', 'unsnooze-2']);
   assert.equal(attach.options.sync, true);
@@ -494,7 +519,7 @@ test('launchWrapped raises SessionCreateError when headless server startup times
   );
 });
 
-test('launchWrapped does not inject the wrapped session name into pane argv env', () => {
+test('launchWrapped does not encode non-UNSNOOZE env in pane argv', () => {
   let listCalls = 0;
   const spawner = syncLaunchSpawner({
     sessions: () => {
@@ -507,7 +532,12 @@ test('launchWrapped does not inject the wrapped session name into pane argv env'
     },
   });
   const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'revival' } });
-  mux.launchWrapped({ file: 'node', args: [], env: { PATH: '/bin' } });
+  mux.launchWrapped({ file: 'node', args: [], env: { PATH: '/bin', UNSNOOZE_SESSION_NAME: 'revival' } });
+  const workspace = spawner.calls.find(call => call.args.includes('workspace'));
+  assert.deepEqual(workspace.args.slice(-2), ['--env', 'UNSNOOZE_SESSION_NAME=revival']);
   const run = spawner.calls.find(call => call.args.includes('run'));
+  assert.deepEqual(run.args.slice(-1), ['node']);
+  assert.equal(run.args.includes('/usr/bin/env'), false);
+  assert.equal(run.args.includes('PATH=/bin'), false);
   assert.equal(run.args.includes('UNSNOOZE_SESSION_NAME=revival'), false);
 });

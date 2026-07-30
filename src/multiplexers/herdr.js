@@ -2,6 +2,10 @@
 // remains alive with its shell prompt. The resumer must therefore verify
 // agent ownership before injecting, and revival can reuse a surviving pane
 // only when Task 3 wires that path deliberately.
+// Launch env is delivered via workspace create --env, whitelisted to
+// UNSNOOZE_* because pane run types argv into the pane shell. Non-UNSNOOZE
+// env reaches the pane via the session server's inherited environment,
+// matching tmux server-env semantics.
 
 import { execFile as execFileCb, spawn, spawnSync } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
@@ -33,11 +37,10 @@ function scrubHerdrEnv(env) {
   return Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('HERDR')));
 }
 
-function launchArgv({ file, args = [], env = {} }) {
-  const assignments = Object.entries(env)
-    .filter(([, value]) => value !== undefined)
-    .map(([key, value]) => `${key}=${value}`);
-  return ['/usr/bin/env', ...assignments, file, ...args];
+function envFlags(env = {}) {
+  return Object.entries(env)
+    .filter(([key, value]) => /^UNSNOOZE_/.test(key) && value !== undefined)
+    .flatMap(([key, value]) => ['--env', `${key}=${value}`]);
 }
 
 function exitStatus(result) {
@@ -357,10 +360,11 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
         await ensureSessionRunning(sessionName);
         const workspace = parseResult(await inSession(
           sessionName, 'workspace', 'create', '--cwd', cwd, '--label', 'unsnooze',
+          ...envFlags(launchSpec?.env),
         ));
         const pane = workspace?.root_pane?.pane_id;
         if (!pane) throw new Error('unsnooze: unexpected herdr workspace shape: no root_pane');
-        await inSession(sessionName, 'pane', 'run', String(pane), ...launchArgv(launchSpec));
+        await inSession(sessionName, 'pane', 'run', String(pane), launchSpec.file, ...(launchSpec.args || []));
         return { pane: String(pane), paneOwner: sessionName };
       },
 
@@ -371,11 +375,12 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
           ensureSessionRunningSync(name);
           const workspace = parseResult(syncCall([
             '--session', name, 'workspace', 'create', '--cwd', process.cwd(), '--label', 'unsnooze',
+            ...envFlags(launchSpec?.env),
           ], name, 'create workspace'));
           const pane = workspace?.root_pane?.pane_id;
           if (!pane) throw new Error('unsnooze: unexpected herdr workspace shape: no root_pane');
           syncCall([
-            '--session', name, 'pane', 'run', String(pane), ...launchArgv(launchSpec),
+            '--session', name, 'pane', 'run', String(pane), launchSpec.file, ...(launchSpec.args || []),
           ], name, 'run pane');
         } catch (error) {
           if (error instanceof SessionCreateError) throw error;
