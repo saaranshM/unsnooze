@@ -14,7 +14,7 @@
 **Claude Code · Codex CLI · Grok · Qwen · Kimi · OpenCode · Antigravity** — when they hit the 5-hour or weekly usage limit
 ("You've hit your usage limit"), your session just… stops.<br/>
 unsnooze auto-resumes them: it tracks **every** limit-stopped session across all
-your projects and **wakes each one up in tmux or Zellij the moment the usage limit resets.**
+your projects and **wakes each one up in tmux, Zellij, or herdr the moment the usage limit resets.**
 
 ```sh
 npm install -g unsnooze && unsnooze setup
@@ -147,7 +147,7 @@ surfaced as a notification — there's no reset to wait for, only a top-up.
 
 ## GUI surfaces (VS Code extension, desktop apps)
 
-Terminal sessions are watched through the shell wrapper + tmux or Zellij. Sessions in
+Terminal sessions are watched through the shell wrapper + tmux, Zellij, or herdr. Sessions in
 **Claude Code's VS Code extension / desktop app** and **Codex's IDE
 extension / desktop app** have no pane to scrape — so `unsnooze daemon` tails
 the session files those surfaces already write:
@@ -400,7 +400,8 @@ pressing **`R`** (uppercase — lowercase `r` refreshes) only marks it due — t
 remote's own daemon does the actual keystrokes, under the same
 ownership/liveness/menu gates as a local session.
 Resumed and stopped sessions print an attach hint
-(`ssh -t <host> 'tmux new -A -s <session>'` / `zellij attach <session>`) so
+(`ssh -t <host> 'tmux new -A -s <session>'` / `zellij attach <session>` /
+`ssh -t <host> 'herdr session attach <session>'`) so
 you can hop over and watch. An unreachable or out-of-date host shows
 `unreachable`/`skew` rather than blocking the rest of the fleet, and falls
 back to its last-known state (marked `stale`) for up to 24h.
@@ -491,7 +492,7 @@ password hosts on Windows; a plain `ssh <host>` prompt works with native
 
 | key | default | meaning |
 |---|---|---|
-| `multiplexer` | `auto` | Backend to use: `auto`, `tmux`, or `zellij`. `auto` prefers the current multiplexer, then the only installed backend, with tmux as the tie-breaker. |
+| `multiplexer` | `auto` | Backend to use: `auto`, `tmux`, `zellij`, or `herdr`. `auto` prefers the current multiplexer, then the only installed backend, with tmux as the tie-breaker. |
 | `autoResume` | `true` | Master switch. Off = stops are still tracked, but nothing is resumed until you run `unsnooze resume-now` or turn it back on. |
 | `menuAutoAnswer` | `true` | May unsnooze answer Claude's limit menu (send keys in your pane)? Off = watch-only. |
 | `notifications` | `true` | Master switch for all notifications (limit detected / session resumed / gave up). Off = silence every channel. |
@@ -596,26 +597,28 @@ watcher stops (no pane context) always use native.
 
 ## Requirements
 
-- Node ≥ 20 and tmux ≥ 3.2 **or** Zellij
+- Node ≥ 20 and tmux ≥ 3.2, Zellij, **or** herdr ≥ 0.7.5
 - macOS, Linux, or **Windows via WSL** (see below)
 - zsh or bash (the wrappers are installed into `~/.zshrc` / `~/.bashrc`)
 
 ### Windows / WSL
 
-tmux and Zellij are Unix tools, so on Windows unsnooze runs inside
+tmux, Zellij, and herdr are Unix tools, so on Windows unsnooze runs inside
 [WSL](https://learn.microsoft.com/windows/wsl/install) — which is where the
 agent CLIs live on Windows anyway:
 
 ```sh
 # inside your WSL distro (Ubuntu etc.)
 sudo apt install tmux             # or install Zellij: https://zellij.dev/documentation/installation
+# install herdr from https://herdr.dev (requires herdr >= 0.7.5)
 npm install -g unsnooze && unsnooze setup
 ```
 
 On macOS, install either backend with `brew install tmux` or
-`brew install zellij`. In `auto` mode unsnooze uses the multiplexer you are
-currently inside; choose one explicitly with
-`unsnooze config set multiplexer tmux` or `zellij`.
+`brew install zellij`; install herdr from [herdr.dev](https://herdr.dev).
+herdr >= 0.7.5 (socket protocol 17); older 0.x releases are untested and refused by available().
+In `auto` mode unsnooze uses the multiplexer you are currently inside; choose one
+explicitly with `unsnooze config set multiplexer tmux`, `zellij`, or `herdr`.
 
 Everything works as on Linux, including desktop notifications: inside WSL,
 unsnooze raises **native Windows toasts** through `powershell.exe` (no
@@ -694,6 +697,7 @@ npm test                     # unit tests (node:test)
 ./scripts/e2e-simulate.sh    # full detect → wait → re-open cycle in a
                              # scratch tmux session (no real limits needed)
 bash -n scripts/e2e-zellij.sh # syntax-check the reserved-session Zellij smoke test
+bash scripts/e2e-herdr.sh     # headless Herdr smoke test (scratch --session)
 vhs demo/demo.tape           # regenerate assets/demo.gif (brew install vhs)
 ```
 
