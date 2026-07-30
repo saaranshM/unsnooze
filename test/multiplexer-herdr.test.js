@@ -306,3 +306,208 @@ test('herdr does not expose tmux-only tty or ownership methods', () => {
     assert.equal(typeof mux[method], 'undefined', method);
   }
 });
+
+const noNamedSession = JSON.stringify({
+  sessions: [{ default: true, name: 'default', running: true }],
+});
+
+const runningNamedSession = JSON.stringify({
+  sessions: [
+    { default: true, name: 'default', running: true },
+    { default: false, name: 'revival', running: true,
+      session_dir: '/home/ubuntu/.config/herdr/sessions/revival',
+      socket_path: '/home/ubuntu/.config/herdr/sessions/revival/herdr.sock' },
+  ],
+});
+
+test('ensureSessionRunning starts a detached server and polls until running', async () => {
+  let listCalls = 0;
+  const spawner = fakeSpawner((_file, args, options) => {
+    if (args.join(' ') === 'session list --json') {
+      listCalls += 1;
+      return listCalls === 1 ? noNamedSession : runningNamedSession;
+    }
+    if (options.detach) return { pid: 1234, unref() {} };
+    throw new Error(`unexpected call: ${args.join(' ')}`);
+  });
+  const mux = createHerdr({ spawner, env: {} });
+
+  await mux.ensureSessionRunning('revival');
+  assert.equal(listCalls, 2);
+  assert.deepEqual(spawner.calls[1].args, ['--session', 'revival', 'server']);
+  assert.equal(spawner.calls[1].options.detach, true);
+  assert.equal(spawner.calls[1].options.detached, true);
+  assert.equal(spawner.calls[1].options.stdio, 'ignore');
+});
+
+test('ensureSessionRunning does nothing when the named server is already running', async () => {
+  const spawner = fakeSpawner((_file, args) => {
+    if (args.join(' ') === 'session list --json') return runningNamedSession;
+    throw new Error(`unexpected call: ${args.join(' ')}`);
+  });
+  await createHerdr({ spawner, env: {} }).ensureSessionRunning('revival');
+  assert.equal(spawner.calls.length, 1);
+});
+
+test('ensureSessionRunning raises SessionCreateError when the server never becomes ready', async () => {
+  const spawner = fakeSpawner((_file, args, options) => {
+    if (args.join(' ') === 'session list --json') return noNamedSession;
+    if (options.detach) return { pid: 1234, unref() {} };
+    throw new Error(`unexpected call: ${args.join(' ')}`);
+  });
+  await assert.rejects(
+    () => createHerdr({ spawner, env: {} }).ensureSessionRunning('never'),
+    err => err.name === 'SessionCreateError' && /never.*server did not start/.test(err.message),
+  );
+});
+
+test('newWindow ensures the session, creates a workspace, then runs raw argv without --', async () => {
+  const spawner = fakeSpawner((_file, args, options) => {
+    if (args.join(' ') === 'session list --json') return runningNamedSession;
+    if (args.includes('workspace') && args.includes('create')) return workspaceCreated;
+    if (args.includes('pane') && args.includes('run')) return '';
+    if (options.detach) return { pid: 1234, unref() {} };
+    throw new Error(`unexpected call: ${args.join(' ')}`);
+  });
+  const mux = createHerdr({ spawner, env: {} });
+  const launchSpec = {
+    file: '/usr/bin/node', args: ['agent.js', '--resume', 'abc'],
+    env: { LEASE: 'xyz', EMPTY: '', OMIT: undefined },
+  };
+
+  assert.deepEqual(await mux.newWindow('revival', '/tmp/project', launchSpec), {
+    pane: 'w1:p1', paneOwner: 'revival',
+  });
+  const run = spawner.calls.find(call => call.args.includes('run'));
+  assert.deepEqual(run.args, [
+    '--session', 'revival', 'pane', 'run', 'w1:p1',
+    '/usr/bin/env', 'LEASE=xyz', 'EMPTY=', '/usr/bin/node', 'agent.js', '--resume', 'abc',
+  ]);
+  assert.equal(run.args.includes('--'), false);
+});
+
+test('newWindow throws when workspace create has no root pane id', async () => {
+  const spawner = fakeSpawner((_file, args) => {
+    if (args.join(' ') === 'session list --json') return runningNamedSession;
+    if (args.includes('workspace') && args.includes('create')) {
+      return JSON.stringify({ id: 'cli:workspace:create', result: { type: 'workspace_created' } });
+    }
+    throw new Error(`unexpected call: ${args.join(' ')}`);
+  });
+  await assert.rejects(
+    () => createHerdr({ spawner, env: {} }).newWindow('revival', '/tmp', {
+      file: 'node', args: [], env: {},
+    }),
+    /unexpected herdr workspace shape: no root_pane/,
+  );
+});
+
+function syncLaunchSpawner({ sessions, attachResult = { status: 0 }, onCall = () => {} }) {
+  return fakeSpawner((_file, args, options) => {
+    onCall(args, options);
+    if (args.join(' ') === 'session list --json') {
+      const stdout = typeof sessions === 'function' ? sessions() : sessions;
+      return { status: 0, stdout };
+    }
+    if (options.detach) return { pid: 1234, unref() {} };
+    if (args.includes('workspace') && args.includes('create')) {
+      return { status: 0, stdout: workspaceCreated };
+    }
+    if (args.includes('pane') && args.includes('run')) return { status: 0, stdout: '' };
+    if (args[0] === 'session' && args[1] === 'attach') return attachResult;
+    throw new Error(`unexpected call: ${args.join(' ')}`);
+  });
+}
+
+test('launchWrapped sidesteps a taken session name and attaches synchronously', () => {
+  let listCalls = 0;
+  const spawner = syncLaunchSpawner({
+    sessions: () => {
+      listCalls += 1;
+      if (listCalls <= 2) return JSON.stringify({ sessions: [
+        { default: true, name: 'default', running: true },
+        { default: false, name: 'unsnooze', running: true },
+      ] });
+      return JSON.stringify({ sessions: [
+        { default: true, name: 'default', running: true },
+        { default: false, name: 'unsnooze', running: true },
+        { default: false, name: 'unsnooze-2', running: true },
+      ] });
+    },
+  });
+  const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'unsnooze' } });
+
+  assert.equal(mux.launchWrapped({ file: 'node', args: ['agent.js'], env: { FOO: 'bar' } }), 0);
+  const attach = spawner.calls.find(call => call.args[0] === 'session' && call.args[1] === 'attach');
+  assert.deepEqual(attach.args, ['session', 'attach', 'unsnooze-2']);
+  assert.equal(attach.options.sync, true);
+  assert.equal(attach.options.stdio, 'inherit');
+  assert.equal(spawner.calls.some(call => call.options.detach), true);
+});
+
+test('launchWrapped throws SessionCreateError when attach reports a spawn error', () => {
+  let listCalls = 0;
+  const cause = new Error('herdr unavailable');
+  const spawner = syncLaunchSpawner({
+    sessions: () => {
+      listCalls += 1;
+      return listCalls === 1 ? runningNamedSession : JSON.stringify({ sessions: [
+        { default: true, name: 'default', running: true },
+        { default: false, name: 'revival', running: true },
+        { default: false, name: 'revival-2', running: true },
+      ] });
+    },
+    attachResult: { error: cause },
+  });
+  const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'revival' } });
+  assert.throws(
+    () => mux.launchWrapped({ file: 'node', args: [], env: {} }),
+    err => err.name === 'SessionCreateError' && err.cause === cause && /revival/.test(err.message),
+  );
+});
+
+test('launchWrapped maps a Ctrl-C attach signal to exit status 130', () => {
+  let listCalls = 0;
+  const spawner = syncLaunchSpawner({
+    sessions: () => {
+      listCalls += 1;
+      return listCalls === 1 ? runningNamedSession : JSON.stringify({ sessions: [
+        { default: true, name: 'default', running: true },
+        { default: false, name: 'revival', running: true },
+        { default: false, name: 'revival-2', running: true },
+      ] });
+    },
+    attachResult: { status: null, signal: 'SIGINT' },
+  });
+  const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'revival' } });
+  assert.equal(mux.launchWrapped({ file: 'node', args: [], env: {} }), 130);
+});
+
+test('launchWrapped raises SessionCreateError when headless server startup times out', () => {
+  const spawner = syncLaunchSpawner({
+    sessions: noNamedSession,
+  });
+  const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'never' } });
+  assert.throws(
+    () => mux.launchWrapped({ file: 'node', args: [], env: {} }),
+    err => err.name === 'SessionCreateError' && /never.*server did not start/.test(err.message),
+  );
+});
+
+test('launchWrapped does not inject the wrapped session name into pane argv env', () => {
+  let listCalls = 0;
+  const spawner = syncLaunchSpawner({
+    sessions: () => {
+      listCalls += 1;
+      return listCalls === 1 ? runningNamedSession : JSON.stringify({ sessions: [
+        { default: true, name: 'default', running: true },
+        { default: false, name: 'revival', running: true },
+        { default: false, name: 'revival-2', running: true },
+      ] });
+    },
+  });
+  const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'revival' } });
+  mux.launchWrapped({ file: 'node', args: [], env: { PATH: '/bin' } });
+  const run = spawner.calls.find(call => call.args.includes('run'));
+  assert.equal(run.args.includes('UNSNOOZE_SESSION_NAME=revival'), false);
+});

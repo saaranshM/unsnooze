@@ -1,19 +1,52 @@
-import { execFile as execFileCb, spawnSync } from 'node:child_process';
+// herdr panes have no close-on-exit: when an agent command exits, the pane
+// remains alive with its shell prompt. The resumer must therefore verify
+// agent ownership before injecting, and revival can reuse a surviving pane
+// only when Task 3 wires that path deliberately.
+
+import { execFile as execFileCb, spawn, spawnSync } from 'node:child_process';
+import { constants as osConstants } from 'node:os';
 import { basename } from 'node:path';
 import { promisify } from 'node:util';
 
-import { SessionCreateError } from './session-name.js';
+import { resolveSessionName, SessionCreateError } from './session-name.js';
 
 const execFileAsync = promisify(execFileCb);
 const MIN_VERSION = [0, 7, 5];
+const SERVER_POLL_MS = 50;
+const SERVER_POLL_ATTEMPTS = 80;
 
-function defaultSpawner(file, args, { sync = false, ...options } = {}) {
+function defaultSpawner(file, args, { sync = false, detach = false, ...options } = {}) {
+  if (detach) {
+    const child = spawn(file, args, {
+      ...options,
+      detached: true,
+      stdio: options.stdio ?? 'ignore',
+    });
+    child.unref();
+    return child;
+  }
   if (sync) return spawnSync(file, args, options);
   return execFileAsync(file, args, options).then(({ stdout }) => stdout);
 }
 
 function scrubHerdrEnv(env) {
   return Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('HERDR')));
+}
+
+function launchArgv({ file, args = [], env = {} }) {
+  const assignments = Object.entries(env)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${value}`);
+  return ['/usr/bin/env', ...assignments, file, ...args];
+}
+
+function exitStatus(result) {
+  if (result.status !== null && result.status !== undefined) return result.status;
+  return result.signal ? 128 + (osConstants.signals[result.signal] || 0) : 1;
+}
+
+function wrappedSessionName(env) {
+  return env.UNSNOOZE_SESSION_NAME || env.UNSNOOZE_TMUX_SESSION || 'unsnooze';
 }
 
 function parseResult(stdout) {
@@ -54,6 +87,18 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
   const childEnv = () => scrubHerdrEnv(env);
   const run = (args, options = {}) => spawner('herdr', args, { env: childEnv(), ...options });
 
+  const parseSessionList = stdout => {
+    const result = parseResult(stdout);
+    return Array.isArray(result?.sessions) ? result.sessions : [];
+  };
+
+  const syncOutput = result => typeof result === 'string' ? result : (result?.stdout ?? '');
+
+  const sleepSync = milliseconds => {
+    const buffer = new Int32Array(new SharedArrayBuffer(4));
+    Atomics.wait(buffer, 0, 0, milliseconds);
+  };
+
   const build = owner => {
     const owned = (...args) => {
       if (!owner) throw new Error('unsnooze: herdr pane operation requires a session owner');
@@ -64,10 +109,125 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
       return run(['--session', session, ...args]);
     };
 
+    const sessionRunning = async name =>
+      (await backend.listSessions()).some(row => row.name === name && !row.exited);
+
+    const ensureSessionRunning = async name => {
+      if (await sessionRunning(name)) return;
+      let child;
+      try {
+        child = spawner('herdr', ['--session', name, 'server'], {
+          detach: true,
+          detached: true,
+          stdio: 'ignore',
+          env: childEnv(),
+        });
+      } catch (error) {
+        throw new SessionCreateError(
+          `failed to start herdr session "${name}": ${error.message}`, error,
+        );
+      }
+      if (child?.error) {
+        throw new SessionCreateError(
+          `failed to start herdr session "${name}": ${child.error.message}`, child.error,
+        );
+      }
+      for (let attempt = 0; attempt < SERVER_POLL_ATTEMPTS; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, SERVER_POLL_MS));
+        if (await sessionRunning(name)) return;
+      }
+      throw new SessionCreateError(`herdr session "${name}" server did not start`);
+    };
+
+    const liveSessionNames = () => {
+      try {
+        const result = spawner('herdr', ['session', 'list', '--json'], {
+          sync: true,
+          encoding: 'utf8',
+          env: childEnv(),
+        });
+        return new Set(parseSessionList(syncOutput(result))
+          .filter(row => row?.running !== false && typeof row?.name === 'string')
+          .map(row => row.name));
+      } catch {
+        return new Set();
+      }
+    };
+
+    const sessionRunningSync = name => {
+      try {
+        const result = spawner('herdr', ['session', 'list', '--json'], {
+          sync: true,
+          encoding: 'utf8',
+          env: childEnv(),
+        });
+        return parseSessionList(syncOutput(result))
+          .some(row => row.name === name && row.running !== false);
+      } catch {
+        return false;
+      }
+    };
+
+    const ensureSessionRunningSync = name => {
+      if (sessionRunningSync(name)) return;
+      let child;
+      try {
+        child = spawner('herdr', ['--session', name, 'server'], {
+          detach: true,
+          detached: true,
+          stdio: 'ignore',
+          env: childEnv(),
+        });
+      } catch (error) {
+        throw new SessionCreateError(
+          `failed to start herdr session "${name}": ${error.message}`, error,
+        );
+      }
+      if (child?.error) {
+        throw new SessionCreateError(
+          `failed to start herdr session "${name}": ${child.error.message}`, child.error,
+        );
+      }
+      for (let attempt = 0; attempt < SERVER_POLL_ATTEMPTS; attempt += 1) {
+        sleepSync(SERVER_POLL_MS);
+        if (sessionRunningSync(name)) return;
+      }
+      throw new SessionCreateError(`herdr session "${name}" server did not start`);
+    };
+
+    const syncCall = (args, name, operation) => {
+      let result;
+      try {
+        result = spawner('herdr', args, {
+          sync: true,
+          encoding: 'utf8',
+          env: childEnv(),
+        });
+      } catch (error) {
+        throw new SessionCreateError(
+          `failed to ${operation} herdr session "${name}": ${error.message}`, error,
+        );
+      }
+      if (result?.error) {
+        throw new SessionCreateError(
+          `failed to ${operation} herdr session "${name}": ${result.error.message}`, result.error,
+        );
+      }
+      if (result?.status !== null && result?.status !== undefined && result.status !== 0) {
+        const stderr = result.stderr ? `: ${String(result.stderr).trim()}` : '';
+        throw new SessionCreateError(
+          `failed to ${operation} herdr session "${name}"${stderr}`,
+        );
+      }
+      return syncOutput(result);
+    };
+
     const backend = {
       name: 'herdr',
       owner,
       SUBMIT_DELAY_MS,
+
+      ensureSessionRunning,
 
       available() {
         try {
@@ -193,6 +353,50 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
         await run(['session', 'delete', name]);
       },
 
+      async newWindow(sessionName, cwd, launchSpec) {
+        await ensureSessionRunning(sessionName);
+        const workspace = parseResult(await inSession(
+          sessionName, 'workspace', 'create', '--cwd', cwd, '--label', 'unsnooze',
+        ));
+        const pane = workspace?.root_pane?.pane_id;
+        if (!pane) throw new Error('unsnooze: unexpected herdr workspace shape: no root_pane');
+        await inSession(sessionName, 'pane', 'run', String(pane), ...launchArgv(launchSpec));
+        return { pane: String(pane), paneOwner: sessionName };
+      },
+
+      launchWrapped(launchSpec) {
+        const live = liveSessionNames();
+        const name = resolveSessionName(wrappedSessionName(env), candidate => live.has(candidate));
+        try {
+          ensureSessionRunningSync(name);
+          const workspace = parseResult(syncCall([
+            '--session', name, 'workspace', 'create', '--cwd', process.cwd(), '--label', 'unsnooze',
+          ], name, 'create workspace'));
+          const pane = workspace?.root_pane?.pane_id;
+          if (!pane) throw new Error('unsnooze: unexpected herdr workspace shape: no root_pane');
+          syncCall([
+            '--session', name, 'pane', 'run', String(pane), ...launchArgv(launchSpec),
+          ], name, 'run pane');
+        } catch (error) {
+          if (error instanceof SessionCreateError) throw error;
+          throw new SessionCreateError(
+            `failed to start herdr session "${name}": ${error.message}`, error,
+          );
+        }
+
+        const result = spawner('herdr', ['session', 'attach', name], {
+          sync: true,
+          stdio: 'inherit',
+          env: childEnv(),
+        });
+        if (result?.error) {
+          throw new SessionCreateError(
+            `failed to attach herdr session "${name}": ${result.error.message}`, result.error,
+          );
+        }
+        return exitStatus(result);
+      },
+
       bind(nextOwner) {
         return build(nextOwner);
       },
@@ -209,5 +413,6 @@ const herdr = createHerdr();
 export const available = (...args) => herdr.available(...args);
 export const inside = (...args) => herdr.inside(...args);
 export const currentPaneId = (...args) => herdr.currentPaneId(...args);
+export const launchWrapped = (...args) => herdr.launchWrapped(...args);
 
 export default herdr;
