@@ -249,9 +249,9 @@ function selfCommand() {
 function dispatchEnv(entry, leaseId, mux, target) {
   const env = { UNSNOOZE_MUX: mux.name, UNSNOOZE_LEASE_ID: leaseId, UNSNOOZE_CWD: entry.cwd };
   // tmux pane ids are server-global — paneOwner is always null there. Only
-  // zellij needs UNSNOOZE_PANE_OWNER so bind() can address the right session
+  // zellij and herdr need UNSNOOZE_PANE_OWNER so bind() can address the right session
   // (same reasoning as resumer.js's reopenEnv).
-  if (mux.name === 'zellij') env.UNSNOOZE_PANE_OWNER = target;
+  if (mux.name === 'zellij' || mux.name === 'herdr') env.UNSNOOZE_PANE_OWNER = target;
   return env;
 }
 

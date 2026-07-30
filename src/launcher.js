@@ -19,6 +19,18 @@ function isPrintMode(args) {
   return args.includes('-p') || args.includes('--print');
 }
 
+export function resolvePaneOwner(muxName, env = process.env) {
+  if (muxName === 'herdr') {
+    return (env.UNSNOOZE_MUX === 'herdr'
+      ? env.UNSNOOZE_PANE_OWNER : env.HERDR_SESSION || 'default') || null;
+  }
+  if (muxName === 'zellij') {
+    return (env.UNSNOOZE_MUX === 'zellij'
+      ? env.UNSNOOZE_PANE_OWNER : env.ZELLIJ_SESSION_NAME) || null;
+  }
+  return null;
+}
+
 function runUnwatched(agent, args, reason) {
   if (reason) process.stderr.write(`unsnooze: ${reason}\n`);
   const r = spawnSync(agent.bin, args, { stdio: 'inherit', env: { ...process.env, UNSNOOZE_ACTIVE: '1' } });
@@ -68,10 +80,7 @@ export function runLauncher(args, agentId = 'claude') {
   }
 
   const pane = mux.currentPaneId();
-  const paneOwner = mux.name === 'zellij'
-    ? (process.env.UNSNOOZE_MUX === 'zellij'
-      ? process.env.UNSNOOZE_PANE_OWNER : process.env.ZELLIJ_SESSION_NAME) || null
-    : null;
+  const paneOwner = resolvePaneOwner(mux.name, process.env);
   const leaseId = process.env.UNSNOOZE_LEASE_ID || createLeaseId();
   if (pane) {
     // Stamp our own pane (best-effort, tmux only): the identity every later

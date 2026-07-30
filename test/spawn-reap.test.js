@@ -62,6 +62,7 @@ test('isUnsnoozeSessionName matches base, numbered, resumed, pid', () => {
 test('attachHint names the right mux attach command', () => {
   assert.equal(attachHint('tmux', 'unsnooze-resumed'), 'tmux attach -t unsnooze-resumed');
   assert.equal(attachHint('zellij', 'unsnooze-resumed'), 'zellij attach unsnooze-resumed');
+  assert.equal(attachHint('herdr', 'unsnooze-resumed'), 'herdr session attach unsnooze-resumed');
   assert.equal(attachHint('tmux', null), null);
 });
 

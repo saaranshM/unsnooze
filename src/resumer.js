@@ -142,8 +142,8 @@ function reopenEnv(rec, leaseId, target) {
   const env = { ...(rec.env || {}) };
   env.UNSNOOZE_MUX = rec.mux;
   // tmux pane ids are server-global — paneOwner is always null there. Only
-  // zellij needs UNSNOOZE_PANE_OWNER so bind() can address the right session.
-  if (rec.mux === 'zellij') {
+  // zellij and herdr need UNSNOOZE_PANE_OWNER so bind() can address the right session.
+  if (rec.mux === 'zellij' || rec.mux === 'herdr') {
     env.UNSNOOZE_PANE_OWNER = target || rec.paneOwner || rec.muxSession || '';
   }
   env.UNSNOOZE_LEASE_ID = leaseId;

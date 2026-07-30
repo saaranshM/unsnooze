@@ -26,8 +26,10 @@ export function buildIssueUrl(agentId, captureText) {
 export async function cmdReport(rest) {
   const [agentId = 'grok', paneArg] = rest;
   const selected = getMultiplexer();
-  let paneOwner = selected.name === 'zellij'
-    ? (process.env.UNSNOOZE_PANE_OWNER || process.env.ZELLIJ_SESSION_NAME || null) : null;
+  let paneOwner = selected.name === 'herdr'
+    ? (process.env.UNSNOOZE_PANE_OWNER || process.env.HERDR_SESSION || 'default')
+    : selected.name === 'zellij'
+      ? (process.env.UNSNOOZE_PANE_OWNER || process.env.ZELLIJ_SESSION_NAME || null) : null;
   let pane = paneArg || selected.currentPaneId();
   if (paneArg && selected.name === 'zellij' && paneArg.includes(':')) {
     [paneOwner, pane] = paneArg.split(/:(.*)/s, 2);

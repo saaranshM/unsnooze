@@ -77,6 +77,21 @@ test('reopen environment contains only record env and unsnooze control vars', as
   }
 });
 
+test('herdr reopen environment carries the target session as pane owner', async () => {
+  const rec = seed({ mux: 'herdr', pane: null, agent: 'codex', muxSession: 'revive-herdr', paneOwner: 'old-herdr' });
+  let launchSpec;
+  const mux = {
+    sessionExists: async name => name === 'revive-herdr',
+    newWindow: async (_session, _cwd, spec) => {
+      launchSpec = spec;
+      return { pane: 'w1:p1', paneOwner: 'revive-herdr' };
+    },
+  };
+  assert.equal(await dispatchOne(rec, { mux }), 'reopen');
+  assert.equal(launchSpec.env.UNSNOOZE_MUX, 'herdr');
+  assert.equal(launchSpec.env.UNSNOOZE_PANE_OWNER, 'revive-herdr');
+});
+
 test('record with cwd null → reopened in the home dir, not a newWindow crash', async () => {
   const rec = seed({ pane: null, agent: 'codex', cwd: null });
   const windows = [];

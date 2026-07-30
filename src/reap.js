@@ -13,6 +13,7 @@ const log = makeLogger('reap');
 // How a user reaches a revived session. Shared by status, toast, and `sessions`.
 export function attachHint(muxName, sessionName) {
   if (!sessionName) return null;
+  if (muxName === 'herdr') return `herdr session attach ${sessionName}`;
   if (muxName === 'zellij') return `zellij attach ${sessionName}`;
   return `tmux attach -t ${sessionName}`;
 }
@@ -30,7 +31,7 @@ export function isUnsnoozeSessionName(name, base = MUX_SESSION_NAME) {
 }
 
 export async function listOwnedSessions({ muxName = null } = {}) {
-  const names = muxName ? [muxName] : ['tmux', 'zellij'];
+  const names = muxName ? [muxName] : ['tmux', 'zellij', 'herdr'];
   const out = [];
   for (const name of names) {
     let mux;
@@ -150,7 +151,7 @@ export async function reap({
   }
 
   // Empty / EXITED unsnooze-owned sessions.
-  for (const name of ['tmux', 'zellij']) {
+  for (const name of ['tmux', 'zellij', 'herdr']) {
     let mux;
     try { mux = getMultiplexer(name); } catch { continue; }
     if (!mux.available?.() || typeof mux.listSessions !== 'function') continue;
@@ -167,7 +168,8 @@ export async function reap({
       } catch { panes = []; }
       const empty = panes.length === 0;
       const exited = !!row.exited;
-      // tmux auto-destroys empty sessions; only act when empty (or EXITED for zellij).
+      // tmux auto-destroys empty sessions; only act when empty (or EXITED for
+      // backends that retain an exited session, including zellij and herdr).
       if (!empty && !exited) continue;
       actions.push({
         kind: 'delete-session',
