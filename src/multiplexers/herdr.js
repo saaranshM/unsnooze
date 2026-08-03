@@ -2,10 +2,9 @@
 // remains alive with its shell prompt. The resumer must therefore verify
 // agent ownership before injecting, and revival can reuse a surviving pane
 // only when Task 3 wires that path deliberately.
-// Launch env is delivered via workspace create --env, whitelisted to
-// UNSNOOZE_* because pane run types argv into the pane shell. Non-UNSNOOZE
-// env reaches the pane via the session server's inherited environment,
-// matching tmux server-env semantics.
+// Launch env is delivered via workspace create --env. Keep this narrow because
+// pane run types argv into the pane shell, but preserve the two Claude config
+// roots: desktop/isolated Claude sessions cannot be resumed without them.
 
 import { execFile as execFileCb, spawn, spawnSync } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
@@ -39,7 +38,11 @@ function scrubHerdrEnv(env) {
 
 function envFlags(env = {}) {
   return Object.entries(env)
-    .filter(([key, value]) => /^UNSNOOZE_/.test(key) && value !== undefined)
+    .filter(([key, value]) => (
+      /^UNSNOOZE_/.test(key)
+      || key === 'CLAUDE_CONFIG_DIR'
+      || key === 'CLAUDE_SECURESTORAGE_CONFIG_DIR'
+    ) && value !== undefined)
     .flatMap(([key, value]) => ['--env', `${key}=${value}`]);
 }
 
@@ -365,6 +368,9 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
         const pane = workspace?.root_pane?.pane_id;
         if (!pane) throw new Error('unsnooze: unexpected herdr workspace shape: no root_pane');
         await inSession(sessionName, 'pane', 'run', String(pane), launchSpec.file, ...(launchSpec.args || []));
+        // `pane run` writes the argv into the pane's shell but does not submit
+        // it. Submit explicitly so revived agents actually start.
+        await inSession(sessionName, 'pane', 'send-keys', String(pane), 'enter');
         return { pane: String(pane), paneOwner: sessionName };
       },
 
@@ -382,6 +388,9 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
           syncCall([
             '--session', name, 'pane', 'run', String(pane), launchSpec.file, ...(launchSpec.args || []),
           ], name, 'run pane');
+          syncCall([
+            '--session', name, 'pane', 'send-keys', String(pane), 'enter',
+          ], name, 'submit pane command');
         } catch (error) {
           if (error instanceof SessionCreateError) throw error;
           throw new SessionCreateError(

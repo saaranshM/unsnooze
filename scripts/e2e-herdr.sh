@@ -4,10 +4,9 @@
 set -uo pipefail
 
 SESSION="unsnooze-e2e-$$"
-CONFIG_ROOT="${TMPDIR:-/tmp}/unsnooze-herdr-e2e-$$"
+CONFIG_ROOT=$(mktemp -d /tmp/unsnooze-herdr-e2e.XXXXXX)
 CREATED=0
 FAILURES=0
-mkdir -p "$CONFIG_ROOT"
 export XDG_CONFIG_HOME="$CONFIG_ROOT"
 
 # Deliberately poison inherited pane context. Every Herdr invocation below
@@ -145,16 +144,23 @@ if printf '%s' "$existing" | json_has_session "$SESSION"; then
 fi
 pass "throwaway session '$SESSION' is unused"
 
-if ! command -v setsid >/dev/null 2>&1; then
-  fail 'setsid is installed for detached headless start'
+CREATED=1
+if command -v setsid >/dev/null 2>&1; then
+  # Linux: start the temporary server in a new session.
+  setsid env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SOCKET_PATH \
+      -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID \
+      herdr --session "$SESSION" server >/dev/null 2>&1 &
+elif command -v nohup >/dev/null 2>&1; then
+  # macOS does not ship setsid. nohup is enough for this short-lived test;
+  # cleanup below explicitly stops and deletes the session.
+  nohup env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SOCKET_PATH \
+      -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID \
+      herdr --session "$SESSION" server >/dev/null 2>&1 &
+else
+  fail 'setsid or nohup is installed for detached headless start'
   exit 1
 fi
-
-CREATED=1
-if setsid env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SOCKET_PATH \
-    -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID \
-    herdr --session "$SESSION" server >/dev/null 2>&1 &
-then
+if [[ $? -eq 0 ]]; then
   server_started=1
 else
   server_started=0
@@ -190,7 +196,7 @@ fi
 
 run_rc=0
 herdr_session pane run "$root_pane" /usr/bin/printf '__UNSNOOZE_HERDR_RUN__\\n' >/dev/null 2>&1 || run_rc=$?
-if (( run_rc == 0 )); then
+if (( run_rc == 0 )) && herdr_session pane send-keys "$root_pane" enter >/dev/null 2>&1; then
   run_seen=0
   for _ in {1..20}; do
     screen=$(herdr_session pane read "$root_pane" --source recent --lines 20 --format text 2>/dev/null || true)
@@ -203,7 +209,7 @@ if (( run_rc == 0 )); then
     fail 'pane run command output was visible in pane read'
   fi
 else
-  fail 'pane run command succeeded'
+  fail 'pane run command + enter succeeded'
 fi
 
 if panes_json=$(herdr_session pane list 2>/dev/null) \

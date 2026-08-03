@@ -361,11 +361,12 @@ test('ensureSessionRunning raises SessionCreateError when the server never becom
   );
 });
 
-test('newWindow puts whitelisted launch env on workspace and runs bare argv', async () => {
+test('newWindow puts whitelisted launch env on workspace, runs bare argv, and submits it', async () => {
   const spawner = fakeSpawner((_file, args, options) => {
     if (args.join(' ') === 'session list --json') return runningNamedSession;
     if (args.includes('workspace') && args.includes('create')) return workspaceCreated;
     if (args.includes('pane') && args.includes('run')) return '';
+    if (args.includes('pane') && args.includes('send-keys')) return '';
     if (options.detach) return { pid: 1234, unref() {} };
     throw new Error(`unexpected call: ${args.join(' ')}`);
   });
@@ -376,6 +377,8 @@ test('newWindow puts whitelisted launch env on workspace and runs bare argv', as
       UNSNOOZE_MUX: 'herdr',
       UNSNOOZE_PANE_OWNER: 'revival',
       UNSNOOZE_MESSAGE: 'hello world "quoted"',
+      CLAUDE_CONFIG_DIR: '/tmp/claude-config',
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: '/tmp/claude-secure-storage',
       LEASE: 'xyz', EMPTY: '', OMIT: undefined,
     },
   };
@@ -389,6 +392,8 @@ test('newWindow puts whitelisted launch env on workspace and runs bare argv', as
     '--env', 'UNSNOOZE_MUX=herdr',
     '--env', 'UNSNOOZE_PANE_OWNER=revival',
     '--env', 'UNSNOOZE_MESSAGE=hello world "quoted"',
+    '--env', 'CLAUDE_CONFIG_DIR=/tmp/claude-config',
+    '--env', 'CLAUDE_SECURESTORAGE_CONFIG_DIR=/tmp/claude-secure-storage',
   ]);
   const run = spawner.calls.find(call => call.args.includes('run'));
   assert.deepEqual(run.args, [
@@ -396,6 +401,8 @@ test('newWindow puts whitelisted launch env on workspace and runs bare argv', as
     '/usr/bin/node', 'agent.js', '--resume', 'abc',
   ]);
   assert.equal(run.args.includes('--'), false);
+  const submit = spawner.calls.find(call => call.args.includes('send-keys'));
+  assert.deepEqual(submit.args, ['--session', 'revival', 'pane', 'send-keys', 'w1:p1', 'enter']);
 });
 
 test('newWindow throws when workspace create has no root pane id', async () => {
@@ -425,7 +432,7 @@ function syncLaunchSpawner({ sessions, attachResult = { status: 0 }, onCall = ()
     if (args.includes('workspace') && args.includes('create')) {
       return { status: 0, stdout: workspaceCreated };
     }
-    if (args.includes('pane') && args.includes('run')) return { status: 0, stdout: '' };
+    if (args.includes('pane') && (args.includes('run') || args.includes('send-keys'))) return { status: 0, stdout: '' };
     if (args[0] === 'session' && args[1] === 'attach') return attachResult;
     throw new Error(`unexpected call: ${args.join(' ')}`);
   });
@@ -463,6 +470,8 @@ test('launchWrapped sidesteps a taken session name and attaches synchronously', 
   assert.deepEqual(run.args, [
     '--session', 'unsnooze-2', 'pane', 'run', 'w1:p1', 'node', 'agent.js',
   ]);
+  const submit = spawner.calls.find(call => call.args.includes('send-keys'));
+  assert.deepEqual(submit.args, ['--session', 'unsnooze-2', 'pane', 'send-keys', 'w1:p1', 'enter']);
   const attach = spawner.calls.find(call => call.args[0] === 'session' && call.args[1] === 'attach');
   assert.deepEqual(attach.args, ['session', 'attach', 'unsnooze-2']);
   assert.equal(attach.options.sync, true);
@@ -519,7 +528,7 @@ test('launchWrapped raises SessionCreateError when headless server startup times
   );
 });
 
-test('launchWrapped does not encode non-UNSNOOZE env in pane argv', () => {
+test('launchWrapped keeps Claude recovery roots, but does not encode other env in pane argv', () => {
   let listCalls = 0;
   const spawner = syncLaunchSpawner({
     sessions: () => {
@@ -532,9 +541,16 @@ test('launchWrapped does not encode non-UNSNOOZE env in pane argv', () => {
     },
   });
   const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'revival' } });
-  mux.launchWrapped({ file: 'node', args: [], env: { PATH: '/bin', UNSNOOZE_SESSION_NAME: 'revival' } });
+  mux.launchWrapped({ file: 'node', args: [], env: {
+    PATH: '/bin', UNSNOOZE_SESSION_NAME: 'revival',
+    CLAUDE_CONFIG_DIR: '/tmp/config', CLAUDE_SECURESTORAGE_CONFIG_DIR: '/tmp/secure',
+  } });
   const workspace = spawner.calls.find(call => call.args.includes('workspace'));
-  assert.deepEqual(workspace.args.slice(-2), ['--env', 'UNSNOOZE_SESSION_NAME=revival']);
+  assert.deepEqual(workspace.args.slice(-6), [
+    '--env', 'UNSNOOZE_SESSION_NAME=revival',
+    '--env', 'CLAUDE_CONFIG_DIR=/tmp/config',
+    '--env', 'CLAUDE_SECURESTORAGE_CONFIG_DIR=/tmp/secure',
+  ]);
   const run = spawner.calls.find(call => call.args.includes('run'));
   assert.deepEqual(run.args.slice(-1), ['node']);
   assert.equal(run.args.includes('/usr/bin/env'), false);
