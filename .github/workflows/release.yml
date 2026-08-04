@@ -53,3 +53,9 @@ jobs:
       # docs claim it is implied under trusted publishing, but real-world
       # publishes still needed the flag as of 2026.
       - run: npm publish --provenance --access public
+      # The static changelog only exposes versions that npm confirms as shipped.
+      # Rebuild after publish so Vercel cannot win the race and freeze the old latest.
+      - name: Rebuild website changelog
+        env:
+          VERCEL_DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: curl --fail --silent --show-error --request POST --output /dev/null "${VERCEL_DEPLOY_HOOK}?buildCache=false"
