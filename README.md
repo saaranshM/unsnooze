@@ -9,7 +9,9 @@
 [![node](https://img.shields.io/badge/node-%E2%89%A5%2020-3fb950)](package.json)
 [![license](https://img.shields.io/badge/license-MIT-8b949e)](LICENSE)
 
-**[unsnooze.dev](https://unsnooze.dev)** — docs · changelog · feedback
+**Automatically resume every limit-stopped AI coding session when its usage limit resets.**
+
+[Website](https://unsnooze.dev) · [Documentation](https://unsnooze.dev/docs/) · [Changelog](https://unsnooze.dev/changelog/) · [Feedback](https://unsnooze.dev/feedback/)
 
 **Claude Code · Codex CLI · Grok · Qwen · Kimi · OpenCode · Antigravity** — when they hit the 5-hour or weekly usage limit
 ("You've hit your usage limit"), your session just… stops.<br/>

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.14.1 — 2026-08-04
+
+- **Package discovery**: refreshed the npm description and README links, and
+  moved the published package homepage from the legacy Combustor Tech hostname
+  to [unsnooze.dev](https://unsnooze.dev). No runtime behavior changed.
+
 ## 1.14.0 — 2026-07-19
 
 - **Queued prompts**: `unsnooze prompt add [--agent id] [--project path]
