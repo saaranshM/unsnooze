@@ -4,4 +4,4 @@
 // The fallback must be the live custom domain, not the vercel.app alias: if the
 // env var is ever dropped from an environment, a build would otherwise ship
 // canonicals pointing at a different hostname — the fastest way to deindex.
-export const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://unsnooze.combustortech.in';
+export const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://unsnooze.dev';

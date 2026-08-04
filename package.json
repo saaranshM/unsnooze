@@ -49,7 +49,7 @@
   "bugs": {
     "url": "https://github.com/saaranshM/unsnooze/issues"
   },
-  "homepage": "https://unsnooze.combustortech.in",
+  "homepage": "https://unsnooze.dev",
   "type": "module",
   "bin": {
     "unsnooze": "bin/unsnooze.js"
