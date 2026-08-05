@@ -551,6 +551,14 @@ export async function planFor(rec, {
     gates.push('no pane recorded (GUI/transcript detection)');
   }
 
+  // Same rule dispatch applies: only one anonymous record per agent+project
+  // may revive, or they all revive the same conversation.
+  const superseded = supersedingAnonymousRecord(rec);
+  if (superseded) {
+    gates.push(`another record (${superseded.key}) covers the same agent and project, and neither`
+      + ' knows its session id — reviving both would clone the conversation');
+    return { ...base, action: 'superseded', target: { key: superseded.key } };
+  }
   const target = await reviveTarget(mux, rec);
   const resume = agent.resumeArgs(rec.sessionId, message);
   return {
@@ -679,9 +687,45 @@ export async function dispatchOne(rec, {
 
 // onDelivered fires only when the resume message actually reached the agent
 // (argv or typed) — not on ready-timeouts or a still-active limit banner.
+// Which other record would revive the same conversation as this one.
+//
+// Every agent's no-session-id resume means the same thing: continue the newest
+// session in this cwd (`claude -c`, `codex resume --last`, `qwen --continue`,
+// and so on). One anonymous record revives that conversation; N of them revive
+// N copies of it into the same repo — a weekly reset turned 23 accumulated
+// records into roughly 8 parallel clones in production.
+//
+// So the rule is not "anonymous records may not reopen": Grok never has a
+// session id at all, and blocking anonymity outright would disable it. The
+// rule is that at most ONE anonymous record per agent+project may reopen. The
+// newest wins, deterministically (key breaks a tie), so preview and dispatch
+// always choose the same one.
+export function supersedingAnonymousRecord(rec, state = readState()) {
+  if (!rec || rec.sessionId) return null;
+  const stamp = r => (r.bannerAt ?? r.detectedAt ?? 0);
+  const rivals = Object.values(state.sessions || {}).filter(other =>
+    other && other.key !== rec.key && !other.sessionId
+    && other.agent === rec.agent && other.cwd === rec.cwd
+    && ['stopped', 'resuming'].includes(other.status));
+  return rivals.find(other =>
+    stamp(other) > stamp(rec)
+    || (stamp(other) === stamp(rec) && String(other.key) > String(rec.key))) || null;
+}
+
 async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onDelivered = () => {} }) {
   const key = rec.key;
   const cutoff = rec.bannerAt ?? rec.detectedAt;
+  // Anonymous records cannot be told apart, so only one of them may revive.
+  const superseded = supersedingAnonymousRecord(rec);
+  if (superseded) {
+    setStatus(key, 'failed', {
+      lastError: `superseded by ${superseded.key} — same agent and project, and neither record`
+        + ' knows its session id, so reviving both would clone the conversation',
+      verifyRetries: 0,
+    }, { expect: ['stopped', 'resuming'], expectCutoff: cutoff });
+    log(`${key}: reopen skipped — superseded by ${superseded.key} (anonymous record for the same project)`);
+    return 'skipped';
+  }
   const resume = agent.resumeArgs(rec.sessionId, resumeMessage);
   const leaseId = createLeaseId();
   const target = await reviveTarget(mux, rec);

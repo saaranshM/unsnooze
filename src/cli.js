@@ -349,6 +349,7 @@ export async function cmdPreview(rest = [], {
       'give-up': () => 'would GIVE UP (attempt cap reached)',
       verifying: () => 'verifying an in-flight resume',
       retry: () => 'would RETRY later (pane capture failed)',
+      superseded: p => `would SKIP — record ${p.target?.key} revives the same conversation`,
       none: () => 'nothing to do',
     };
     let actionable = false;
