@@ -260,8 +260,17 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
       },
 
       async capturePane(pane, lines = 200) {
-        return owned('pane', 'read', String(pane),
-          '--source', 'recent', '--lines', String(lines), '--format', 'text');
+        // Deliberately the VISIBLE screen, never `recent` with a tall --lines.
+        // For an idle alternate-screen agent (Claude Code, OpenCode) Herdr
+        // satisfies an over-tall `recent` read by driving the agent's own
+        // mouse-scroll interface to page through its transcript, then scrolls
+        // back to the bottom. Every caller here reads only the last
+        // PANE_SCAN_LINES rows — the banner, the busy footer, the prompt —
+        // which are always on screen. Paging buys nothing and yanks the user's
+        // view around on every scrape tick (once per SCRAPE_INTERVAL_MS, per
+        // pane, for as long as the agent sits idle).
+        void lines;
+        return owned('pane', 'read', String(pane), '--source', 'visible', '--format', 'text');
       },
 
       async capturePaneVisible(pane) {

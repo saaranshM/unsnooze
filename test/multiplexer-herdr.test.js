@@ -155,8 +155,10 @@ test('owner-bound calls scrub inherited HERDR variables and pass explicit sessio
   }).bind('OWNER');
 
   assert.equal(await mux.capturePane('w1:p1', 5), 'screen text');
+  // Never `recent` with a line count: an over-tall read makes Herdr mouse-scroll
+  // an idle alternate-screen agent through its transcript, moving the user's view.
   assert.deepEqual(spawner.calls[0].args,
-    ['--session', 'OWNER', 'pane', 'read', 'w1:p1', '--source', 'recent', '--lines', '5', '--format', 'text']);
+    ['--session', 'OWNER', 'pane', 'read', 'w1:p1', '--source', 'visible', '--format', 'text']);
   assert.equal(spawner.calls[0].options.env.PATH, '/bin');
   assert.equal(spawner.calls[0].options.env.KEEP, 'yes');
   assert.equal(Object.keys(spawner.calls[0].options.env).some(key => key.startsWith('HERDR')), false);
