@@ -58,6 +58,18 @@ export function detectLimit(text, tailLines = 12, sets = claudePatterns) {
       break;
     }
   }
+  // A per-model limit has no reset time to pair with, so the loop above can
+  // never see it. Detect it separately — a limit phrase backed by the banner's
+  // own remedy hint (/model, /usage-credits) — and report it with a null
+  // resetLine: there is nothing to schedule, only something to probe for.
+  if (!hit && (sets.modelLimitPatterns || []).length) {
+    for (let i = 0; i < lines.length; i++) {
+      if (sets.modelLimitPatterns.some(p => p.test(lines[i]))
+        && hasNearbyMatch(lines, i, sets.modelRemedyPatterns || [])) {
+        return { hit: true, limitType: 'model', resetLine: null };
+      }
+    }
+  }
   if (!hit) return { hit: false, limitType: null, resetLine: null };
 
   const joined = lines.join('\n');

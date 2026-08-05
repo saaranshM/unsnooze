@@ -113,3 +113,41 @@ test('overloadMatch anchored to error render, not bare digits', () => {
   assert.ok(overloadMatch('{"type":"overloaded_error"}\n> ', patterns));
   assert.equal(overloadMatch('HTTP returned 503 in my test suite\n> ', patterns), null);
 });
+
+const BANNER_MODEL = [
+  '  ⎿  Wrote 1 memory',
+  "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.",
+  '',
+  '❯ ',
+].join('\n');
+
+// Same limit wording an agent might print while *discussing* limits — no
+// remedy hint, so it must not be mistaken for a live banner.
+const PROSE_ABOUT_LIMITS = [
+  '⏺ Summarising: the account reached your weekly limit twice last month,',
+  '  which is why the fleet stalled overnight.',
+  '❯ ',
+].join('\n');
+
+test('a per-model limit banner is detected despite having no reset time', () => {
+  const r = detectLimit(BANNER_MODEL);
+  assert.equal(r.hit, true);
+  assert.equal(r.limitType, 'model');
+  assert.equal(r.resetLine, null, 'nothing to schedule — the record only probes');
+});
+
+test('limit wording without the remedy hint is not a model limit', () => {
+  assert.equal(detectLimit(PROSE_ABOUT_LIMITS).hit, false);
+});
+
+test('a timed banner is never downgraded to a model limit', () => {
+  const both = [
+    "You've hit your 5-hour limit",
+    '· resets 3pm (UTC)',
+    'Run /usage-credits to continue or switch models with /model.',
+    '> ',
+  ].join('\n');
+  const r = detectLimit(both);
+  assert.equal(r.limitType, '5h');
+  assert.match(r.resetLine, /resets 3pm/);
+});
