@@ -17,6 +17,7 @@ import {
 import { workspaceFingerprint } from './workspace.js';
 import { makeLogger } from './logger.js';
 import { addressHash } from './lease.js';
+import { sourceRank } from './time-parser.js';
 
 const log = makeLogger('state');
 
@@ -184,9 +185,22 @@ export function upsertSession(record, { after = null } = {}) {
       const existing = state.sessions[existingKey];
       const staleBanner = existing.status === 'resumed' && !existing.bannerCleared
         && record.status === 'stopped';
+      // Mirror monitor.js §7 on the merge path: a same-or-worse source may only
+      // pull the wake earlier, never push it later. Without this, a banner left
+      // on screen after its reset passed re-records "now + margin" on every
+      // scrape tick, so the resumer never sees the session become due.
+      const keepReset = existing.status === 'stopped' && record.status === 'stopped'
+        && typeof existing.resetAt === 'number' && typeof record.resetAt === 'number'
+        && sourceRank(record.resetSource) <= sourceRank(existing.resetSource)
+        && record.resetAt > existing.resetAt;
       const merged = {
         ...existing,
         ...record,
+        ...(keepReset ? {
+          resetAt: existing.resetAt,
+          resetSource: existing.resetSource,
+          bannerAt: existing.bannerAt,
+        } : {}),
         // Never downgrade a known sessionId to null.
         sessionId: record.sessionId || existing.sessionId,
         // A detection that races an in-flight resume must not flip the record

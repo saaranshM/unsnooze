@@ -242,3 +242,28 @@ test('upsert fingerprints git workspaces; dedupe merge keeps the original', asyn
   const rec3 = Object.values(s3.sessions).find(r => r.pane === '%91');
   assert.equal(rec3.workspace, null);
 });
+
+test('duplicate merge may never push resetAt later for a same-or-worse source', () => {
+  const now = Date.now();
+  // Correct absolute reset that just became due...
+  upsertSession(record({ pane: '%95', detectedAt: now - 10_000, resetAt: now - 5_000 }));
+  // ...then a stale-banner re-parse 5s later tries to push it to now+60s
+  // (same source rank). Unguarded, this repeats every scrape tick and the
+  // resumer never sees the session become due (livelock).
+  const s1 = upsertSession(record({ pane: '%95', detectedAt: now - 5_000, resetAt: now + 60_000 }));
+  const r1 = Object.values(s1.sessions).find(r => r.pane === '%95');
+  assert.ok(r1.resetAt <= now, 'same-rank duplicate must not delay the wake');
+
+  // A better source may still push later (fallback -> absolute upgrade)...
+  upsertSession(record({ pane: '%96', detectedAt: now - 10_000, resetAt: now + 10_000, resetSource: 'fallback' }));
+  const s2 = upsertSession(record({ pane: '%96', detectedAt: now - 5_000, resetAt: now + 3_600_000, resetSource: 'absolute' }));
+  const r2 = Object.values(s2.sessions).find(r => r.pane === '%96');
+  assert.equal(r2.resetAt, now + 3_600_000, 'absolute upgrade still wins');
+  assert.equal(r2.resetSource, 'absolute');
+
+  // ...and a same-rank EARLIER reset stays accepted.
+  upsertSession(record({ pane: '%97', detectedAt: now - 10_000, resetAt: now + 3_600_000 }));
+  const s3 = upsertSession(record({ pane: '%97', detectedAt: now - 5_000, resetAt: now + 60_000 }));
+  const r3 = Object.values(s3.sessions).find(r => r.pane === '%97');
+  assert.equal(r3.resetAt, now + 60_000, 'pulling the wake earlier is allowed');
+});
