@@ -23,7 +23,7 @@ import {
 } from './state.js';
 import { approxTokens, hasClaudeParentUsageAfter } from './sessions.js';
 import { latestRateLimitFromTranscript } from './watchers/claude.js';
-import { getConfig, resolveResumeMessage } from './settings.js';
+import { getConfig, resolveResumeMessage, resolveResumeExtraArgs } from './settings.js';
 import { workspaceFingerprint, workspaceChanged, describeChange } from './workspace.js';
 import { notify } from './notify.js';
 import { UNSNOOZE_BIN, spawnDetached, pidAlive } from './spawn.js';
@@ -563,7 +563,8 @@ export async function planFor(rec, {
   const resume = agent.resumeArgs(rec.sessionId, message);
   return {
     ...base, action: 'reopen', target: { session: target }, message,
-    argv: [agent.id, ...resume.args], messageViaPane: !!resume.messageViaPane,
+    argv: [agent.id, ...resume.args, ...resolveResumeExtraArgs(agent.id)],
+    messageViaPane: !!resume.messageViaPane,
   };
 }
 
@@ -730,7 +731,7 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
   const leaseId = createLeaseId();
   const target = await reviveTarget(mux, rec);
   const launchSpec = {
-    file: selfCmd[0], args: [...selfCmd.slice(1), '_run', agent.id, ...resume.args],
+    file: selfCmd[0], args: [...selfCmd.slice(1), '_run', agent.id, ...resume.args, ...resolveResumeExtraArgs(agent.id)],
     env: reopenEnv(rec, leaseId, target),
   };
   // reviveTarget can await a multiplexer query. Recheck after it and claim the
