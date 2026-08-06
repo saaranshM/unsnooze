@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.14.2 — 2026-08-06
+
 - **Resume lifecycle:** a limit banner scrolling out of the pane no longer
   marks a Claude session resumed without a wake. Unsnooze now requires a
   newer non-error parent-assistant usage record, rechecks that evidence
