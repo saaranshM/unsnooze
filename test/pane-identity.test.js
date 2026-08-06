@@ -21,7 +21,7 @@ const { paneOwnedByRecord, writeLease, removeLease } = await import('../src/leas
 const { reap, autoReapIfEnabled } = await import('../src/reap.js');
 const { dispatchOne } = await import('../src/resumer.js');
 const { createMonitor } = await import('../src/monitor.js');
-const { upsertSession, readState } = await import('../src/state.js');
+const { upsertSession, readState, setStatus } = await import('../src/state.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
@@ -130,6 +130,37 @@ test('autoReapIfEnabled also drops instead of closing a recycled pane', async ()
     assert.equal(n, 0);
     assert.equal(closed.length, 0);
     assert.equal(readState().sessions[rec.key], undefined, 'stale record removed');
+  } finally {
+    delete process.env.UNSNOOZE_REAP_RESUMED;
+    delete process.env.UNSNOOZE_REAP_IDLE_AFTER;
+  }
+});
+
+test('autoReapIfEnabled cannot delete a fresh stop found during its liveness probe', async () => {
+  process.env.UNSNOOZE_REAP_RESUMED = 'on';
+  process.env.UNSNOOZE_REAP_IDLE_AFTER = '1';
+  try {
+    const rec = seed({ status: 'resumed', leaseId: 'L-race', lastAttemptAt: Date.now() - 10_000 });
+    let releaseProbe;
+    let probeStarted;
+    const started = new Promise(resolve => { probeStarted = resolve; });
+    const blocked = new Promise(resolve => { releaseProbe = resolve; });
+    const inFlight = autoReapIfEnabled({
+      resolveMux: () => ({
+        paneAlive: async () => {
+          probeStarted();
+          await blocked;
+          return false;
+        },
+      }),
+    });
+    await started;
+    const freshAt = Date.now();
+    setStatus(rec.key, 'stopped', { detectedAt: freshAt, bannerAt: freshAt });
+    releaseProbe();
+    assert.equal(await inFlight, 0);
+    assert.equal(readState().sessions[rec.key].status, 'stopped');
+    assert.equal(readState().sessions[rec.key].bannerAt, freshAt);
   } finally {
     delete process.env.UNSNOOZE_REAP_RESUMED;
     delete process.env.UNSNOOZE_REAP_IDLE_AFTER;

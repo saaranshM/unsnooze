@@ -7,7 +7,9 @@ import { join } from 'node:path';
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-sessions-test-'));
 process.env.UNSNOOZE_CLAUDE_DIR = join(DIR, 'claude');
 
-const { transcriptPath, approxTokens, lastUsageTokens } = await import('../src/sessions.js');
+const {
+  transcriptPath, approxTokens, lastUsageTokens, claudeRecordEnv,
+} = await import('../src/sessions.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
@@ -30,6 +32,19 @@ const USAGE_SUM = 152_500;
 test('transcriptPath composes projects/<dashed-cwd>/<id>.jsonl under CLAUDE_DIR', () => {
   const p = transcriptPath('/tmp/proj.x', 'abc-123');
   assert.ok(p.endsWith(join('claude', 'projects', '-tmp-proj-x', 'abc-123.jsonl')), p);
+});
+
+test('transcriptPath and record env honor an isolated Claude config directory', () => {
+  const root = join(DIR, 'isolated-claude');
+  assert.equal(
+    transcriptPath('/tmp/proj.x', 'abc-123', { claudeDir: root }),
+    join(root, 'projects', '-tmp-proj-x', 'abc-123.jsonl'),
+  );
+  assert.deepEqual(claudeRecordEnv({
+    CLAUDE_CONFIG_DIR: root,
+    CLAUDE_SECURESTORAGE_CONFIG_DIR: '',
+  }), { CLAUDE_CONFIG_DIR: root, CLAUDE_SECURESTORAGE_CONFIG_DIR: '' });
+  assert.equal(claudeRecordEnv({}), null);
 });
 
 test('approxTokens formats thousands with a ~k suffix', () => {
@@ -61,6 +76,53 @@ test('sidechain entries are skipped even when they carry usage', () => {
     usageEntry({ input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 }, { isSidechain: true }),
   ]);
   assert.equal(lastUsageTokens(path), USAGE_SUM);
+});
+
+test('afterMs requires a newer timestamped main-context usage entry', () => {
+  const cutoff = Date.parse('2026-08-05T19:00:00.000Z');
+  const onlyBackgroundProgress = fixture([
+    usageEntry(USAGE, { timestamp: '2026-08-05T18:59:00.000Z' }),
+    usageEntry(USAGE, { timestamp: '2026-08-05T19:01:00.000Z', isSidechain: true }),
+  ]);
+  assert.equal(lastUsageTokens(onlyBackgroundProgress, { afterMs: cutoff }), null);
+
+  const parentProgress = fixture([
+    usageEntry(USAGE, { timestamp: '2026-08-05T18:59:00.000Z' }),
+    usageEntry(USAGE, { timestamp: '2026-08-05T19:01:00.000Z' }),
+  ]);
+  assert.equal(lastUsageTokens(parentProgress, { afterMs: cutoff }), USAGE_SUM);
+});
+
+test('a newer parent rate-limit error vetoes an older successful usage entry', () => {
+  const cutoff = Date.parse('2026-08-05T19:00:00.000Z');
+  const path = fixture([
+    JSON.stringify({
+      type: 'assistant', timestamp: '2026-08-05T19:01:00.000Z',
+      message: { role: 'assistant', usage: USAGE },
+    }),
+    JSON.stringify({
+      type: 'assistant', timestamp: '2026-08-05T19:02:00.000Z',
+      isApiErrorMessage: true, error: 'rate_limit',
+      message: { role: 'assistant', content: [] },
+    }),
+  ]);
+  assert.equal(lastUsageTokens(path, { afterMs: cutoff }), null);
+});
+
+test('afterMs rejects positive usage attached to an API error or non-assistant entry', () => {
+  const cutoff = Date.parse('2026-08-05T19:00:00.000Z');
+  const path = fixture([
+    JSON.stringify({
+      type: 'user', timestamp: '2026-08-05T19:01:00.000Z',
+      message: { role: 'user', usage: USAGE },
+    }),
+    JSON.stringify({
+      type: 'assistant', timestamp: '2026-08-05T19:02:00.000Z',
+      isApiErrorMessage: true, error: 'server_error',
+      message: { role: 'assistant', usage: USAGE },
+    }),
+  ]);
+  assert.equal(lastUsageTokens(path, { afterMs: cutoff }), null);
 });
 
 test('zero-sum usage blocks are skipped (synthetic entries must not defeat the guard)', () => {

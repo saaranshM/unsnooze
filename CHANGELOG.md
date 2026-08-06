@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Resume lifecycle:** a limit banner scrolling out of the pane no longer
+  marks a Claude session resumed without a wake. Unsnooze now requires a
+  newer non-error parent-assistant usage record, rechecks that evidence
+  immediately before dispatch, ignores subagent `StopFailure` records, follows
+  the canonical key retained by state dedupe, and never treats a persistently
+  busy pane as proof of completion.
+- **Usage diagnostics:** estimated usage now says that its percentage is
+  unavailable, rather than claiming no stop was observed. Proxy
+  launcher documentation explains that `headroom wrap` bypasses Unsnooze's
+  shell launcher and same-pane monitor while hook detection and enabled daemon
+  file watching remain available.
+
 ## 1.14.1 — 2026-08-04
 
 - **Package discovery**: refreshed the npm description and README links, and

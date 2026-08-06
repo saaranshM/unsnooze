@@ -143,3 +143,19 @@ test('latestRateLimitFromTranscript returns null for stale entries', () => {
   writeFileSync(join(dir, `${sessionId}.jsonl`), old + '\n');
   assert.equal(latestRateLimitFromTranscript(cwd, sessionId, { maxAgeMs: 15 * 60_000, now: Date.now() }), null);
 });
+
+test('latestRateLimitFromTranscript honors an explicit Claude config root', () => {
+  const cwd = '/tmp/tx-custom-root';
+  const sessionId = '33333333-4444-4555-8666-777777777777';
+  const claudeDir = join(TX_DIR, 'isolated-claude');
+  const dir = join(claudeDir, 'projects', dashCwd(cwd));
+  mkdirSync(dir, { recursive: true });
+  const line = transcriptLine({
+    timestamp: new Date().toISOString(), sessionId, cwd,
+  });
+  writeFileSync(join(dir, `${sessionId}.jsonl`), line + '\n');
+
+  assert.ok(latestRateLimitFromTranscript(cwd, sessionId, {
+    claudeDir, now: Date.now(),
+  }));
+});

@@ -15,7 +15,8 @@ export const RESUMER_LOCK = join(STATE_DIR, 'resumer.lock');
 // High-frequency burn accumulator + warn-dedup (daemon single-writer).
 export const USAGE_FILE = join(STATE_DIR, 'usage.json');
 
-export const CLAUDE_DIR = process.env.UNSNOOZE_CLAUDE_DIR || join(homedir(), '.claude');
+export const CLAUDE_DIR = process.env.UNSNOOZE_CLAUDE_DIR
+  || process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 export const CLAUDE_SETTINGS = join(CLAUDE_DIR, 'settings.json');
 export const CODEX_DIR = process.env.UNSNOOZE_CODEX_DIR || join(homedir(), '.codex');
 // Opt-in statusline shim drop dir for exact Claude rate_limits.

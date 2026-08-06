@@ -1,20 +1,28 @@
 // dispatchOne / verifyOne decision logic with fake tmux.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-resumer-test-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
 process.env.UNSNOOZE_NOTIFICATIONS = 'off';   // no desktop popups from tests
+process.env.UNSNOOZE_CLAUDE_DIR = join(DIR, 'claude');
 process.env.UNSNOOZE_READY_TIMEOUT_MS = '6000';   // keep the reopen poll short in tests
 process.env.UNSNOOZE_VERIFY_DELAY_MS = '0';
 
-const { dispatchOne, verifyOne, routeDispatchOutcome, runResumer, probeFallback, reviveTarget, awaitReadyAndSend } = await import('../src/resumer.js');
-const { upsertSession, readState, setStatus, updateState, sweepRecords, markStaleAbandoned } = await import('../src/state.js');
+const {
+  dispatchOne, verifyOne, routeDispatchOutcome, runResumer, probeFallback,
+  reviveTarget, awaitReadyAndSend, planFor,
+} = await import('../src/resumer.js');
+const {
+  upsertSession, readState, setStatus, updateState, activeStopped,
+  sweepRecords, markStaleAbandoned,
+} = await import('../src/state.js');
 const { RESUME_SESSION_NAME, LOG_FILE } = await import('../src/config.js');
 const { getAgent } = await import('../src/agents/index.js');
+const { transcriptPath } = await import('../src/sessions.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
@@ -28,7 +36,8 @@ function seed(overrides = {}) {
     ...overrides,
   };
   const state = upsertSession(rec);
-  return Object.values(state.sessions).find(s => s.sessionId === rec.sessionId || s.pane === rec.pane);
+  return Object.values(state.sessions).find(s => s.sessionId === rec.sessionId)
+    ?? Object.values(state.sessions).find(s => s.pane === rec.pane);
 }
 
 test('pane-less record with env → reopened with structured environment', async () => {
@@ -117,6 +126,113 @@ test('live but busy pane → deferred, nothing sent', async () => {
   };
   assert.equal(await dispatchOne(rec, { mux: tmux }), 'busy');
   assert.equal(sent.length, 0);
+});
+
+test('successful parent turn after the stop prevents a duplicate wake', async () => {
+  const detectedAt = Date.now() - 10_000;
+  const rec = seed({
+    pane: '%112', agent: 'claude', cwd: '/tmp/proj-post-limit-progress',
+    sessionId: '00000000-0000-4000-8000-000000000112',
+    detectedAt, bannerAt: detectedAt,
+  });
+  const path = transcriptPath(rec.cwd, rec.sessionId);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({
+    type: 'assistant',
+    timestamp: new Date(detectedAt + 1000).toISOString(),
+    message: { role: 'assistant', usage: { input_tokens: 2, output_tokens: 1 } },
+  }) + '\n');
+  const sent = [];
+  const mux = {
+    paneAlive: async () => true,
+    paneCurrentCommand: async () => 'claude',
+    capturePane: async () => '❯ ',
+    sendText: async (...args) => sent.push(args),
+  };
+
+  assert.equal(await dispatchOne(rec, { mux }), 'already-resumed');
+  assert.equal(sent.length, 0);
+  assert.equal(readState().sessions[rec.key].status, 'resumed');
+});
+
+test('successful parent turn in an isolated Claude config prevents a duplicate wake', async () => {
+  const detectedAt = Date.now() - 10_000;
+  const claudeDir = join(DIR, 'isolated-claude-progress');
+  const rec = seed({
+    pane: '%113', agent: 'claude', cwd: '/tmp/proj-isolated-progress',
+    sessionId: '00000000-0000-4000-8000-000000000113',
+    detectedAt, bannerAt: detectedAt, env: { CLAUDE_CONFIG_DIR: claudeDir },
+  });
+  const path = transcriptPath(rec.cwd, rec.sessionId, { claudeDir });
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({
+    type: 'assistant', timestamp: new Date(detectedAt + 1000).toISOString(),
+    message: { role: 'assistant', usage: { input_tokens: 2, output_tokens: 1 } },
+  }) + '\n');
+  let sent = 0;
+  const mux = {
+    paneAlive: async () => true,
+    paneCurrentCommand: async () => 'claude',
+    capturePane: async () => '❯ ',
+    sendText: async () => { sent += 1; },
+  };
+
+  assert.equal(await dispatchOne(rec, { mux }), 'already-resumed');
+  assert.equal(sent, 0);
+});
+
+test('progress appearing during pane assessment is rechecked before send', async () => {
+  const detectedAt = Date.now() - 10_000;
+  const rec = seed({
+    pane: '%114', agent: 'claude', cwd: '/tmp/proj-late-progress',
+    sessionId: '00000000-0000-4000-8000-000000000114',
+    detectedAt, bannerAt: detectedAt,
+  });
+  const path = transcriptPath(rec.cwd, rec.sessionId);
+  let wrote = false;
+  let sent = 0;
+  const mux = {
+    paneAlive: async () => {
+      if (!wrote) {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, JSON.stringify({
+          type: 'assistant', timestamp: new Date(detectedAt + 1000).toISOString(),
+          message: { role: 'assistant', usage: { input_tokens: 2, output_tokens: 1 } },
+        }) + '\n');
+        wrote = true;
+      }
+      return true;
+    },
+    paneCurrentCommand: async () => 'claude',
+    capturePane: async () => '❯ ',
+    sendText: async () => { sent += 1; },
+  };
+
+  assert.equal(await dispatchOne(rec, { mux }), 'already-resumed');
+  assert.equal(sent, 0);
+  assert.equal(readState().sessions[rec.key].status, 'resumed');
+});
+
+test('a refreshed stop episode makes a stale dispatch relinquish without sending', async () => {
+  const detectedAt = Date.now() - 10_000;
+  const rec = seed({ pane: '%115', agent: 'claude', detectedAt, bannerAt: detectedAt });
+  let sent = 0;
+  const mux = {
+    paneAlive: async () => {
+      updateState(state => {
+        state.sessions[rec.key].bannerAt = detectedAt + 5_000;
+        return state;
+      });
+      return true;
+    },
+    paneCurrentCommand: async () => 'claude',
+    capturePane: async () => '❯ ',
+    sendText: async () => { sent += 1; },
+  };
+
+  assert.equal(await dispatchOne(rec, { mux }), 'stale');
+  assert.equal(sent, 0);
+  assert.equal(readState().sessions[rec.key].status, 'stopped');
 });
 
 test('alive foreground agent with unrecognized content defers instead of reopening', async () => {
@@ -353,7 +469,66 @@ test('verifyOne: clean pane → resumed', async () => {
   };
   await dispatchOne(rec, { mux: tmuxSend });
   await verifyOne(rec.key, { resolveMux: () => ({ capturePane: async () => '⏺ continuing the task…\n' }) });
-  assert.equal(readState().sessions[rec.key].status, 'resumed');
+  const resumed = readState().sessions[rec.key];
+  assert.equal(resumed.status, 'resumed');
+  assert.equal(resumed.bannerCleared, true);
+
+  const freshAt = rec.detectedAt + 5_000;
+  upsertSession({
+    ...rec, status: 'stopped', detectedAt: freshAt, bannerAt: freshAt,
+    resetAt: Date.now() + 60_000, attempts: 0,
+  });
+  assert.equal(readState().sessions[rec.key].status, 'stopped',
+    'a later limit must re-arm after verified clean progress');
+});
+
+test('verifyOne: a newer stop merged before verification is not erased', async () => {
+  const rec = seed({ pane: '%215' });
+  await dispatchOne(rec, { mux: {
+    paneAlive: async () => true,
+    paneCurrentCommand: async () => 'claude',
+    capturePane: async () => '❯ ',
+    sendText: async () => {},
+  } });
+  const freshAt = rec.detectedAt + 5_000;
+  upsertSession({
+    ...rec, status: 'stopped', detectedAt: freshAt, bannerAt: freshAt,
+    resetAt: Date.now() + 60_000, attempts: 0,
+  });
+  assert.equal(readState().sessions[rec.key].status, 'resuming',
+    'ingest preserves the in-flight status until verification');
+
+  assert.equal(await verifyOne(rec.key, {
+    resolveMux: () => ({ capturePane: async () => 'working normally' }),
+  }), 'stale');
+  const saved = readState().sessions[rec.key];
+  assert.equal(saved.status, 'stopped');
+  assert.equal(saved.bannerAt, freshAt);
+});
+
+test('verifyOne: a stop arriving during capture wins over a clean snapshot', async () => {
+  const rec = seed({ pane: '%216' });
+  await dispatchOne(rec, { mux: {
+    paneAlive: async () => true,
+    paneCurrentCommand: async () => 'claude',
+    capturePane: async () => '❯ ',
+    sendText: async () => {},
+  } });
+  const freshAt = rec.detectedAt + 5_000;
+  assert.equal(await verifyOne(rec.key, {
+    resolveMux: () => ({
+      capturePane: async () => {
+        upsertSession({
+          ...rec, status: 'stopped', detectedAt: freshAt, bannerAt: freshAt,
+          resetAt: Date.now() + 60_000, attempts: 0,
+        });
+        return 'working normally';
+      },
+    }),
+  }), 'stale');
+  const saved = readState().sessions[rec.key];
+  assert.equal(saved.status, 'stopped');
+  assert.equal(saved.bannerAt, freshAt);
 });
 
 test('verifyOne: pane-less resuming record returns to stopped after three persisted retries', async () => {
@@ -676,6 +851,30 @@ test('ordered injection: successful menu drive makes progress without consuming 
   assert.equal(saved.attempts, 0);
 });
 
+test('ordered injection: refreshed stop episode blocks stale menu keystrokes', async () => {
+  const detectedAt = Date.now() - 10_000;
+  const rec = seed({ pane: '%141', agent: 'claude', detectedAt, bannerAt: detectedAt });
+  const sent = [];
+  const result = await dispatchOne(rec, {
+    mux: {
+      paneAlive: async () => {
+        updateState(state => {
+          state.sessions[rec.key].bannerAt = detectedAt + 5_000;
+          return state;
+        });
+        return true;
+      },
+      capturePane: async () => MENU,
+      paneCurrentCommand: async () => 'claude',
+      sendKey: async (_pane, key) => sent.push(key),
+    },
+    matchesLease: async () => false,
+  });
+  assert.equal(result, 'stale');
+  assert.deepEqual(sent, []);
+  assert.equal(readState().sessions[rec.key].status, 'stopped');
+});
+
 test('ordered injection: authorized menu with toggle off is held', async () => {
   process.env.UNSNOOZE_MENU_AUTO_ANSWER = 'off';
   try {
@@ -809,11 +1008,92 @@ test('runResumer resolves the record for dispatch and re-resolves it for verific
   assert.equal(readState().sessions[rec.key].status, 'resumed');
 });
 
+test('two session ids on one active pane dispatch once even outside ingest dedupe', async () => {
+  updateState(state => { state.sessions = {}; });
+  const detectedAt = Date.now() - 140_000;
+  upsertSession({
+    sessionId: '00000000-0000-4000-8000-000000000161',
+    cwd: '/tmp/proj-one-pane', pane: '%161', mux: 'tmux', paneOwner: null,
+    agent: 'claude', status: 'stopped', limitType: '5h', detectedVia: 'hook',
+    detectedAt, resetAt: Date.now() - 1000, resetSource: 'absolute', attempts: 0,
+  });
+  upsertSession({
+    sessionId: '00000000-0000-4000-8000-000000000162',
+    cwd: '/tmp/proj-one-pane', pane: '%161', mux: 'tmux', paneOwner: null,
+    agent: 'claude', status: 'stopped', limitType: '5h', detectedVia: 'scrape',
+    detectedAt: detectedAt + 130_000, resetAt: Date.now() - 1000,
+    resetSource: 'absolute', attempts: 0,
+  });
+  assert.equal(activeStopped().length, 2, 'fixture must exceed the 120-second ingest window');
+
+  let sent = 0;
+  const mux = {
+    paneAlive: async () => true,
+    paneCurrentCommand: async () => 'node',
+    capturePane: async () => (sent === 0 ? '❯ ' : 'working normally'),
+    sendText: async () => { sent += 1; },
+  };
+  const before = activeStopped().sort((a, b) => a.detectedAt - b.detectedAt);
+  const plans = await Promise.all(before.map(rec => planFor(rec, {
+    mux, matchesLease: async () => false,
+  })));
+  assert.deepEqual(plans.map(plan => plan.action), ['none', 'inject'],
+    'preview must show the same one-owner decision as dispatch');
+  assert.equal(await runResumer({ resolveMux: () => mux, pollInterval: 1 }), 0);
+  assert.equal(sent, 1);
+  const records = Object.values(readState().sessions);
+  assert.equal(records.filter(rec => rec.status === 'resumed').length, 1);
+  assert.equal(records.filter(rec => rec.status === 'cancelled').length, 1);
+  assert.match(records.find(rec => rec.status === 'cancelled').lastError, /superseded/);
+});
+
+test('active-target election never crosses pane lease generations', async () => {
+  updateState(state => { state.sessions = {}; });
+  const oldAt = Date.now() - 140_000;
+  const currentState = upsertSession({
+    sessionId: '00000000-0000-4000-8000-000000000171',
+    cwd: '/tmp/proj-lease-generation', pane: '%171', mux: 'tmux', paneOwner: null,
+    leaseId: 'current-lease', agent: 'claude', status: 'stopped', limitType: '5h',
+    detectedVia: 'hook', detectedAt: oldAt, bannerAt: oldAt,
+    resetAt: Date.now() - 1000, resetSource: 'absolute', attempts: 0,
+  });
+  const current = currentState.sessions['00000000-0000-4000-8000-000000000171'];
+  upsertSession({
+    sessionId: '00000000-0000-4000-8000-000000000172',
+    cwd: '/tmp/proj-lease-generation', pane: '%171', mux: 'tmux', paneOwner: null,
+    leaseId: 'stale-lease', agent: 'claude', status: 'stopped', limitType: '5h',
+    detectedVia: 'hook', detectedAt: oldAt + 130_000, bannerAt: oldAt + 130_000,
+    resetAt: Date.now() - 1000, resetSource: 'absolute', attempts: 0,
+  });
+  let sent = 0;
+  const mux = {
+    paneAlive: async () => true,
+    paneOwnerStamp: async () => 'current-lease',
+    paneCurrentCommand: async () => 'node',
+    capturePane: async () => '❯ ',
+    sendText: async () => { sent += 1; },
+  };
+  const result = await dispatchOne(current, {
+    mux,
+    matchesLease: async rec => rec.leaseId === 'current-lease',
+  });
+  assert.equal(result, 'injected');
+  assert.equal(sent, 1);
+  const saved = readState().sessions;
+  assert.equal(saved[current.key].status, 'resuming');
+  assert.equal(saved['00000000-0000-4000-8000-000000000172'].status, 'stopped');
+});
+
 test('defer outcome routing keeps busy, retry, and held semantically distinct', () => {
   const counts = new Map();
   const busy = seed({ pane: '%47' });
-  routeDispatchOutcome('busy', busy, counts, { maxBusyDefers: 0 });
-  assert.equal(readState().sessions[busy.key].status, 'resumed');
+  const routedBusy = routeDispatchOutcome('busy', busy, counts, { maxBusyDefers: 0 });
+  assert.equal(readState().sessions[busy.key].status, 'stopped');
+  assert.equal(readState().sessions[busy.key].attempts, 0);
+  assert.deepEqual(routedBusy, { verify: false, waitBusy: false });
+  assert.equal(counts.get(busy.key), 1, 'the saturated counter keeps later busy polls delay-free');
+  assert.deepEqual(routeDispatchOutcome('busy', busy, counts, { maxBusyDefers: 0 }),
+    { verify: false, waitBusy: false });
 
   const retry = seed({ pane: '%48' });
   routeDispatchOutcome('retry', retry, counts);
@@ -867,6 +1147,33 @@ test('probeFallback: banner gone → null (proceed to resume)', async () => {
     capturePane: async () => '❯ working normally\n',
   };
   assert.equal(await probeFallback(rec, { mux }), null);
+});
+
+test('probeFallback: custom Claude config transcript upgrades the reset', async () => {
+  const now = Date.now();
+  const claudeDir = join(DIR, 'probe-custom-claude');
+  const rec = seed({
+    sessionId: '00000000-0000-4000-8000-000000000204',
+    cwd: '/tmp/proj-custom-probe', pane: null, agent: 'claude',
+    resetSource: 'fallback', resetAt: now - 1000, detectedAt: now - 60_000,
+    probeCount: 0, env: { CLAUDE_CONFIG_DIR: claudeDir },
+  });
+  const path = transcriptPath(rec.cwd, rec.sessionId, { claudeDir });
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({
+    isSidechain: false, type: 'assistant', isApiErrorMessage: true,
+    error: 'rate_limit', timestamp: new Date(now).toISOString(),
+    sessionId: rec.sessionId, cwd: rec.cwd,
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: "You've hit your session limit · resets in 2 hours" }],
+    },
+  }) + '\n');
+
+  assert.equal(await probeFallback(rec, { mux: {}, now }), 'probe');
+  const saved = readState().sessions[rec.key];
+  assert.notEqual(saved.resetSource, 'fallback');
+  assert.equal(saved.probeCount, 0);
 });
 
 test('dispatchOne on fallback with live banner returns probe (no inject)', async () => {
@@ -968,6 +1275,31 @@ test('sweepRecords drops dead-pane terminal records but keeps live ones', async 
   assert.ok(state.sessions[live.key]);
 });
 
+test('sweepRecords cannot delete a fresh stop that arrives during liveness check', async () => {
+  updateState(state => { state.sessions = {}; });
+  const rec = seed({
+    sessionId: 'sweep-episode-race', pane: '%sweep-race', status: 'resumed',
+    bannerCleared: true, detectedAt: Date.now() - 60_000,
+  });
+  const freshAt = Date.now();
+  const removed = await sweepRecords({
+    resolveMux: () => ({
+      paneAlive: async () => {
+        upsertSession({
+          ...rec, status: 'stopped', detectedAt: freshAt, bannerAt: freshAt,
+          resetAt: freshAt + 60_000, attempts: 0,
+        });
+        return false;
+      },
+    }),
+  });
+  assert.equal(removed, 0);
+  const saved = readState().sessions[rec.key];
+  assert.ok(saved);
+  assert.equal(saved.status, 'stopped');
+  assert.equal(saved.bannerAt, freshAt);
+});
+
 test('stale stopped record with a dead pane is marked failed instead of revived', async () => {
   const rec = seed({
     sessionId: 'stale-old',
@@ -983,6 +1315,32 @@ test('stale stopped record with a dead pane is marked failed instead of revived'
   assert.equal(n, 1);
   assert.equal(readState().sessions[rec.key].status, 'failed');
   assert.match(readState().sessions[rec.key].lastError, /stale/);
+});
+
+test('markStaleAbandoned cannot fail a fresh stop that arrives during liveness check', async () => {
+  updateState(state => { state.sessions = {}; });
+  const oldAt = Date.now() - 8 * 86_400_000;
+  const rec = seed({
+    sessionId: 'stale-episode-race', pane: '%stale-race', status: 'stopped',
+    detectedAt: oldAt, bannerAt: oldAt,
+  });
+  const freshAt = Date.now();
+  const marked = await markStaleAbandoned({
+    resolveMux: () => ({
+      paneAlive: async () => {
+        upsertSession({
+          ...rec, status: 'stopped', detectedAt: freshAt, bannerAt: freshAt,
+          resetAt: freshAt + 60_000, attempts: 0,
+        });
+        return false;
+      },
+    }),
+    staleAfterMs: 7 * 86_400_000,
+  });
+  assert.equal(marked, 0);
+  const saved = readState().sessions[rec.key];
+  assert.equal(saved.status, 'stopped');
+  assert.equal(saved.bannerAt, freshAt);
 });
 
 test('sweepRecords preserves failed records (post-mortem evidence) — prune owns their expiry', async () => {

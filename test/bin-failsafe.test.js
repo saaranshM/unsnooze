@@ -16,7 +16,7 @@ const test = process.platform === 'win32'
   ? (name, fn) => baseTest(name, { skip: 'unix-only surface (sh/PATH/tmux)' }, fn)
   : baseTest;
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, copyFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, copyFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -81,6 +81,26 @@ test('_hook-stopfailure with missing src/ exits 0 silently', () => {
   const r = run(['_hook-stopfailure'], {});
   assert.equal(r.status, 0, `hook must never fail a Claude turn: ${r.stderr}`);
   assert.equal(r.stderr, '', 'hook must not spray errors into the agent turn');
+});
+
+test('healthy StopFailure hook ignores a subagent payload', () => {
+  const stateDir = join(DIR, 'subagent-hook-state');
+  const r = spawnSync(process.execPath, [REAL_BIN, '_hook-stopfailure'], {
+    encoding: 'utf-8',
+    input: JSON.stringify({
+      hook_event_name: 'StopFailure', error: 'rate_limit',
+      session_id: 'parent-session', agent_id: 'agent-child',
+      cwd: '/tmp/subagent-project',
+    }),
+    env: {
+      ...process.env,
+      UNSNOOZE_STATE_DIR: stateDir,
+      UNSNOOZE_NOTIFICATIONS: 'off',
+    },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(existsSync(join(stateDir, 'state.json')), false,
+    'a subagent cannot create an independently resumable stop');
 });
 
 test('_monitor and _resumer with missing src/ exit 0 quietly', () => {

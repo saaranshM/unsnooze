@@ -20,7 +20,9 @@ import { addressHash } from './lease.js';
 
 const log = makeLogger('state');
 
-const EMPTY = () => ({ version: 1, resumerPid: null, sessions: {}, calibration: {}, promptQueue: [] });
+const EMPTY = () => ({
+  version: 1, resumerPid: null, sessions: {}, calibration: {}, promptQueue: [], paneClosures: [],
+});
 
 function sleepSync(ms) {
   const buf = new SharedArrayBuffer(4);
@@ -98,6 +100,9 @@ function normalizeState(state) {
   }
   // One-shot prompt queue — always an array; corrupt/missing values reset empty.
   if (!Array.isArray(state.promptQueue)) state.promptQueue = [];
+  // Short-lived pane-generation tombstones prevent a detection racing a
+  // user-requested reap from publishing a just-closed pane as live.
+  if (!Array.isArray(state.paneClosures)) state.paneClosures = [];
   for (const rec of Object.values(state.sessions)) normalizeRecord(rec);
   return state;
 }
@@ -155,6 +160,24 @@ export function upsertSession(record, { after = null } = {}) {
   record = normalizeRecord({ ...record });
   return updateState(state => {
     prune(state);
+    const closing = state.paneClosures.find(c => c.pane && c.leaseId
+      && c.mux === record.mux && c.paneOwner === record.paneOwner
+      && c.pane === record.pane && c.leaseId === record.leaseId);
+    if (closing) {
+      // The close command has already been submitted. Keep the stop, but make
+      // it reopenable instead of attaching it to a pane that is going away.
+      record = {
+        ...record,
+        pane: null,
+        paneOwner: null,
+        muxSession: null,
+        leaseId: null,
+        pid: null,
+        pidBirth: null,
+        status: record.status === 'resuming' ? 'stopped' : record.status,
+        resumeEpisodeAt: null,
+      };
+    }
     let applied = null;
     const existingKey = findDuplicate(state, record);
     if (existingKey) {
@@ -175,6 +198,7 @@ export function upsertSession(record, { after = null } = {}) {
         lastAttemptAt: staleBanner ? existing.lastAttemptAt : record.lastAttemptAt,
         key: existingKey,
       };
+      if (merged.status !== 'resuming') merged.resumeEpisodeAt = null;
       state.sessions[existingKey] = merged;
       applied = merged;
       log(`merged duplicate detection for pane ${record.pane} into ${existingKey}`);
@@ -229,15 +253,19 @@ function findDuplicate(state, record) {
   return null;
 }
 
-// `expect`: compare-and-set — apply only while the record is still in one of
-// the listed statuses. Sweepers that decide from a snapshot (markStaleAbandoned)
-// must not clobber a record that moved on (e.g. to 'resumed') mid-decision.
-export function setStatus(key, status, extra = {}, { expect = null } = {}) {
+// `expect` / `expectCutoff`: compare-and-set — apply only while the record is
+// still in the expected state and stop episode. Snapshot-based decisions must
+// not clobber a record that moved on or was refreshed by a newer limit.
+export function setStatus(key, status, extra = {}, {
+  expect = null, expectCutoff = null,
+} = {}) {
   return updateState(state => {
     const s = state.sessions[key];
     if (!s) return state;
     if (expect && !expect.includes(s.status)) return state;
+    if (expectCutoff != null && (s.bannerAt ?? s.detectedAt) !== expectCutoff) return state;
     Object.assign(s, extra, { status });
+    if (status !== 'resuming') s.resumeEpisodeAt = null;
     return state;
   });
 }
@@ -258,6 +286,9 @@ export function prune(state) {
       return !(terminal && ts < cutoff);
     });
   }
+  const closureCutoff = Date.now() - DEDUPE_WINDOW_MS;
+  state.paneClosures = (Array.isArray(state.paneClosures) ? state.paneClosures : [])
+    .filter(c => Number.isFinite(c?.claimedAt) && c.claimedAt >= closureCutoff);
 }
 
 export function pruneNow() {
@@ -279,22 +310,31 @@ export async function sweepRecords({ resolveMux } = {}) {
     // 30 seconds of happening. Age-based prune() owns failed-record expiry.
     if (!['resumed', 'cancelled'].includes(rec.status)) continue;
     if (!rec.pane) {
-      drop.push(rec.key);
+      drop.push({ key: rec.key, status: rec.status, cutoff: rec.bannerAt ?? rec.detectedAt });
       continue;
     }
     try {
       const mux = resolveMux(rec);
-      if (!(await mux.paneAlive(rec.pane))) drop.push(rec.key);
+      if (!(await mux.paneAlive(rec.pane))) {
+        drop.push({ key: rec.key, status: rec.status, cutoff: rec.bannerAt ?? rec.detectedAt });
+      }
     } catch {
-      drop.push(rec.key);
+      drop.push({ key: rec.key, status: rec.status, cutoff: rec.bannerAt ?? rec.detectedAt });
     }
   }
   if (drop.length === 0) return 0;
+  let removed = 0;
   updateState(s => {
-    for (const key of drop) delete s.sessions[key];
+    for (const snapshot of drop) {
+      const current = s.sessions[snapshot.key];
+      if (current?.status !== snapshot.status
+        || (current.bannerAt ?? current.detectedAt) !== snapshot.cutoff) continue;
+      delete s.sessions[snapshot.key];
+      removed += 1;
+    }
     return s;
   });
-  return drop.length;
+  return removed;
 }
 
 // Non-terminal records with a dead/absent pane and old detectedAt are marked
@@ -320,11 +360,15 @@ export async function markStaleAbandoned({
     }
     if (!dead) continue;
     // CAS: the async liveness probe races real resumes — only mark failed if
-    // the record is still where the snapshot saw it.
-    setStatus(rec.key, 'failed', {
+    // the record is still where the snapshot saw it, including its episode.
+    const episode = rec.bannerAt ?? rec.detectedAt;
+    const next = setStatus(rec.key, 'failed', {
       lastError: rec.pane ? 'stale: pane dead' : 'stale: pane absent',
       verifyRetries: 0,
-    }, { expect: ['stopped', 'resuming'] });
+    }, { expect: ['stopped', 'resuming'], expectCutoff: episode });
+    const applied = next.sessions[rec.key];
+    if (applied?.status !== 'failed'
+      || (applied.bannerAt ?? applied.detectedAt) !== episode) continue;
     marked += 1;
     log(`${rec.key}: marked failed (stale abandoned, detectedAt ${new Date(rec.detectedAt || 0).toISOString()})`);
   }
