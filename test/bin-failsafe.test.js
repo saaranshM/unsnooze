@@ -120,7 +120,15 @@ test('daemon with missing src/ exits 0 quietly (launchd KeepAlive crash-loop gua
 test('a healthy install is unaffected: help still routes normally', () => {
   const r = spawnSync(process.execPath, [REAL_BIN, 'help'], {
     encoding: 'utf-8',
-    env: { ...process.env, UNSNOOZE_STATE_DIR: join(DIR, 'state'), UNSNOOZE_ACTIVE: '1' },
+    // This test covers routing, not the detached registry checker. Leaving the
+    // checker enabled lets it race the suite's temp-dir cleanup after `help`
+    // exits, producing a flaky ENOTEMPTY in the after hook.
+    env: {
+      ...process.env,
+      UNSNOOZE_STATE_DIR: join(DIR, 'state'),
+      UNSNOOZE_ACTIVE: '1',
+      UNSNOOZE_UPDATE_CHECK: 'off',
+    },
   });
   assert.equal(r.status, 0);
   assert.match(r.stdout, /Usage:/);
