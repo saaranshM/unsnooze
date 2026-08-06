@@ -52,9 +52,10 @@ export function latestRateLimitFromTranscript(cwd, sessionId, {
   now = Date.now(),
   window = 256 * 1024,
   maxWindow = 4 * 1024 * 1024,
+  claudeDir,
 } = {}) {
   if (!cwd || !sessionId) return null;
-  const path = transcriptPath(cwd, sessionId);
+  const path = transcriptPath(cwd, sessionId, { claudeDir });
   let fd;
   try {
     const { size } = statSync(path);

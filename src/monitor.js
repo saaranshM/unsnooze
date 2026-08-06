@@ -27,6 +27,7 @@ import { latestRateLimitFromTranscript } from './watchers/claude.js';
 import { spawnResumerIfNeeded } from './spawn.js';
 import { makeLogger } from './logger.js';
 import { addressHash, readLease } from './lease.js';
+import { claudeRecordEnv, hasClaudeParentUsageAfter } from './sessions.js';
 
 const log = makeLogger('monitor');
 
@@ -148,7 +149,9 @@ export function createMonitor({
         now: resolved.detectedAt,
       });
     } catch { /* best-effort */ }
-    const state = upsertSession({
+    const recordEnv = agent.id === 'claude' ? claudeRecordEnv() : null;
+    let appliedKey = null;
+    upsertSession({
       sessionId: resolved.sessionId, cwd, pane, mux: muxName, paneOwner, leaseId,
       agent: agent.id, muxSession,
       status: 'stopped', limitType: resolved.limitType, detectedVia,
@@ -156,15 +159,18 @@ export function createMonitor({
       bannerAt: resolved.bannerAt,
       resetAt: at, resetSource: source,
       attempts: 0, lastAttemptAt: null, lastError: null,
+      ...(recordEnv ? { env: recordEnv } : {}),
       ...(source === 'fallback' ? { probeCount: 0 } : {}),
     }, {
-      after: calSample ? (s) => applyCalibrationToState(s, calSample) : null,
+      after: (s, applied) => {
+        appliedKey = applied.key;
+        if (calSample) applyCalibrationToState(s, calSample);
+      },
     });
-    trackedKey = resolved.sessionId
-      || Object.values(state.sessions).find(s => s.mux === muxName
-        && s.paneOwner === paneOwner && s.pane === pane
-        && ['stopped', 'resuming', 'resumed'].includes(s.status))?.key
-      || null;
+    // upsertSession may retain a pane-based key while learning a sessionId.
+    // Capture the exact record applied under the state lock; a lookup by pane
+    // is ambiguous when historical records exist for the same address.
+    trackedKey = appliedKey;
     log(`pane ${pane}: limit recorded (${resolved.limitType}, via ${detectedVia}), resets ${new Date(at).toISOString()} (${source})`);
     notifier(`${agent.name} hit a usage limit`, `${cwd} — auto-resume at ${new Date(at).toLocaleTimeString()}`, { context: notifyCtx });
     spawnResumerIfNeeded();
@@ -318,18 +324,32 @@ export function createMonitor({
       terminalNotified = false;
     }
 
-    // No banner. If we were tracking a stopped record and claude is active
-    // again, someone resumed it (user or resumer) — mark it.
+    // A banner leaving the 12-line scan is not evidence of a resume: ordinary
+    // output (including background-agent notices) can scroll it away. Claude
+    // is terminal only after its parent transcript records newer non-error
+    // assistant usage. Other adapters retain their legacy behavior until they
+    // expose an equally authoritative progress signal.
     if (trackedKey) {
       const state = readState();
       const rec = state.sessions[trackedKey];
       if (rec && rec.status === 'stopped') {
-        setStatus(trackedKey, 'resumed', { lastAttemptAt: Date.now(), bannerCleared: true });
-        log(`pane ${pane}: banner cleared, ${trackedKey} marked resumed`);
-        trackedKey = null;
+        const cutoff = rec.bannerAt ?? rec.detectedAt;
+        const progressed = agent.id !== 'claude'
+          || hasClaudeParentUsageAfter(rec, cutoff);
+        if (progressed) {
+          const next = setStatus(trackedKey, 'resumed', {
+            lastAttemptAt: Date.now(), bannerCleared: true, lastError: null,
+          }, { expect: ['stopped'], expectCutoff: cutoff });
+          const applied = next.sessions[trackedKey];
+          if (applied?.status === 'resumed'
+            && (applied.bannerAt ?? applied.detectedAt) === cutoff) {
+            log(`pane ${pane}: post-limit progress observed, ${trackedKey} marked resumed`);
+            trackedKey = null;
+          }
+        }
       }
       if (rec && rec.status === 'resumed') {
-        setStatus(trackedKey, 'resumed', { bannerCleared: true });
+        setStatus(trackedKey, 'resumed', { bannerCleared: true }, { expect: ['resumed'] });
         trackedKey = null;
       } else if (rec && rec.status !== 'stopped') trackedKey = null;
     }

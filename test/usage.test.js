@@ -206,8 +206,8 @@ test('ladderUsage: exact → calibrated → estimated; never bare %', () => {
   const est = ladderUsage({ exactPct: null, used: 12_000, ceiling: null, stopCount: 0 });
   assert.equal(est.tier, 'estimated');
   assert.equal(est.pct, null);
-  assert.match(fmtUsageProvenance(est), /estimated/);
-  assert.match(fmtUsageProvenance(est), /calibrating/);
+  assert.equal(fmtUsageProvenance(est), '(estimated — percentage unavailable)');
+  assert.equal(fmtUsageProvenance(null), '(estimated — percentage unavailable)');
 });
 
 // --- warn thresholds ---

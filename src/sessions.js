@@ -40,8 +40,18 @@ export function latestSessionId(cwd, aroundTs = null) {
   return best ? best.id : null;
 }
 
-export function transcriptPath(cwd, sessionId) {
-  return join(projectDir(cwd), `${sessionId}.jsonl`);
+export function transcriptPath(cwd, sessionId, { claudeDir = CLAUDE_DIR } = {}) {
+  return join(claudeDir, 'projects', dashCwd(cwd), `${sessionId}.jsonl`);
+}
+
+export function claudeRecordEnv(env = process.env) {
+  if (!env.CLAUDE_CONFIG_DIR) return null;
+  return {
+    CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR,
+    ...(env.CLAUDE_SECURESTORAGE_CONFIG_DIR != null
+      ? { CLAUDE_SECURESTORAGE_CONFIG_DIR: env.CLAUDE_SECURESTORAGE_CONFIG_DIR }
+      : {}),
+  };
 }
 
 export function approxTokens(n) {
@@ -53,7 +63,11 @@ export function approxTokens(n) {
 // Tail-read only — transcripts reach tens of MB — doubling the window until a
 // usage entry appears or maxWindow is hit. null = unknown (missing file, no
 // usage found); callers skip the guard, like workspaceFingerprint's null.
-export function lastUsageTokens(path, { window = 256 * 1024, maxWindow = 4 * 1024 * 1024 } = {}) {
+export function lastUsageTokens(path, {
+  window = 256 * 1024,
+  maxWindow = 4 * 1024 * 1024,
+  afterMs = null,
+} = {}) {
   let fd;
   try {
     const { size } = statSync(path);
@@ -71,11 +85,24 @@ export function lastUsageTokens(path, { window = 256 * 1024, maxWindow = 4 * 102
         let entry;
         try { entry = JSON.parse(line); } catch { continue; }
         if (entry.isSidechain === true) continue;   // subagent traffic doesn't ride the main context
+        if (afterMs != null && entry.isApiErrorMessage === true && entry.error === 'rate_limit') {
+          // The newest main-context outcome is another stop, so an older
+          // successful turn cannot prove that the current episode resumed.
+          return null;
+        }
+        if (afterMs != null && (entry.isApiErrorMessage === true
+          || entry.type !== 'assistant' || entry.message?.role !== 'assistant')) continue;
         const u = entry.message?.usage;
         if (!u || typeof u !== 'object') continue;
         const sum = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0)
           + (u.cache_read_input_tokens || 0) + (u.output_tokens || 0);
-        if (sum > 0) return sum;   // zero-sum = synthetic/error entry, keep scanning
+        if (sum <= 0) continue;   // zero-sum = synthetic/error entry, keep scanning
+        if (afterMs == null) return sum;
+        const at = entry.timestamp ? Date.parse(entry.timestamp) : NaN;
+        if (Number.isFinite(at) && at > afterMs) return sum;
+        // Lines are chronological. Once the newest timestamped main-context
+        // usage is at/before the cutoff, no older entry can prove progress.
+        if (Number.isFinite(at)) return null;
       }
       if (len >= size || window >= maxWindow) return null;
       window = Math.min(window * 2, maxWindow);
@@ -85,4 +112,15 @@ export function lastUsageTokens(path, { window = 256 * 1024, maxWindow = 4 * 102
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+// Durable evidence that Claude's parent context received a non-error response
+// after a recorded stop. Desktop records may live under an isolated
+// CLAUDE_CONFIG_DIR rather than the global ~/.claude tree.
+export function hasClaudeParentUsageAfter(rec, afterMs) {
+  if (!rec?.cwd || !rec?.sessionId || !Number.isFinite(afterMs)) return false;
+  const path = transcriptPath(rec.cwd, rec.sessionId, {
+    claudeDir: rec.env?.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR || CLAUDE_DIR,
+  });
+  return lastUsageTokens(path, { afterMs }) != null;
 }

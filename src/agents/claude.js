@@ -100,7 +100,9 @@ export default {
   // method are unguarded.
   contextTokens(rec) {
     if (!rec?.cwd || !rec?.sessionId) return null;   // watcher/scrape records may lack either
-    return lastUsageTokens(transcriptPath(rec.cwd, rec.sessionId));
+    return lastUsageTokens(transcriptPath(rec.cwd, rec.sessionId, {
+      claudeDir: rec.env?.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR,
+    }));
   },
   // The foreground process for a claude session is `node` (nvm shim) or `claude`.
   isForegroundCommand(cmd) {

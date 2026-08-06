@@ -109,14 +109,18 @@ unsnooze usage — account burn & time-to-limit  (daemon: running · warnings at
           burn    idle — no active burn`}</Shell>
               <p>Every figure carries its provenance — never a bare percentage:</p>
               <ul>
-                <li><strong><C>(exact)</C></strong> — Codex always (local <C>used_percent</C> +
-                  epoch reset). Claude only with the opt-in statusline shim, which persists Claude
-                  Code's server-authoritative rate limits.</li>
-                <li><strong><C>(calibrated from N stops)</C></strong> — Claude token burn against a
-                  ceiling learned from <em>your</em> recorded limit stops. Not plan presets.</li>
-                <li><strong><C>(estimated — calibrating, needs one observed limit stop)</C></strong>{' '}
-                  — used tokens + burn shown; the ceiling stays unknown until the first
-                  observed stop.</li>
+                <li><strong><C>(exact)</C></strong> — Codex when a recent local rollout contains{' '}
+                  <C>token_count.rate_limits</C> (<C>used_percent</C> + epoch reset). Claude only
+                  with the opt-in statusline shim, which persists Claude Code's
+                  server-authoritative rate limits.</li>
+                <li><strong><C>(calibrated from N stops)</C></strong> — Claude 5-hour token burn
+                  against a ceiling learned from <em>your</em> matching usable calibration samples:
+                  stops classified as <C>5h</C>, with a nonzero local token sample from the same
+                  model pool when known, otherwise an unpooled fallback sample. A stop can still
+                  be valid for revival without calibrating the ceiling.</li>
+                <li><strong><C>(estimated — percentage unavailable)</C></strong>{' '}
+                  — used tokens + burn are shown when available, but there is no exact percentage
+                  (and a Claude 5-hour row has no matching usable calibration ceiling yet).</li>
               </ul>
               <Shell title="statusline shim (opt-in)">{`$ unsnooze usage --install-statusline    # exact Claude % (chains your statusLine)
 $ unsnooze usage --uninstall-statusline  # restore your original statusLine`}</Shell>

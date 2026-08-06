@@ -6,17 +6,19 @@
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-preview-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
 process.env.UNSNOOZE_NOTIFICATIONS = 'off';
+process.env.UNSNOOZE_CLAUDE_DIR = join(DIR, 'claude');
 
 const { planFor } = await import('../src/resumer.js');
 const { cmdPreview } = await import('../src/cli.js');
 const { upsertSession, readState } = await import('../src/state.js');
+const { transcriptPath } = await import('../src/sessions.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
@@ -94,6 +96,21 @@ test('busy pane → defer, no message shown as pending keystrokes', async () => 
   const mux = { ...liveClaudePane(), capturePane: async () => 'thinking… esc to interrupt' };
   const plan = await planFor(rec, { mux, matchesLease: async () => true });
   assert.equal(plan.action, 'busy');
+});
+
+test('successful post-limit Claude turn is shown as already resumed', async () => {
+  const detectedAt = Date.now() - 10_000;
+  const rec = seed({ cwd: '/tmp/preview-progress', detectedAt, bannerAt: detectedAt });
+  const path = transcriptPath(rec.cwd, rec.sessionId);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify({
+    type: 'assistant', timestamp: new Date(detectedAt + 1000).toISOString(),
+    message: { role: 'assistant', usage: { input_tokens: 1, output_tokens: 1 } },
+  }) + '\n');
+
+  const plan = await planFor(rec, { mux: liveClaudePane(), matchesLease: async () => true });
+  assert.equal(plan.action, 'none');
+  assert.ok(plan.gates.some(g => /already resumed/.test(g)));
 });
 
 test('fallback record → probe plan, not a resume', async () => {

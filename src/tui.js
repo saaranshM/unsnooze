@@ -256,7 +256,7 @@ export function formatUsageTui(report, {
       const n = ladder.stopCount || 0;
       return `(calibrated from ${n} stop${n === 1 ? '' : 's'})`;
     }
-    return '(estimated — calibrating, needs one observed limit stop)';
+    return '(estimated — percentage unavailable)';
   });
 
   for (const a of report.agents || []) {

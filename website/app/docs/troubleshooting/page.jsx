@@ -70,6 +70,14 @@ export default function TroubleshootingDocsPage() {
                   confirm with <C>unsnooze doctor</C>. Nothing is protected until the wrapper is
                   loaded, because the wrapper is the entry point — you never invoke unsnooze
                   directly.</li>
+                <li><strong>Using <C>headroom wrap claude</C> or <C>headroom wrap codex</C>.</strong>{' '}
+                  Headroom resolves and launches the real executable directly, bypassing shell
+                  functions, so Unsnooze cannot attach its same-pane monitor. The Claude hook can
+                  still record stops; the daemon file watcher can too while <C>guiWatch</C> and
+                  that agent are enabled. For full pane monitoring with Headroom v0.34, first run{' '}
+                  <C>headroom install apply --scope provider --providers manual --target claude --target codex</C>,
+                  then invoke normal <C>claude</C> / <C>codex</C>, leaving Unsnooze as the outer
+                  launcher.</li>
                 <li><strong>The limit hit but nothing was recorded.</strong> A detection
                   problem. Either the <C>StopFailure</C> hook is not installed (<C>doctor</C>{' '}
                   reports it) or the banner wording was not recognised. Capture it with{' '}
