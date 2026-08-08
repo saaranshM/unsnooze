@@ -6,22 +6,6 @@ on:
   pull_request:
 
 jobs:
+  # The matrix lives in test.yml so Release gates on exactly the same set.
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        node: [20, 22]
-        include:
-          # tmux-independent core (unit tests use a fake tmux) must stay
-          # portable — WSL users run the linux path, but keep win32 honest.
-          - os: windows-latest
-            node: 22
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node }}
-      - run: npm ci
-      - run: npm test
+    uses: ./.github/workflows/test.yml

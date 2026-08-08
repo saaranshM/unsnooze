@@ -22,16 +22,16 @@ permissions:
   contents: read
 
 jobs:
+  # The same matrix CI runs on every push — Ubuntu and macOS on Node 20 and 22,
+  # plus Windows on 22. This job used to be a cut-down ubuntu/Node-22 run, which
+  # is how 1.14.3 published while Windows was failing. Gate and branch checks
+  # now share one definition in test.yml.
   test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm ci
-      - run: npm test
+    uses: ./.github/workflows/test.yml
 
+  # Keep this job HERE, in release.yml. npm's trusted publisher is matched on
+  # the workflow filename, so moving publish into a reusable workflow changes
+  # the OIDC claim and the publish is rejected. Only the test gate is shared.
   publish:
     needs: test
     runs-on: ubuntu-latest   # must be GitHub-hosted for provenance
