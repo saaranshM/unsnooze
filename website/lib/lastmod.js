@@ -18,25 +18,41 @@ import path from 'node:path';
 const REPO_ROOT = path.join(process.cwd(), '..');
 const cache = new Map();
 
+function git(args) {
+  try {
+    return execFileSync('git', args, {
+      cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
+// Vercel checks out at depth 10. In a truncated history `git log -1 -- <file>`
+// cannot say "this file last changed before the clone begins" — it reports the
+// oldest commit it can see, so every untouched file collapses onto the boundary
+// commit and claims to have changed on the same day.
+//
+// This shipped once and was visibly wrong: five of eight URLs all carried the
+// boundary commit's timestamp. So when the clone is shallow, a date equal to
+// the boundary commit is treated as unknown. Pages genuinely edited inside the
+// clone window still get a real date — which is the recency that actually
+// matters for crawl scheduling — and the rest get nothing rather than a lie.
+const shallow = git(['rev-parse', '--is-shallow-repository']) === 'true';
+const boundary = shallow ? git(['rev-list', 'HEAD']).split('\n').pop().trim() : null;
+
 function gitLastModified(files) {
   const key = files.join('|');
   if (cache.has(key)) return cache.get(key);
   let result = null;
-  try {
-    const out = execFileSync('git', ['log', '-1', '--format=%cI', '--', ...files], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    // Empty output means the file is outside this clone's history (a shallow
-    // CI checkout, or a build with no .git at all) — not an error, just no
-    // answer. Falling back to "now" here is exactly the mistake described above.
-    if (out) {
-      const d = new Date(out);
-      if (!Number.isNaN(d.getTime())) result = d;
-    }
-  } catch {
-    result = null;   // git missing or repo unavailable — omit rather than guess
+  const out = git(['log', '-1', '--format=%cI%n%H', '--', ...files]);
+  // Empty means no git, no repo, or a path outside this history — not an
+  // error, just no answer. Falling back to "now" is the mistake described above.
+  if (out) {
+    const [iso, sha] = out.split('\n');
+    const d = new Date(iso);
+    const unreliable = shallow && sha && sha === boundary;
+    if (!unreliable && !Number.isNaN(d.getTime())) result = d;
   }
   cache.set(key, result);
   return result;
