@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.14.4 — 2026-08-08
+
+- **Windows: the daemon PATH check split on the wrong separator.** The check
+  added in 1.14.3 split `PATH` on `:`, which is right on macOS and Linux and
+  wrong on Windows — there the separator is `;` and every absolute path
+  contains a colon (`C:\...`), so entries were shredded into fragments. The
+  predicate now uses the host's own delimiter. No behavior changed on macOS or
+  Linux, and Windows has no autostart unit for the check to reach, so this is a
+  correctness and test-portability fix rather than a user-visible one.
+
 ## 1.14.3 — 2026-08-08
 
 - **Upgrades now reach running watchers.** A per-pane monitor lives as long as

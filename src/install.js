@@ -11,7 +11,7 @@
 import { readFileSync, writeFileSync, renameSync, existsSync, copyFileSync, rmSync, mkdirSync, unlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir, userInfo } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, delimiter } from 'node:path';
 import { CLAUDE_SETTINGS, STATE_DIR } from './config.js';
 import { getConfig, configFileExists } from './settings.js';
 import { xmlEscape } from './notify.js';
@@ -187,9 +187,13 @@ export function autostartUnitPath({ platform = process.platform, dir = null } = 
 // cannot revive anything — every call dies with ENOENT. Pure and synchronous
 // on purpose: this decides whether to rewrite-and-reload a unit, and that
 // decision must be deterministic.
-export function pathResolves(pathStr, bin) {
+// `sep` defaults to the host's PATH delimiter, not a hardcoded ':'. On Windows
+// that is ';' AND every absolute path contains a colon (C:\...), so splitting
+// on ':' shreds the entries into nonsense. The units we inspect are always
+// POSIX, but this predicate has to give an honest answer wherever it runs.
+export function pathResolves(pathStr, bin, { sep = delimiter } = {}) {
   if (typeof pathStr !== 'string' || pathStr === '') return false;
-  return pathStr.split(':').some(d => d && existsSync(join(d, bin)));
+  return pathStr.split(sep).some(d => d && existsSync(join(d, bin)));
 }
 
 function xmlUnescape(s) {

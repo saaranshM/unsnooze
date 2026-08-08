@@ -3,7 +3,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, delimiter } from 'node:path';
 import {
   launchdPlist, systemdUnit, installDaemonAutostart, uninstallDaemonAutostart, healDaemonAutostart, DAEMON_LABEL,
   isSupervised, autostartUnitPath, pathResolves, resolveLoginPath,
@@ -207,7 +207,7 @@ const NO_TMUX = (() => {
   const b = join(DIR, 'empty-bin-b');
   mkdirSync(a, { recursive: true });
   mkdirSync(b, { recursive: true });
-  return `${a}:${b}`;
+  return `${a}${delimiter}${b}`;
 })();
 
 function fakeBinDir(name, bin = 'tmux') {
@@ -225,12 +225,12 @@ test('autostartUnitPath names the unit per platform, and nothing elsewhere', () 
 
 test('pathResolves answers whether a PATH string can actually find the binary', () => {
   const good = fakeBinDir('has-tmux');
-  assert.equal(pathResolves(`${good}:/usr/bin:/bin`, 'tmux'), true);
+  assert.equal(pathResolves(`${good}${delimiter}/usr/bin`, 'tmux'), true);
   assert.equal(pathResolves(NO_TMUX, 'tmux'), false,
     "stands in for the launchd default PATH on a host where tmux lives elsewhere");
   assert.equal(pathResolves('', 'tmux'), false);
   assert.equal(pathResolves(null, 'tmux'), false);
-  assert.equal(pathResolves(`::${good}::`, 'tmux'), true, 'empty segments are skipped');
+  assert.equal(pathResolves(`${delimiter}${delimiter}${good}${delimiter}${delimiter}`, 'tmux'), true, 'empty segments are skipped');
 });
 
 test('resolveLoginPath asks the login shell and hands back its PATH', () => {
@@ -260,7 +260,7 @@ test('heal repairs a unit whose baked PATH cannot find tmux', () => {
   const calls = [];
   const healed = healDaemonAutostart({
     platform: 'darwin', dir, activate: (cmd, args) => calls.push([cmd, ...args]),
-    resolvePath: () => `${good}:/usr/bin:/bin`, muxBin: 'tmux', currentPath: NO_TMUX,
+    resolvePath: () => `${good}${delimiter}/usr/bin`, muxBin: 'tmux', currentPath: NO_TMUX,
   });
   assert.equal(healed, target, 'a present-but-useless PATH is not "already current"');
   assert.match(readFileSync(target, 'utf-8'), new RegExp(good.replace(/[/]/g, '\\/')));
@@ -277,7 +277,7 @@ test('heal does NOT rewrite when the probe offers nothing better — the crash-l
   for (const [label, resolvePath] of [
     ['probe failed', () => null],
     ['probe returned the same broken PATH', () => NO_TMUX],
-    ['probe returned a different but still tmux-less PATH', () => `${NO_TMUX}:/nonexistent-xyz`],
+    ['probe returned a different but still tmux-less PATH', () => `${NO_TMUX}${delimiter}/nonexistent-xyz`],
   ]) {
     const calls = [];
     assert.equal(
@@ -291,7 +291,7 @@ test('heal does NOT rewrite when the probe offers nothing better — the crash-l
 test('heal leaves a healthy unit alone', () => {
   const dir = join(DIR, 'heal-healthy');
   const good = fakeBinDir('healthy-bin');
-  installDaemonAutostart({ platform: 'darwin', dir, activate: () => true, path: `${good}:/usr/bin` });
+  installDaemonAutostart({ platform: 'darwin', dir, activate: () => true, path: `${good}${delimiter}/usr/bin` });
   assert.equal(
     healDaemonAutostart({ platform: 'darwin', dir, activate: () => true, resolvePath: () => '/other', muxBin: 'tmux', currentPath: NO_TMUX }),
     null, 'a PATH that already finds tmux is current — never touched');
@@ -307,7 +307,7 @@ test('a PATH-less unit still heals, and prefers a working PATH over the caller\'
 
   const healed = healDaemonAutostart({
     platform: 'darwin', dir, activate: () => true,
-    resolvePath: () => `${good}:/usr/bin`, muxBin: 'tmux', currentPath: NO_TMUX,
+    resolvePath: () => `${good}${delimiter}/usr/bin`, muxBin: 'tmux', currentPath: NO_TMUX,
   });
   assert.equal(healed, target);
   assert.match(readFileSync(target, 'utf-8'), new RegExp(good.replace(/[/]/g, '\\/')),
@@ -321,7 +321,7 @@ test('linux heal reads and repairs the systemd Environment PATH', () => {
   const target = join(dir, 'unsnooze.service');
   const healed = healDaemonAutostart({
     platform: 'linux', dir, activate: () => true,
-    resolvePath: () => `${good}:/usr/bin`, muxBin: 'tmux', currentPath: NO_TMUX,
+    resolvePath: () => `${good}${delimiter}/usr/bin`, muxBin: 'tmux', currentPath: NO_TMUX,
   });
   assert.equal(healed, target);
   assert.match(readFileSync(target, 'utf-8'), new RegExp(`Environment="PATH=${good.replace(/[/]/g, '\\/')}`));
