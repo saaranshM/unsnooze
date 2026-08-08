@@ -246,6 +246,14 @@ function healthyDeps(over = {}) {
   };
 }
 
+// See autostart.test.js: real system dirs cannot serve as a "cannot find tmux"
+// fixture, because tmux is in /usr/bin on the Ubuntu CI image.
+const NO_TMUX = (() => {
+  const a = join(DIR, 'empty-bin-doc');
+  mkdirSync(a, { recursive: true });
+  return a;
+})();
+
 function unitWithPath(name, path) {
   const dir = join(DIR, name);
   installDaemonAutostart({ platform: 'darwin', dir, activate: () => true, path });
@@ -253,7 +261,7 @@ function unitWithPath(name, path) {
 }
 
 test('doctor flags a daemon unit whose baked PATH cannot find the multiplexer', async () => {
-  const dir = unitWithPath('dp-bad', '/usr/bin:/bin:/usr/sbin:/sbin');
+  const dir = unitWithPath('dp-bad', NO_TMUX);
   const report = await runDoctor(healthyDeps({ autostartDir: dir }));
   const f = report.findings.find(x => x.id === 'daemon-path');
 
@@ -286,13 +294,13 @@ test('doctor --fix repairs the daemon PATH when a working one can be found', asy
   const binDir = join(DIR, 'dp-fixbin');
   mkdirSync(binDir, { recursive: true });
   writeFileSync(join(binDir, 'tmux'), '#!/bin/sh\n');
-  const dir = unitWithPath('dp-fix', '/usr/bin:/bin');
+  const dir = unitWithPath('dp-fix', NO_TMUX);
   const report = await runDoctor(healthyDeps({ autostartDir: dir }));
 
   const actions = await applyFixes(report, {
     runner: () => ({ status: 0, stdout: '' }),
     resolvePath: () => `${binDir}:/usr/bin`,
-    currentPath: '/usr/bin:/bin',
+    currentPath: NO_TMUX,
     // NEVER let a test reach the real launchctl: every unit shares one label,
     // so loading a fixture would hijack the machine's actual daemon.
     activate: () => true,
