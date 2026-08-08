@@ -210,6 +210,15 @@ const NO_TMUX = (() => {
   return `${a}${delimiter}${b}`;
 })();
 
+
+// The daemon-autostart PATH feature is darwin/linux only — autostartUnitPath
+// returns null on win32, so there is no unit for any of this to act on.
+// Exercising it with Windows temp paths embedded in a launchd plist tests
+// nothing real, so these are skipped there rather than contorted.
+const UNIX_ONLY = process.platform === 'win32'
+  ? 'daemon autostart units exist only on darwin/linux'
+  : false;
+
 function fakeBinDir(name, bin = 'tmux') {
   const d = join(DIR, name);
   mkdirSync(d, { recursive: true });
@@ -250,7 +259,7 @@ test('resolveLoginPath returns null rather than a bad guess when the probe fails
   assert.equal(resolveLoginPath({ shell: null, runner: () => '/usr/bin' }), null, 'no shell to ask');
 });
 
-test('heal repairs a unit whose baked PATH cannot find tmux', () => {
+test('heal repairs a unit whose baked PATH cannot find tmux', { skip: UNIX_ONLY }, () => {
   const dir = join(DIR, 'heal-badpath');
   const good = fakeBinDir('good-bin');
   installDaemonAutostart({ platform: 'darwin', dir, activate: () => true, path: NO_TMUX });
@@ -267,7 +276,7 @@ test('heal repairs a unit whose baked PATH cannot find tmux', () => {
   assert.ok(calls.some(c => c[0] === 'launchctl'), 'reloaded so the fix takes effect');
 });
 
-test('heal does NOT rewrite when the probe offers nothing better — the crash-loop guard', () => {
+test('heal does NOT rewrite when the probe offers nothing better — the crash-loop guard', { skip: UNIX_ONLY }, () => {
   // Healing reloads the unit, which kills the calling daemon. A heal that
   // fires every start is a 30s restart loop, which is worse than the bug.
   const dir = join(DIR, 'heal-noloop');
@@ -288,7 +297,7 @@ test('heal does NOT rewrite when the probe offers nothing better — the crash-l
   }
 });
 
-test('heal leaves a healthy unit alone', () => {
+test('heal leaves a healthy unit alone', { skip: UNIX_ONLY }, () => {
   const dir = join(DIR, 'heal-healthy');
   const good = fakeBinDir('healthy-bin');
   installDaemonAutostart({ platform: 'darwin', dir, activate: () => true, path: `${good}${delimiter}/usr/bin` });
@@ -297,7 +306,7 @@ test('heal leaves a healthy unit alone', () => {
     null, 'a PATH that already finds tmux is current — never touched');
 });
 
-test('a PATH-less unit still heals, and prefers a working PATH over the caller\'s broken one', () => {
+test('a PATH-less unit still heals, and prefers a working PATH over the caller\'s broken one', { skip: UNIX_ONLY }, () => {
   const dir = join(DIR, 'heal-legacy-badcaller');
   const good = fakeBinDir('legacy-bin');
   installDaemonAutostart({ platform: 'darwin', dir, activate: () => true });
@@ -314,7 +323,7 @@ test('a PATH-less unit still heals, and prefers a working PATH over the caller\'
     'the daemon must not bake its own tmux-less PATH back in');
 });
 
-test('linux heal reads and repairs the systemd Environment PATH', () => {
+test('linux heal reads and repairs the systemd Environment PATH', { skip: UNIX_ONLY }, () => {
   const dir = join(DIR, 'heal-sys-badpath');
   const good = fakeBinDir('sys-bin');
   installDaemonAutostart({ platform: 'linux', dir, activate: () => true, path: NO_TMUX });

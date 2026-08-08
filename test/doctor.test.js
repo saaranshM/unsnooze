@@ -254,13 +254,22 @@ const NO_TMUX = (() => {
   return a;
 })();
 
+
+// The daemon-autostart PATH feature is darwin/linux only — autostartUnitPath
+// returns null on win32, so there is no unit for any of this to act on.
+// Exercising it with Windows temp paths embedded in a launchd plist tests
+// nothing real, so these are skipped there rather than contorted.
+const UNIX_ONLY = process.platform === 'win32'
+  ? 'daemon autostart units exist only on darwin/linux'
+  : false;
+
 function unitWithPath(name, path) {
   const dir = join(DIR, name);
   installDaemonAutostart({ platform: 'darwin', dir, activate: () => true, path });
   return dir;
 }
 
-test('doctor flags a daemon unit whose baked PATH cannot find the multiplexer', async () => {
+test('doctor flags a daemon unit whose baked PATH cannot find the multiplexer', { skip: UNIX_ONLY }, async () => {
   const dir = unitWithPath('dp-bad', NO_TMUX);
   const report = await runDoctor(healthyDeps({ autostartDir: dir }));
   const f = report.findings.find(x => x.id === 'daemon-path');
@@ -272,7 +281,7 @@ test('doctor flags a daemon unit whose baked PATH cannot find the multiplexer', 
   assert.match(f.detail + f.title, /tmux/);
 });
 
-test('doctor stays quiet when the daemon PATH can find the multiplexer', async () => {
+test('doctor stays quiet when the daemon PATH can find the multiplexer', { skip: UNIX_ONLY }, async () => {
   const binDir = join(DIR, 'dp-goodbin');
   mkdirSync(binDir, { recursive: true });
   writeFileSync(join(binDir, 'tmux'), '#!/bin/sh\n');
@@ -290,7 +299,7 @@ test('doctor says nothing about daemon PATH when no autostart unit is installed'
   assert.equal(report.healthy, true);
 });
 
-test('doctor --fix repairs the daemon PATH when a working one can be found', async () => {
+test('doctor --fix repairs the daemon PATH when a working one can be found', { skip: UNIX_ONLY }, async () => {
   const binDir = join(DIR, 'dp-fixbin');
   mkdirSync(binDir, { recursive: true });
   writeFileSync(join(binDir, 'tmux'), '#!/bin/sh\n');
