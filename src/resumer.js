@@ -26,7 +26,8 @@ import { latestRateLimitFromTranscript } from './watchers/claude.js';
 import { getConfig, resolveResumeMessage } from './settings.js';
 import { workspaceFingerprint, workspaceChanged, describeChange } from './workspace.js';
 import { notify } from './notify.js';
-import { UNSNOOZE_BIN } from './spawn.js';
+import { UNSNOOZE_BIN, spawnDetached, pidAlive } from './spawn.js';
+import { restartOnVersionSkew, hasVersionSkew, PKG_VERSION } from './update-check.js';
 import { makeLogger } from './logger.js';
 import { createLeaseId, leaseMatches, paneOwnedByRecord } from './lease.js';
 import { autoReapIfEnabled, attachHint } from './reap.js';
@@ -36,10 +37,6 @@ const log = makeLogger('resumer');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const MAX_VERIFY_RETRIES = 3;
 const ctxOf = rec => ({ mux: rec.mux, pane: rec.pane, paneOwner: rec.paneOwner });
-
-function pidAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
 
 // Is the lock-holder pid actually an unsnooze resumer? Pids get recycled: a
 // lock naming a live-but-unrelated program would otherwise be honored forever
@@ -932,6 +929,7 @@ export function routeDispatchOutcome(result, rec, deferCounts, { maxBusyDefers =
 export async function runResumer({
   resolveMux = resolveRecordMux, pollInterval = POLL_INTERVAL_MS,
   persistent = false, watcher = null, signal = null, queueMux = null,
+  spawner = spawnDetached, versionSkewed = hasVersionSkew, handoffBin = UNSNOOZE_BIN,
 } = {}) {
   // A transient hook-spawned resumer may hold the lock right now; a daemon
   // outlives it, so wait for the lock instead of dying. The watcher MUST keep
@@ -951,12 +949,43 @@ export async function runResumer({
     await sleep(pollInterval);
   }
   updateState(state => { state.resumerPid = process.pid; });
-  log(`resumer started (pid ${process.pid}${persistent ? ', persistent' : ''})`);
+  // Stamp the build — a transient resumer waits out the whole reset and can
+  // easily be older than the package on disk. See the monitor's start line.
+  log(`resumer started (pid ${process.pid}${persistent ? ', persistent' : ''}, unsnooze ${PKG_VERSION})`);
   const deferCounts = new Map();
 
   try {
     for (;;) {
       if (signal?.aborted) { log('shutdown requested — resumer exiting'); return 0; }
+
+      // Version-skew hand-off. A transient resumer is spawned at the stop and
+      // waits out the whole reset — hours — so an `npm i -g` landing mid-wait
+      // leaves the process that SENDS THE WAKE running deleted code. Nothing
+      // supervises it, so it replaces itself. The daemon is exempt: launchd/
+      // systemd own its restart and bin/unsnooze.js already aborts it on skew;
+      // forking a rival from under a supervisor would just fight the unit.
+      //
+      // Release the singleton BEFORE the replacement starts. acquireSingleton
+      // honors a live holder, so a child that starts while we still hold the
+      // lock exits on sight and we would end up with no resumer at all.
+      if (!persistent && versionSkewed()) {
+        const handed = await restartOnVersionSkew({
+          args: ['_resumer'], spawner, skewed: () => true, log, binPath: handoffBin,
+          // Released only once the hand-off is actually going ahead — never
+          // for one the pre-flight already ruled out.
+          beforeSpawn: () => {
+            releaseSingleton();
+            updateState(state => { if (state.resumerPid === process.pid) state.resumerPid = null; });
+          },
+        });
+        if (handed) return 0;
+        // Hand-off refused or failed: take the lock back rather than keep
+        // resuming unlocked, where a second resumer could dispatch the same
+        // record. Idempotent when beforeSpawn never ran — we still hold it.
+        acquireSingleton();
+        updateState(state => { state.resumerPid = process.pid; });
+      }
+
       await tickWatcher();
 
       // Pre-wall usage warnings (1.13) — after watcher so samples are fresh.

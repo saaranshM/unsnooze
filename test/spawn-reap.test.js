@@ -8,12 +8,25 @@ import { spawn } from 'node:child_process';
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-spawn-reap-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
 
-const { stopResumer } = await import('../src/spawn.js');
+const { stopResumer, pidAlive } = await import('../src/spawn.js');
 const { RESUMER_LOCK } = await import('../src/config.js');
 const { reap, isUnsnoozeSessionName, attachHint } = await import('../src/reap.js');
 const { upsertSession, readState, setStatus } = await import('../src/state.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
+
+// One shared pidAlive now backs the resumer's lock hygiene, the dashboard's
+// liveness column, and the version-skew hand-off. Pid 0 is the trap: kill(0, 0)
+// signals our OWN process group and succeeds, so a lock file containing "0"
+// would read as a live holder and be honored forever.
+test('pidAlive rejects 0 and non-pids instead of signalling our own process group', () => {
+  assert.equal(pidAlive(process.pid), true, 'a real live pid is alive');
+  assert.equal(pidAlive(0), false, 'pid 0 is the process group, not a live holder');
+  assert.equal(pidAlive(null), false);
+  assert.equal(pidAlive(undefined), false);
+  assert.equal(pidAlive(NaN), false);
+  assert.equal(pidAlive(999999999), false, 'a dead pid is dead');
+});
 
 test('stopResumer cleans a stale lock (dead pid)', () => {
   writeFileSync(RESUMER_LOCK, '999999999');

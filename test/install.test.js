@@ -3,6 +3,15 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// cmdInstall is one `--daemon` flag away from writing the real autostart unit,
+// and every unit we generate shares one label — so a stray write would hijack
+// the machine's live daemon. install.js honors these overrides for exactly
+// this reason; set them before anything can resolve an autostart path.
+const AUTOSTART_ISOLATION = mkdtempSync(join(tmpdir(), 'unsnooze-install-autostart-'));
+process.env.UNSNOOZE_LAUNCH_AGENTS_DIR = join(AUTOSTART_ISOLATION, 'LaunchAgents');
+process.env.UNSNOOZE_SYSTEMD_USER_DIR = join(AUTOSTART_ISOLATION, 'systemd');
+
 import {
   cmdInstall, mergeHookIntoSettings, removeHookFromSettings, installZshrcBlock, stripFencedBlock,
 } from '../src/install.js';

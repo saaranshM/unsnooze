@@ -6,9 +6,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   launchdPlist, systemdUnit, installDaemonAutostart, uninstallDaemonAutostart, healDaemonAutostart, DAEMON_LABEL,
+  isSupervised, autostartUnitPath, pathResolves, resolveLoginPath,
 } from '../src/install.js';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-autostart-test-'));
+
+// Keep autostart writes off the REAL ~/Library/LaunchAgents and systemd user
+// dir. install.js provides these overrides for exactly this reason: every unit
+// we generate carries one label, so a test that writes or loads the live path
+// hijacks the machine's actual daemon (this happened — a doctor --fix test
+// repointed the running job at a temp dir and broke its log paths).
+process.env.UNSNOOZE_LAUNCH_AGENTS_DIR = join(DIR, 'LaunchAgents-isolated');
+process.env.UNSNOOZE_SYSTEMD_USER_DIR = join(DIR, 'systemd-isolated');
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
 test('launchdPlist runs the daemon at load and keeps it alive', () => {
@@ -150,4 +159,176 @@ test('healDaemonAutostart heals the Linux systemd unit the same way', () => {
   assert.equal(healed, target);
   assert.match(readFileSync(target, 'utf-8'), /Environment="PATH=/);
   assert.ok(calls.some(c => c[0] === 'systemctl'));
+});
+
+// --- supervision detection --------------------------------------------------
+// A supervised daemon may exit on version skew because launchd/systemd bring it
+// back. An unsupervised one must not: nothing would restart it and GUI watching
+// would stop silently. Both env shapes below were read off real processes on a
+// live machine — the supervised one from `ps eww` on the running launchd
+// daemon, the unsupervised one from an ordinary interactive shell.
+
+test('isSupervised recognises our own launchd job, and nothing else', () => {
+  assert.equal(isSupervised({ platform: 'darwin', env: { XPC_SERVICE_NAME: DAEMON_LABEL } }), true,
+    'observed on the live launchd daemon: XPC_SERVICE_NAME is the job label');
+  assert.equal(isSupervised({ platform: 'darwin', env: { XPC_SERVICE_NAME: '0' } }), false,
+    'observed in an interactive shell: launchd reports 0');
+  assert.equal(isSupervised({ platform: 'darwin', env: {} }), false);
+  assert.equal(isSupervised({ platform: 'darwin', env: { XPC_SERVICE_NAME: 'com.apple.Terminal' } }), false,
+    'some other launchd job is not our supervisor');
+});
+
+test('isSupervised recognises a systemd user unit by INVOCATION_ID', () => {
+  assert.equal(isSupervised({ platform: 'linux', env: { INVOCATION_ID: 'b1946ac92492d234' } }), true);
+  assert.equal(isSupervised({ platform: 'linux', env: { INVOCATION_ID: '' } }), false, 'empty is not set');
+  assert.equal(isSupervised({ platform: 'linux', env: {} }), false);
+});
+
+test('isSupervised is false where we install no supervisor at all', () => {
+  assert.equal(isSupervised({ platform: 'win32', env: { XPC_SERVICE_NAME: DAEMON_LABEL, INVOCATION_ID: 'x' } }), false);
+});
+
+// --- daemon PATH: the self-heal that could not heal ------------------------
+// Observed live: a launchd daemon running with PATH=/usr/bin:/bin:/usr/sbin:/sbin
+// while tmux sat in /opt/homebrew/bin, so every revival died with ENOENT.
+// healDaemonAutostart regenerates the unit from process.env.PATH of the
+// CALLER — and the only caller is the daemon, whose PATH is the very thing
+// being repaired. It wrote the broken PATH back, then (marker now present)
+// marked itself done forever.
+
+import { mkdirSync } from 'node:fs';
+
+function fakeBinDir(name, bin = 'tmux') {
+  const d = join(DIR, name);
+  mkdirSync(d, { recursive: true });
+  writeFileSync(join(d, bin), '#!/bin/sh\n');
+  return d;
+}
+
+test('autostartUnitPath names the unit per platform, and nothing elsewhere', () => {
+  assert.equal(autostartUnitPath({ platform: 'darwin', dir: '/x' }), join('/x', `${DAEMON_LABEL}.plist`));
+  assert.equal(autostartUnitPath({ platform: 'linux', dir: '/x' }), join('/x', 'unsnooze.service'));
+  assert.equal(autostartUnitPath({ platform: 'win32', dir: '/x' }), null);
+});
+
+test('pathResolves answers whether a PATH string can actually find the binary', () => {
+  const good = fakeBinDir('has-tmux');
+  assert.equal(pathResolves(`${good}:/usr/bin:/bin`, 'tmux'), true);
+  assert.equal(pathResolves('/usr/bin:/bin:/usr/sbin:/sbin', 'tmux'), false,
+    "the launchd default PATH — exactly the live daemon's problem");
+  assert.equal(pathResolves('', 'tmux'), false);
+  assert.equal(pathResolves(null, 'tmux'), false);
+  assert.equal(pathResolves(`::${good}::`, 'tmux'), true, 'empty segments are skipped');
+});
+
+test('resolveLoginPath asks the login shell and hands back its PATH', () => {
+  const calls = [];
+  const runner = (cmd, args, opts) => { calls.push({ cmd, args, opts }); return '/opt/homebrew/bin:/usr/bin\n'; };
+  assert.equal(resolveLoginPath({ shell: '/bin/zsh', runner }), '/opt/homebrew/bin:/usr/bin');
+  assert.equal(calls[0].cmd, '/bin/zsh');
+  assert.ok(calls[0].args.includes('-lc'), 'a LOGIN shell, so profile files run');
+  assert.ok(!('PATH' in (calls[0].opts?.env || {})),
+    'PATH is stripped so the login files rebuild it instead of appending to the broken one');
+});
+
+test('resolveLoginPath returns null rather than a bad guess when the probe fails', () => {
+  assert.equal(resolveLoginPath({ shell: '/bin/zsh', runner: () => { throw new Error('timeout'); } }), null);
+  assert.equal(resolveLoginPath({ shell: '/bin/zsh', runner: () => '' }), null);
+  assert.equal(resolveLoginPath({ shell: '/bin/zsh', runner: () => '   \n' }), null);
+  assert.equal(resolveLoginPath({ shell: null, runner: () => '/usr/bin' }), null, 'no shell to ask');
+});
+
+test('heal repairs a unit whose baked PATH cannot find tmux', () => {
+  const dir = join(DIR, 'heal-badpath');
+  const good = fakeBinDir('good-bin');
+  installDaemonAutostart({ platform: 'darwin', dir, activate: () => true, path: '/usr/bin:/bin' });
+  const target = join(dir, `${DAEMON_LABEL}.plist`);
+  assert.match(readFileSync(target, 'utf-8'), /EnvironmentVariables/, 'fixture already has the marker');
+
+  const calls = [];
+  const healed = healDaemonAutostart({
+    platform: 'darwin', dir, activate: (cmd, args) => calls.push([cmd, ...args]),
+    resolvePath: () => `${good}:/usr/bin:/bin`, muxBin: 'tmux', currentPath: '/usr/bin:/bin',
+  });
+  assert.equal(healed, target, 'a present-but-useless PATH is not "already current"');
+  assert.match(readFileSync(target, 'utf-8'), new RegExp(good.replace(/[/]/g, '\\/')));
+  assert.ok(calls.some(c => c[0] === 'launchctl'), 'reloaded so the fix takes effect');
+});
+
+test('heal does NOT rewrite when the probe offers nothing better — the crash-loop guard', () => {
+  // Healing reloads the unit, which kills the calling daemon. A heal that
+  // fires every start is a 30s restart loop, which is worse than the bug.
+  const dir = join(DIR, 'heal-noloop');
+  installDaemonAutostart({ platform: 'darwin', dir, activate: () => true, path: '/usr/bin:/bin' });
+  const before = readFileSync(join(dir, `${DAEMON_LABEL}.plist`), 'utf-8');
+
+  for (const [label, resolvePath] of [
+    ['probe failed', () => null],
+    ['probe returned the same broken PATH', () => '/usr/bin:/bin'],
+    ['probe returned a different but still tmux-less PATH', () => '/sbin:/usr/sbin'],
+  ]) {
+    const calls = [];
+    assert.equal(
+      healDaemonAutostart({ platform: 'darwin', dir, activate: (c, a) => calls.push([c, ...a]), resolvePath, muxBin: 'tmux', currentPath: '/usr/bin:/bin' }),
+      null, `${label} → no rewrite`);
+    assert.equal(calls.length, 0, `${label} → no reload, so no restart loop`);
+    assert.equal(readFileSync(join(dir, `${DAEMON_LABEL}.plist`), 'utf-8'), before, `${label} → unit untouched`);
+  }
+});
+
+test('heal leaves a healthy unit alone', () => {
+  const dir = join(DIR, 'heal-healthy');
+  const good = fakeBinDir('healthy-bin');
+  installDaemonAutostart({ platform: 'darwin', dir, activate: () => true, path: `${good}:/usr/bin` });
+  assert.equal(
+    healDaemonAutostart({ platform: 'darwin', dir, activate: () => true, resolvePath: () => '/other', muxBin: 'tmux', currentPath: '/usr/bin:/bin' }),
+    null, 'a PATH that already finds tmux is current — never touched');
+});
+
+test('a PATH-less unit still heals, and prefers a working PATH over the caller\'s broken one', () => {
+  const dir = join(DIR, 'heal-legacy-badcaller');
+  const good = fakeBinDir('legacy-bin');
+  installDaemonAutostart({ platform: 'darwin', dir, activate: () => true });
+  const target = join(dir, `${DAEMON_LABEL}.plist`);
+  writeFileSync(target, readFileSync(target, 'utf-8').replace(/ {2}<key>EnvironmentVariables[\s\S]*?<\/dict>\n/, ''));
+  assert.doesNotMatch(readFileSync(target, 'utf-8'), /EnvironmentVariables/);
+
+  const healed = healDaemonAutostart({
+    platform: 'darwin', dir, activate: () => true,
+    resolvePath: () => `${good}:/usr/bin`, muxBin: 'tmux', currentPath: '/usr/bin:/bin',
+  });
+  assert.equal(healed, target);
+  assert.match(readFileSync(target, 'utf-8'), new RegExp(good.replace(/[/]/g, '\\/')),
+    'the daemon must not bake its own tmux-less PATH back in');
+});
+
+test('linux heal reads and repairs the systemd Environment PATH', () => {
+  const dir = join(DIR, 'heal-sys-badpath');
+  const good = fakeBinDir('sys-bin');
+  installDaemonAutostart({ platform: 'linux', dir, activate: () => true, path: '/usr/bin:/bin' });
+  const target = join(dir, 'unsnooze.service');
+  const healed = healDaemonAutostart({
+    platform: 'linux', dir, activate: () => true,
+    resolvePath: () => `${good}:/usr/bin`, muxBin: 'tmux', currentPath: '/usr/bin:/bin',
+  });
+  assert.equal(healed, target);
+  assert.match(readFileSync(target, 'utf-8'), new RegExp(`Environment="PATH=${good.replace(/[/]/g, '\\/')}`));
+});
+
+test('the real activator never runs against a unit path outside the live location', () => {
+  // Every unit we write carries the same label, so `launchctl load` on a
+  // fixture copy hijacks the user's actual daemon rather than adding a second
+  // one. This happened for real during development: a doctor --fix test that
+  // forgot to inject `activate` repointed the live job at a temp dir that the
+  // test's own cleanup then deleted. Writing must still work; only the real
+  // activation is withheld.
+  const dir = join(DIR, 'interlock');
+  const target = installDaemonAutostart({ platform: 'darwin', dir });   // no activate injected
+  assert.ok(existsSync(target), 'the unit is still written');
+
+  // An explicitly injected activator is always honored — that is a caller
+  // stating intent, and it is how every other test drives this code.
+  const calls = [];
+  installDaemonAutostart({ platform: 'darwin', dir, activate: (c, a) => calls.push([c, ...a]) });
+  assert.ok(calls.some(c => c[0] === 'launchctl'), 'injected activators still run');
 });

@@ -97,6 +97,16 @@ export default function TroubleshootingDocsPage() {
                   the pane is re-captured after every wake, and if the banner is still there
                   unsnooze reschedules from the fresh one. Overload is not a limit, so a
                   transient overload message is not treated as one.</li>
+                <li><strong>You upgraded, and the fix did not take.</strong> A monitor is started
+                  once, when the agent launches, and it watches that pane for as long as the
+                  agent lives — days, in a long tmux session. Upgrading replaces the package on
+                  disk but cannot reach into a process that already loaded the old code. From
+                  the version after 1.14.2 both the monitor and the resumer notice the package
+                  changed underneath them and hand off to a replacement on their own, so an
+                  upgrade propagates within seconds. A session that was <em>launched</em> under
+                  1.14.2 or earlier predates that machinery and needs one restart: exit the
+                  agent in that pane and start it again. <C>unsnooze logs</C> shows which
+                  version each watcher is running from the moment it hands off.</li>
                 <li><strong>The machine was asleep at reset time.</strong> Wakes are dispatched
                   by the daemon — a launchd agent on macOS, a systemd user unit on Linux. If you
                   declined it during setup, nothing runs while the terminal is closed;{' '}

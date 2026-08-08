@@ -14,11 +14,7 @@ import {
 import { listOwnedSessions } from '../reap.js';
 import { runDoctor } from '../doctor.js';
 import { fetchFleet, readHosts } from '../fleet.js';
-
-function pidAlive(pid) {
-  if (!pid) return false;
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
+import { pidAlive } from '../spawn.js';
 
 export function loadStatusSnapshot() {
   const state = readState();

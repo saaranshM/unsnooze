@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { getMultiplexer } from './multiplexer.js';
 import { getAgent } from './agents/index.js';
 import { getConfig } from './settings.js';
-import { spawnDetached } from './spawn.js';
+import { spawnDetached, monitorSpawnArgs } from './spawn.js';
 import { makeLogger } from './logger.js';
 import { createLeaseId, processBirth, writeLease, removeLease } from './lease.js';
 import { SessionCreateError } from './multiplexers/session-name.js';
@@ -79,7 +79,8 @@ export function runLauncher(args, agentId = 'claude') {
     if (typeof mux.stampPaneOwner === 'function') {
       mux.stampPaneOwner(pane, leaseId).catch(() => { /* legacy tmux */ });
     }
-    spawnDetached(['_monitor', mux.name, paneOwner || '', pane, agent.id, leaseId],
+    spawnDetached(
+      monitorSpawnArgs({ muxName: mux.name, paneOwner, pane, agentId: agent.id, leaseId }),
       { UNSNOOZE_CWD: process.cwd() });
     log(`launching ${agent.id} in ${mux.name} ${paneOwner ?? '-'}:${pane}, monitor spawned`);
   } else {

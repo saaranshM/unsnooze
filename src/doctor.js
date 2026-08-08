@@ -138,6 +138,7 @@ export async function runDoctor({
   mux = getMultiplexer(),
   hookInstalled = defaultHookInstalled,
   wrappersInstalled = defaultWrappersInstalled,
+  autostartDir = null,
 } = {}) {
   const findings = [];
 
@@ -204,6 +205,25 @@ export async function runDoctor({
     });
   }
 
+  // The daemon reaches tmux through PATH, and launchd/systemd hand it a
+  // minimal one — so a unit that bakes the wrong PATH revives nothing while
+  // looking perfectly healthy from here. Lazy import: install.js imports this
+  // module, so a static import would cycle (same reason resumer.js defers
+  // prompt-queue.js).
+  try {
+    const { daemonPathBroken } = await import('./install.js');
+    const broken = daemonPathBroken({ platform, dir: autostartDir, muxBin: mux.name || 'tmux' });
+    if (broken) {
+      findings.push({
+        id: 'daemon-path', kind: 'health',
+        title: `daemon autostart cannot find ${broken.muxBin} — every revival will fail`,
+        detail: `  ${broken.unit}\n  baked PATH: ${broken.path}\n`
+          + `  run: unsnooze doctor --fix   (or: unsnooze install --daemon from your shell)`,
+        fix: { action: 'heal-daemon-path', platform, dir: autostartDir },
+      });
+    }
+  } catch { /* best-effort: a PATH check must never break doctor */ }
+
   findings.push({
     id: 'daemon', kind: 'info',
     title: daemonRunning() ? 'resumer/daemon: running' : 'resumer/daemon: not running (starts on the next limit stop)',
@@ -225,6 +245,9 @@ export async function applyFixes(report, {
   kill = defaultKill,
   runner = defaultRunner,
   now = Date.now(),
+  resolvePath = undefined,
+  currentPath = undefined,
+  activate = undefined,
 } = {}) {
   const actions = [];
   for (const finding of report.findings) {
@@ -243,6 +266,23 @@ export async function applyFixes(report, {
         try { unlinkSync(unit); } catch { /* already gone */ }
         actions.push({ action: 'removed-unit', unit });
         log(`doctor: removed csg autostart ${unit}`);
+      }
+    } else if (fix.action === 'heal-daemon-path') {
+      const { healDaemonAutostart } = await import('./install.js');
+      const healed = healDaemonAutostart({
+        platform: fix.platform, dir: fix.dir,
+        ...(resolvePath ? { resolvePath } : {}),
+        ...(currentPath !== undefined ? { currentPath } : {}),
+        ...(activate ? { activate } : {}),
+      });
+      // healDaemonAutostart declines when it has no better PATH to offer —
+      // that refusal is the crash-loop guard, so surface it rather than
+      // claiming a repair that did not happen.
+      if (healed) {
+        actions.push({ action: 'healed-daemon-path', unit: healed });
+        log(`doctor: rewrote ${healed} with a working PATH`);
+      } else {
+        actions.push({ action: 'error', detail: 'could not determine a PATH that finds the multiplexer — run `unsnooze install --daemon` from your shell' });
       }
     } else if (fix.action === 'archive-dir') {
       let target = `${fix.dir}.bak`;

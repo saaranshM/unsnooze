@@ -24,7 +24,8 @@ import { parseResetTime, resetAtMs, sourceRank } from './time-parser.js';
 import { upsertSession, setStatus, readState, updateState } from './state.js';
 import { prepareCalibrationSample, applyCalibrationToState } from './usage.js';
 import { latestRateLimitFromTranscript } from './watchers/claude.js';
-import { spawnResumerIfNeeded } from './spawn.js';
+import { spawnResumerIfNeeded, spawnDetached, monitorSpawnArgs, UNSNOOZE_BIN } from './spawn.js';
+import { restartOnVersionSkew, hasVersionSkew, PKG_VERSION } from './update-check.js';
 import { makeLogger } from './logger.js';
 import { addressHash, readLease } from './lease.js';
 import { claudeRecordEnv, hasClaudeParentUsageAfter } from './sessions.js';
@@ -37,6 +38,7 @@ export function createMonitor({
   muxName = 'tmux', paneOwner = null, pane, leaseId = null, cwd,
   agent = getAgent('claude'), mux = getMultiplexer(muxName, { owner: paneOwner }),
   scrapeInterval = SCRAPE_INTERVAL_MS, notifier = notify,
+  spawner = spawnDetached, versionSkewed = hasVersionSkew, handoffBin = UNSNOOZE_BIN,
 }) {
   const notifyCtx = { mux: muxName, pane, paneOwner };
   let trackedKey = null;      // state key of the record we created
@@ -239,6 +241,28 @@ export function createMonitor({
       }
     }
 
+    // A monitor is spawned once per pane and lives as long as the agent, so it
+    // routinely outlives an `npm i -g unsnooze`: the package on disk changes,
+    // this process keeps the modules it loaded at launch, and no supervisor
+    // exists to restart it. That is how 1.14.2's stop-completion fix reached a
+    // user's disk without ever reaching the process that completes stops — a
+    // pane launched five days earlier went on applying the deleted rule.
+    // Hand off to a replacement on fresh code and stand down.
+    //
+    // Ordering matters twice over. It runs AFTER the pane/lease checks, so an
+    // upgrade landing as the agent exits does not respawn a watcher onto the
+    // user's bare shell; and BEFORE consumeMarker(), which unlinks the event
+    // file — handing off after that would swallow the pending overload event.
+    if (await restartOnVersionSkew({
+      args: monitorSpawnArgs({ muxName, paneOwner, pane, agentId: agent.id, leaseId }),
+      env: { UNSNOOZE_CWD: cwd },
+      spawner, skewed: versionSkewed, binPath: handoffBin,
+      log: msg => log(`pane ${pane}: ${msg}`),
+    })) {
+      running = false;
+      return;
+    }
+
     const marker = consumeMarker();
     let text;
     try {
@@ -366,7 +390,10 @@ export function createMonitor({
 
   return {
     async run() {
-      log(`monitor started for pane ${pane} (cwd ${cwd})`);
+      // Stamp the build: a monitor can outlive several upgrades, so "which
+      // version is this process actually running" is the first question any
+      // log attachment has to answer.
+      log(`monitor started for pane ${pane} (cwd ${cwd}) — unsnooze ${PKG_VERSION}`);
       while (running) {
         await tick();
         if (!running) break;
