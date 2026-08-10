@@ -43,6 +43,17 @@ export function createCmux({ spawner = defaultSpawner, env = process.env } = {})
     name: 'cmux',
     SUBMIT_DELAY_MS,
 
+    // Unlike tmux/zellij, where the binary IS the server (a missing session
+    // just gets started on demand), cmux's binary is a thin socket client:
+    // `--version` only proves the CLI is on PATH, not that the cmux app is
+    // running. A cmux that's installed but not open still passes this check,
+    // then fails every real operation with a socket connection error. That's
+    // an accepted gap here — every socket call already degrades gracefully
+    // (paneAlive/capturePane return false/throw, launchWrapped/newWindow
+    // throw and get caught upstream) — but it does mean this signal alone
+    // can't tell "not installed" apart from "installed, not running" for
+    // status/setup messaging (doctor.js, wizard.js) the way it can for
+    // tmux/zellij.
     available() {
       try {
         return spawner('cmux', ['--version'], { sync: true, stdio: 'ignore' }).status === 0;
