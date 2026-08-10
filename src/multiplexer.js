@@ -1,10 +1,11 @@
 import tmux from './multiplexers/tmux.js';
 import zellij from './multiplexers/zellij.js';
+import cmux from './multiplexers/cmux.js';
 import { getConfig } from './settings.js';
 import { MUX_NAMES as NAMES } from './config.js';
 
 export function createMultiplexerFactory({
-  backends = { tmux, zellij },
+  backends = { tmux, zellij, cmux },
   getSetting = () => getConfig('multiplexer'),
   env = process.env,
 } = {}) {
@@ -31,6 +32,10 @@ export function createMultiplexerFactory({
 
     if (env.ZELLIJ) return 'zellij';
     if (env.TMUX) return 'tmux';
+    // Checked after tmux/zellij: an agent can run tmux inside a cmux surface,
+    // in which case both TMUX and CMUX_SOCKET_PATH are set and the inner
+    // tmux session is what should be driven.
+    if (env.CMUX_SOCKET_PATH) return 'cmux';
 
     const tmuxInstalled = isAvailable('tmux');
     const zellijInstalled = isAvailable('zellij');

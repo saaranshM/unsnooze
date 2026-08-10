@@ -295,6 +295,11 @@ test('attachHintRemote: a clean muxSession still round-trips', async () => {
   assert.equal(attachHintRemote('build1', 'zellij', 'my-session.1_2'), `ssh -t build1 'zellij attach my-session.1_2'`);
 });
 
+test('attachHintRemote omits the hint for cmux — there is no remote attach command', async () => {
+  const { attachHintRemote } = await import('../src/fleet.js');
+  assert.equal(attachHintRemote('gpu', 'cmux', 'unsnooze-resumed'), null);
+});
+
 test('fleet table/json path: hostile muxSession produces no attach line', async () => {
   const { fetchFleet, formatFleetTui } = await import('../src/fleet.js');
   const evilSession = frameIt({

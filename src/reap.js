@@ -82,8 +82,12 @@ function restoreFailedClaim(rec) {
 }
 
 // How a user reaches a revived session. Shared by status, toast, and `sessions`.
+// cmux has no joinable named-session model (see multiplexers/cmux.js) — there
+// is no command that attaches to a surface from outside cmux, so omit the hint
+// rather than print a `tmux attach` that would silently do nothing useful.
 export function attachHint(muxName, sessionName) {
   if (!sessionName) return null;
+  if (muxName === 'cmux') return null;
   if (muxName === 'zellij') return `zellij attach ${sessionName}`;
   return `tmux attach -t ${sessionName}`;
 }

@@ -78,6 +78,10 @@ test('attachHint names the right mux attach command', () => {
   assert.equal(attachHint('tmux', null), null);
 });
 
+test('attachHint omits the hint for cmux — there is no attach-from-outside command', () => {
+  assert.equal(attachHint('cmux', 'unsnooze-resumed'), null);
+});
+
 test('reap dry-run kills nothing', async () => {
   const state = upsertSession({
     sessionId: 'reap-dry-1',

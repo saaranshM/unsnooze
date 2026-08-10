@@ -508,7 +508,7 @@ password hosts on Windows; a plain `ssh <host>` prompt works with native
 
 | key | default | meaning |
 |---|---|---|
-| `multiplexer` | `auto` | Backend to use: `auto`, `tmux`, or `zellij`. `auto` prefers the current multiplexer, then the only installed backend, with tmux as the tie-breaker. |
+| `multiplexer` | `auto` | Backend to use: `auto`, `tmux`, `zellij`, or `cmux`. `auto` prefers the current multiplexer (tmux/zellij ambient env, then `CMUX_SOCKET_PATH`); with no ambient env it falls back to whichever of tmux/zellij is installed, tmux as the tie-breaker — cmux is only selected via its ambient env or an explicit setting, never by this installed-backend fallback, since it has no attach-from-outside path to wrap into. cmux support covers resume-in-place (detect, capture, send); it has no joinable named-session model, so idle-session reaping (`unsnooze reap`) does not cover cmux panes, and no attach hint is shown for cmux sessions. |
 | `autoResume` | `true` | Master switch. Off = stops are still tracked, but nothing is resumed until you run `unsnooze resume-now` or turn it back on. |
 | `menuAutoAnswer` | `true` | May unsnooze answer Claude's limit menu (send keys in your pane)? Off = watch-only. |
 | `notifications` | `true` | Master switch for all notifications (limit detected / session resumed / gave up). Off = silence every channel. |
