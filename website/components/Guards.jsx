@@ -23,7 +23,7 @@ const GUARDS = [
   },
   {
     key: 'notifyChannel', def: 'auto', title: 'Notifications, your way',
-    body: <>OS toasts (macOS, Linux, native Windows toasts from WSL), terminal OSC banners
+    body: <>OS toasts (macOS, Linux, native Windows — including from WSL), terminal OSC banners
       in iTerm2 / kitty / WezTerm / Ghostty, a plain BEL, or{' '}
       <a href="https://ntfy.sh">ntfy</a> push to your phone — for limit hit, resumed, and
       gave-up.</>,

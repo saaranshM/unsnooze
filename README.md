@@ -16,7 +16,9 @@
 **Claude Code · Codex CLI · Grok · Qwen · Kimi · OpenCode · Antigravity** — when they hit the 5-hour or weekly usage limit
 ("You've hit your usage limit"), your session just… stops.<br/>
 unsnooze auto-resumes them: it tracks **every** limit-stopped session across all
-your projects and **wakes each one up in tmux, Zellij, or herdr the moment the usage limit resets.**
+your projects and **wakes each one up the moment the usage limit resets** — in
+tmux, Zellij, herdr or cmux, and on **macOS, Linux and Windows**, with or
+without a terminal multiplexer.
 
 ```sh
 npm install -g unsnooze && unsnooze setup

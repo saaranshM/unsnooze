@@ -47,13 +47,14 @@ export default function SettingsDocsPage() {
                 <table className="doc-table">
                   <thead><tr><th>key</th><th>default</th><th>meaning</th></tr></thead>
                   <tbody>
-                    <tr><td><C>multiplexer</C></td><td><C>auto</C></td><td><C>auto</C>, <C>tmux</C>, or <C>zellij</C>. Auto prefers the multiplexer you're inside, then the only installed backend, tmux as tie-breaker.</td></tr>
+                    <tr><td><C>multiplexer</C></td><td><C>auto</C></td><td><C>auto</C>, <C>tmux</C>, <C>zellij</C>, <C>herdr</C>, <C>cmux</C>, or <C>headless</C>. Auto prefers the multiplexer you're inside, then the only installed backend, tmux as tie-breaker — and <C>headless</C> only when none is installed, never ahead of a real pane.</td></tr>
                     <tr><td><C>autoResume</C></td><td><C>true</C></td><td>Master switch. Off = stops are still tracked, but nothing resumes until <C>resume-now</C> or turning it back on.</td></tr>
                     <tr><td><C>menuAutoAnswer</C></td><td><C>true</C></td><td>May unsnooze answer Claude's limit menu (send keys in your pane)? Off = watch-only.</td></tr>
                     <tr><td><C>notifications</C></td><td><C>true</C></td><td>Master switch for all notifications. Off silences every channel.</td></tr>
                     <tr><td><C>notifyChannel</C></td><td><C>auto</C></td><td><C>auto</C>, <C>native</C>, <C>osc</C>, or <C>bell</C> — see <a href="#notifications">Notifications</a>.</td></tr>
                     <tr><td><C>guiWatch</C></td><td><C>true</C></td><td>May the daemon watch session files for GUI-surface stops? Needs the daemon running.</td></tr>
                     <tr><td><C>resumeMessage</C></td><td><em>"Continue where you left off…"</em></td><td>The message typed to wake a session. Override per session with <C>unsnooze message &lt;id&gt;</C>.</td></tr>
+                    <tr><td><C>launchExtraArgs.&lt;agent&gt;</C></td><td><C>""</C></td><td>Extra flags for the sessions <em>you</em> start through the wrapper. For long, context-heavy runs: <C>unsnooze config set launchExtraArgs.claude "--autocompact 400000"</C> so a session compacts instead of stalling. Revivals inherit them.</td></tr>
                     <tr><td><C>resumeMessages.&lt;agent&gt;</C></td><td><C>""</C></td><td>Per-agent override of <C>resumeMessage</C> (<C>.claude</C>, <C>.codex</C>, <C>.grok</C>, <C>.qwen</C>, <C>.kimi</C>, <C>.opencode</C>, <C>.agy</C>). Empty = global message.</td></tr>
                     <tr><td><C>agents.claude</C> / <C>agents.codex</C></td><td><C>true</C></td><td>Which CLIs are guarded.</td></tr>
                     <tr><td><C>agents.grok</C> … <C>agents.agy</C></td><td><C>false</C></td><td>Experimental adapters — off by default; enable in setup or e.g. <C>config set agents.qwen on</C>.</td></tr>

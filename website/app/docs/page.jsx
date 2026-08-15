@@ -43,8 +43,10 @@ export default function DocsPage() {
 
             <section className="doc-sec" id="install">
               <h2>Getting started</h2>
-              <p>You need <strong>Node ≥ 20</strong> and <strong>tmux ≥ 3.2</strong> or{' '}
-                <strong>Zellij</strong>, on macOS, Linux, or Windows via WSL.</p>
+              <p>You need <strong>Node ≥ 20</strong>, on <strong>macOS, Linux or Windows</strong>.
+                A multiplexer — <strong>tmux ≥ 3.2</strong>, <strong>Zellij</strong>,{' '}
+                <strong>herdr</strong> or <strong>cmux</strong> — gives you pane-level watching;
+                without one unsnooze runs headless and still catches and resumes stops.</p>
               <Shell title="install">{`$ npm install -g unsnooze
 $ unsnooze setup`}</Shell>
               <p>The setup wizard asks which agents to guard and which toggles you want, then wires
@@ -56,7 +58,8 @@ $ unsnooze setup`}</Shell>
                 <li><strong>The Claude <C>StopFailure</C> hook</strong> — the authoritative
                   limit-stop signal, carrying the session id.</li>
                 <li><strong>Optionally the daemon</strong> (a launchd agent on macOS, a systemd user
-                  unit on Linux) for GUI-surface watching and pre-wall usage warnings.</li>
+                  unit on Linux, a logon Scheduled Task on Windows) for GUI-surface watching and
+                  pre-wall usage warnings.</li>
                 <li><strong><C>~/.unsnooze/config.json</C></strong> with your choices —
                   see <a href="/docs/settings/#settings">Settings</a>.</li>
               </ul>

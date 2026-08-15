@@ -47,7 +47,7 @@ export default function Hero({ version }) {
         <InstallPill />
         <div className="badges">
           {version && <span>v{version}</span>}<span>MIT</span><span>Node ≥ 20</span>
-          <span>tmux · Zellij</span><span>macOS · Linux · WSL</span><span>zero telemetry</span>
+          <span>tmux · Zellij · herdr</span><span>macOS · Linux · Windows</span><span>zero telemetry</span>
         </div>
       </motion.div>
 

@@ -78,11 +78,15 @@ Usage:
   unsnooze usage [--json]          account burn rate & time-to-limit forecast
                                    (--install-statusline for exact Claude %,
                                     --uninstall-statusline to remove it)
+  unsnooze design [setup]          Claude Design from the terminal: check whether
+                                   the claude-design MCP server is registered and
+                                   signed in, or register it with setup
   unsnooze logs [-f]               show (or follow) the unsnooze log
   unsnooze update                  update unsnooze itself to the latest version
   unsnooze daemon                  persistent watcher for GUI sessions (VS Code
                                    extension, desktop apps) — no live pane needed
-                                   to detect; revival opens in tmux or Zellij
+                                   to detect; revival opens in your multiplexer,
+                                   or headless where there is none
   unsnooze config [list|get|set]   view or change settings (toggles, global +
                                    per-agent resume messages, notifyChannel
                                    auto|native|osc|bell, updateCheck)

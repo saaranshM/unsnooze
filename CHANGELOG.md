@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.16.0 — 2026-08-16
 
 - **Claude Design, and native Windows along the way.** ([#13](https://github.com/saaranshM/unsnooze/issues/13))
   Claude Design shares your 5-hour and weekly limits with everything else, so a
@@ -50,6 +50,17 @@
   be offered there. All patterns are anchored to the CLI's real error phrasings
   rather than to the bare command name, so an agent explaining `/design-login`
   is not a stop.
+
+- **Claude's own auto-continue is recognised, not raced.** Claude Code shipped
+  in-process auto-continue on 2026-08-14 (desktop; the CLI carries it behind a
+  gate that currently defaults off). unsnooze was already guarded — every resume
+  path checks whether the session moved on its own, and the 60s reset margin
+  means Claude gets there first — but a session that woke itself was recorded
+  identically to one unsnooze woke, so the deliberate stand-aside was invisible.
+  Records now carry who resumed them and `unsnooze status` says *"resumed itself
+  (unsnooze stood aside)"*. Note the native feature covers only the 5-hour
+  limit: weekly stops, closed apps, headless boxes and every non-Claude CLI
+  remain unsnooze's job.
 
 - **`launchExtraArgs.<agent>`.** The launch-side twin of `resumeExtraArgs`, for
   flags that must hold for a whole session rather than just a revival —
