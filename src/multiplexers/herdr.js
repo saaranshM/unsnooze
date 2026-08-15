@@ -12,6 +12,7 @@ import { basename } from 'node:path';
 import { promisify } from 'node:util';
 
 import { resolveSessionName, SessionCreateError } from './session-name.js';
+import { shellLine, UnquotableArgError } from './shell-quote.js';
 
 const execFileAsync = promisify(execFileCb);
 const MIN_VERSION = [0, 7, 5];
@@ -376,10 +377,13 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
         ));
         const pane = workspace?.root_pane?.pane_id;
         if (!pane) throw new Error('unsnooze: unexpected herdr workspace shape: no root_pane');
-        await inSession(sessionName, 'pane', 'run', String(pane), launchSpec.file, ...(launchSpec.args || []));
-        // `pane run` writes the argv into the pane's shell but does not submit
-        // it. Submit explicitly so revived agents actually start.
-        await inSession(sessionName, 'pane', 'send-keys', String(pane), 'enter');
+        // One argument, already quoted: `pane run` joins its operands with
+        // spaces and types them into the pane's shell, so the quoting has to be
+        // ours. It also submits the line itself (PaneSendInput carries
+        // keys: ["Enter"]) — a second Enter here would land in the stdin of
+        // whatever just started.
+        await inSession(sessionName, 'pane', 'run', String(pane),
+          shellLine(launchSpec.file, launchSpec.args || []));
         return { pane: String(pane), paneOwner: sessionName };
       },
 
@@ -395,11 +399,9 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
           const pane = workspace?.root_pane?.pane_id;
           if (!pane) throw new Error('unsnooze: unexpected herdr workspace shape: no root_pane');
           syncCall([
-            '--session', name, 'pane', 'run', String(pane), launchSpec.file, ...(launchSpec.args || []),
+            '--session', name, 'pane', 'run', String(pane),
+            shellLine(launchSpec.file, launchSpec.args || []),
           ], name, 'run pane');
-          syncCall([
-            '--session', name, 'pane', 'send-keys', String(pane), 'enter',
-          ], name, 'submit pane command');
         } catch (error) {
           if (error instanceof SessionCreateError) throw error;
           throw new SessionCreateError(

@@ -363,7 +363,7 @@ test('ensureSessionRunning raises SessionCreateError when the server never becom
   );
 });
 
-test('newWindow puts whitelisted launch env on workspace, runs bare argv, and submits it', async () => {
+test('newWindow puts whitelisted launch env on workspace and types ONE quoted command line', async () => {
   const spawner = fakeSpawner((_file, args, options) => {
     if (args.join(' ') === 'session list --json') return runningNamedSession;
     if (args.includes('workspace') && args.includes('create')) return workspaceCreated;
@@ -397,14 +397,18 @@ test('newWindow puts whitelisted launch env on workspace, runs bare argv, and su
     '--env', 'CLAUDE_CONFIG_DIR=/tmp/claude-config',
     '--env', 'CLAUDE_SECURESTORAGE_CONFIG_DIR=/tmp/claude-secure-storage',
   ]);
+  // `pane run` joins its operands with spaces and types the result into the
+  // pane's shell, so everything after the pane id must be a single argument we
+  // quoted ourselves.
   const run = spawner.calls.find(call => call.args.includes('run'));
   assert.deepEqual(run.args, [
     '--session', 'revival', 'pane', 'run', 'w1:p1',
-    '/usr/bin/node', 'agent.js', '--resume', 'abc',
+    "'/usr/bin/node' 'agent.js' '--resume' 'abc'",
   ]);
-  assert.equal(run.args.includes('--'), false);
-  const submit = spawner.calls.find(call => call.args.includes('send-keys'));
-  assert.deepEqual(submit.args, ['--session', 'revival', 'pane', 'send-keys', 'w1:p1', 'enter']);
+  // ...and herdr presses Enter itself. A second one lands in the stdin of the
+  // program that just started.
+  assert.equal(spawner.calls.filter(call => call.args.includes('send-keys')).length, 0,
+    'no explicit submit: pane run carries keys:["Enter"] upstream');
 });
 
 test('newWindow throws when workspace create has no root pane id', async () => {
@@ -470,10 +474,10 @@ test('launchWrapped sidesteps a taken session name and attaches synchronously', 
   ]);
   const run = spawner.calls.find(call => call.args.includes('run'));
   assert.deepEqual(run.args, [
-    '--session', 'unsnooze-2', 'pane', 'run', 'w1:p1', 'node', 'agent.js',
+    '--session', 'unsnooze-2', 'pane', 'run', 'w1:p1', "'node' 'agent.js'",
   ]);
-  const submit = spawner.calls.find(call => call.args.includes('send-keys'));
-  assert.deepEqual(submit.args, ['--session', 'unsnooze-2', 'pane', 'send-keys', 'w1:p1', 'enter']);
+  assert.equal(spawner.calls.filter(call => call.args.includes('send-keys')).length, 0,
+    'pane run submits on its own');
   const attach = spawner.calls.find(call => call.args[0] === 'session' && call.args[1] === 'attach');
   assert.deepEqual(attach.args, ['session', 'attach', 'unsnooze-2']);
   assert.equal(attach.options.sync, true);
@@ -554,8 +558,44 @@ test('launchWrapped keeps Claude recovery roots, but does not encode other env i
     '--env', 'CLAUDE_SECURESTORAGE_CONFIG_DIR=/tmp/secure',
   ]);
   const run = spawner.calls.find(call => call.args.includes('run'));
-  assert.deepEqual(run.args.slice(-1), ['node']);
+  assert.deepEqual(run.args.slice(-1), ["'node'"]);
   assert.equal(run.args.includes('/usr/bin/env'), false);
-  assert.equal(run.args.includes('PATH=/bin'), false);
-  assert.equal(run.args.includes('UNSNOOZE_SESSION_NAME=revival'), false);
+  assert.equal(run.args.some(arg => arg.includes('PATH=/bin')), false);
+  assert.equal(run.args.some(arg => arg.includes('UNSNOOZE_SESSION_NAME=revival')), false);
+});
+
+test('newWindow quotes every argument, whatever the resume message contains', async () => {
+  const spawner = fakeSpawner((_file, args, options) => {
+    if (args.join(' ') === 'session list --json') return runningNamedSession;
+    if (args.includes('workspace')) return workspaceCreated;
+    if (options.detach) return { pid: 1234, unref() {} };
+    return '';
+  });
+  const mux = createHerdr({ spawner, env: {} });
+  await mux.newWindow('revival', '/tmp/my project', {
+    file: '/opt/my tools/node',
+    args: ['_run', 'codex', 'resume', '01J', 'Continue where you left off; $(id) & `id` | tee /tmp/x', ''],
+    env: {},
+  });
+  const run = spawner.calls.find(call => call.args.includes('run'));
+  assert.equal(run.args.length, 6, 'everything after the pane id is ONE argument');
+  assert.equal(run.args[5],
+    "'/opt/my tools/node' '_run' 'codex' 'resume' '01J' "
+    + "'Continue where you left off; $(id) & `id` | tee /tmp/x' ''");
+});
+
+test('newWindow refuses to type a message containing a keystroke character', async () => {
+  const spawner = fakeSpawner((_file, args, options) => {
+    if (args.join(' ') === 'session list --json') return runningNamedSession;
+    if (args.includes('workspace')) return workspaceCreated;
+    if (options.detach) return { pid: 1234, unref() {} };
+    return '';
+  });
+  const mux = createHerdr({ spawner, env: {} });
+  await assert.rejects(
+    () => mux.newWindow('revival', '/tmp', { file: 'node', args: ['-p', 'line one\nline two'], env: {} }),
+    err => err.name === 'UnquotableArgError' && /newline/.test(err.message),
+  );
+  assert.equal(spawner.calls.some(call => call.args.includes('run')), false,
+    'nothing was dispatched into the pane');
 });
