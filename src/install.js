@@ -9,7 +9,7 @@
 // --settings <path> / --zshrc <path> override targets (used by tests).
 
 import { readFileSync, writeFileSync, renameSync, existsSync, copyFileSync, rmSync, mkdirSync, unlinkSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { homedir, userInfo } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
 import { CLAUDE_SETTINGS, STATE_DIR } from './config.js';
@@ -67,18 +67,36 @@ function isLegacy(entry) {
   return (entry.hooks || []).some(h => /claude-auto-retry|csg\.js _hook-stopfailure/.test(h.command || ''));
 }
 
+// The StopFailure hook command, per platform.
+//
+// Guarded like the shell wrapper: a vanished entry point must exit 0, not
+// spray MODULE_NOT_FOUND errors into every Claude Code turn. The guard has to
+// be written in the shell that will actually run it — Claude Code runs hooks
+// through cmd.exe on native Windows, where `test` does not exist, so the POSIX
+// form silently failed on every turn and took the hook detection channel with
+// it. That mattered little while Windows had no multiplexer to watch with; it
+// matters entirely now that headless leans on the hook.
+export function hookCommand({ platform = process.platform, bin = UNSNOOZE_BIN, agent = null } = {}) {
+  const agentFlag = agent ? ` --agent ${agent}` : '';
+  if (platform === 'win32') {
+    return `if exist "${bin}" (node "${bin}" _hook-stopfailure${agentFlag}) else (exit 0)`;
+  }
+  return `test -f "${bin}" && node "${bin}" _hook-stopfailure${agentFlag} || exit 0`;
+}
+
 // agent/matcher options cover CLIs with Claude-shaped hook config in their own
 // settings.json (qwen); the default stays byte-identical for claude.
-export function mergeHookIntoSettings(settingsJson, { agent = null, matcher = 'overloaded|server_error|rate_limit' } = {}) {
+export function mergeHookIntoSettings(settingsJson, {
+  agent = null,
+  matcher = 'overloaded|server_error|rate_limit',
+  platform = process.platform,
+} = {}) {
   const settings = JSON.parse(settingsJson);
   settings.hooks = settings.hooks || {};
   const list = (settings.hooks.StopFailure || []).filter(e => !isLegacy(e) && !isOurs(e));
-  const agentFlag = agent ? ` --agent ${agent}` : '';
   list.push({
     matcher,
-    // Guarded like the shell wrapper: a vanished entry point must exit 0, not
-    // spray MODULE_NOT_FOUND errors into every Claude Code turn.
-    hooks: [{ type: 'command', command: `test -f "${UNSNOOZE_BIN}" && node "${UNSNOOZE_BIN}" _hook-stopfailure${agentFlag} || exit 0`, timeout: 5 }],
+    hooks: [{ type: 'command', command: hookCommand({ platform, agent }), timeout: 5 }],
   });
   settings.hooks.StopFailure = list;
   return JSON.stringify(settings, null, 2) + '\n';
@@ -113,6 +131,74 @@ ${id}() {
 # unsnooze so limit stops are recorded and auto-resumed.
 ${fns}
 ${FENCE_CLOSE}`;
+}
+
+// The PowerShell twin of wrapperBlock(), for native Windows where there is no
+// ~/.zshrc or ~/.bashrc to put a function in. Nobody types `unsnooze claude` —
+// the wrapper shadowing the real CLI *is* the entry point, so without this
+// nothing on native Windows routes through unsnooze at all.
+//
+// PowerShell comments are `#`, so the same fence markers work and
+// stripFencedBlock() removes it unchanged.
+export function powershellWrapperBlock(agents = ['claude'], bin = UNSNOOZE_BIN) {
+  const fns = agents.map(id => `Remove-Item -Path Alias:${id} -Force -ErrorAction SilentlyContinue
+function ${id} {
+  if ($env:UNSNOOZE_ACTIVE -eq '1' -or -not (Test-Path -LiteralPath '${bin}')) {
+    $real = Get-Command ${id} -CommandType Application -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+    if ($real) { & $real.Source @args } else { Write-Error '${id}: not found' }
+    return
+  }
+  & node '${bin}' _run ${id} @args
+}`).join('\n');
+  return `${FENCE_OPEN}
+# unsnooze wrappers: route every interactive launch of the CLIs below through
+# unsnooze so limit stops are recorded and auto-resumed.
+${fns}
+${FENCE_CLOSE}`;
+}
+
+// Where PowerShell will actually look for a profile.
+//
+// Deliberately asked rather than derived: ~/Documents is routinely redirected
+// into OneDrive, and PowerShell 7 (Documents/PowerShell) and Windows
+// PowerShell 5.1 (Documents/WindowsPowerShell) disagree about the folder. A
+// guessed path produces a wrapper that loads for nobody, which looks exactly
+// like unsnooze silently not working. pwsh first (if the user has 7, that is
+// the shell they are in), then the 5.1 that ships with Windows.
+export function powershellProfilePath({
+  platform = process.platform,
+  runner = defaultPowershellRunner,
+} = {}) {
+  if (platform !== 'win32') return null;
+  for (const exe of ['pwsh', 'powershell.exe']) {
+    try {
+      const out = runner(exe, ['-NoProfile', '-NonInteractive', '-Command',
+        '$PROFILE.CurrentUserAllHosts']);
+      const path = String(out ?? '').trim();
+      if (path) return path;
+    } catch (err) {
+      // "PowerShell isn't installed" is the expected failure and moves on. A
+      // ReferenceError/TypeError is a bug in this file, and swallowing it here
+      // would look identical from the outside — an install that quietly never
+      // writes a wrapper — so let it out.
+      if (err instanceof ReferenceError || err instanceof TypeError) throw err;
+    }
+  }
+  return null;
+}
+
+function defaultPowershellRunner(file, args) {
+  const r = spawnSync(file, args, { encoding: 'utf-8' });
+  if (r.error || r.status !== 0) throw r.error || new Error(`${file} exited ${r.status}`);
+  return r.stdout;
+}
+
+// installZshrcBlock's PowerShell twin. Same fence, same replace-don't-append
+// behaviour, so re-running setup never stacks a second copy of the wrappers.
+export function installPowershellBlock(content, agents = ['claude'], bin = UNSNOOZE_BIN) {
+  const { content: cleaned } = stripFencedBlock(content, FENCE_OPEN, FENCE_CLOSE);
+  return cleaned.replace(/\n+$/, '\n') + '\n' + powershellWrapperBlock(agents, bin) + '\n';
 }
 
 export function stripFencedBlock(content, open, close) {
@@ -516,6 +602,22 @@ export function cmdInstall(rest, { agents = enabledAgents() } = {}) {
     console.log(`unsnooze: wrappers (${agents.join(', ')}) installed in ${rc}${oldRemoved ? ' (legacy wrapper block removed)' : ''}`);
   }
 
+  // 3b. PowerShell profile (native Windows). The rc loop above only ever
+  //     reaches ~/.zshrc and ~/.bashrc, which a PowerShell user does not have —
+  //     without this nothing routes their `claude` through unsnooze at all.
+  const psProfile = powershellProfilePath();
+  if (psProfile) {
+    try {
+      mkdirSync(dirname(psProfile), { recursive: true });
+      const before = existsSync(psProfile) ? readFileSync(psProfile, 'utf-8') : '';
+      if (existsSync(psProfile)) backupOnce(psProfile);
+      atomicWrite(psProfile, installPowershellBlock(before, agents, UNSNOOZE_BIN));
+      console.log(`unsnooze: PowerShell wrappers (${agents.join(', ')}) installed in ${psProfile}`);
+    } catch (err) {
+      console.log(`unsnooze: could not write the PowerShell profile (${err.message})`);
+    }
+  }
+
   // 4. Daemon autostart (GUI-session watching), opt-in via --daemon / wizard.
   if (opts.daemon) {
     const target = installDaemonAutostart();
@@ -573,6 +675,22 @@ export function cmdUninstall(rest) {
       atomicWrite(rc, content);
       console.log(`unsnooze: wrappers removed from ${rc}`);
     }
+  }
+
+  // The PowerShell profile is a wrapper site too — leaving its block behind
+  // would keep shadowing `claude` with a function pointing at a bin that
+  // uninstall just removed.
+  try {
+    const psProfile = powershellProfilePath();
+    if (psProfile && existsSync(psProfile)) {
+      const { content, found } = stripFencedBlock(readFileSync(psProfile, 'utf-8'), FENCE_OPEN, FENCE_CLOSE);
+      if (found) {
+        atomicWrite(psProfile, content);
+        console.log(`unsnooze: PowerShell wrappers removed from ${psProfile}`);
+      }
+    }
+  } catch (err) {
+    console.log(`unsnooze: could not clean the PowerShell profile (${err.message})`);
   }
 
   const autostart = uninstallDaemonAutostart();
