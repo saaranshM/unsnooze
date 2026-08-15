@@ -126,12 +126,15 @@ test('a replacement that died on startup gives the lock back', async () => {
   seedPendingStop();
   const spawner = spawnSpy(999999999);          // spawned, then immediately dead
   const ctrl = new AbortController();
-  // Must outlast the hand-off's confirm delay, or the loop aborts mid-check
-  // and never reaches the tick that proves the lock came back.
-  const timer = setTimeout(() => ctrl.abort(), 900);
+  // Stop on what the test is waiting for — the second tick, which is where the
+  // lock reappears — rather than on a stopwatch. A wall-clock budget is a bet
+  // that a shared CI runner schedules this loop as fast as a laptop does, and
+  // that bet loses intermittently. The timer is only a safety net now.
+  const timer = setTimeout(() => ctrl.abort(), 30_000);
   const lockAtTick = [];
   const versionSkewed = () => {
     lockAtTick.push(existsSync(RESUMER_LOCK) ? readFileSync(RESUMER_LOCK, 'utf-8') : null);
+    if (lockAtTick.length >= 2) ctrl.abort();
     return lockAtTick.length === 1;
   };
 
@@ -149,10 +152,11 @@ test('a pre-flight refusal never releases the lock in the first place', async ()
   seedPendingStop();
   const spawner = spawnSpy();
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 200);
+  const timer = setTimeout(() => ctrl.abort(), 30_000);   // safety net only
   const lockAtTick = [];
   const versionSkewed = () => {
     lockAtTick.push(existsSync(RESUMER_LOCK) ? readFileSync(RESUMER_LOCK, 'utf-8') : null);
+    if (lockAtTick.length >= 2) ctrl.abort();    // two ticks is the whole claim
     return true;                                 // skewed on every tick
   };
 
@@ -173,14 +177,18 @@ test('a failed hand-off takes the lock back rather than running unlocked', async
   seedPendingStop();
   const spawner = spawnSpy(new Error('ENOENT'));
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 150);
+  const timer = setTimeout(() => ctrl.abort(), 30_000);   // safety net only
 
   // The skew check runs once per tick, so it doubles as a probe: snapshot who
   // owns the lock at the top of every tick. Skewed on tick 1 only — the spawn
-  // throws, and tick 2 must find the lock back in our name.
+  // throws, and tick 2 must find the lock back in our name. Ending the loop on
+  // that second observation is what makes this deterministic: with a 150ms
+  // stopwatch instead, a loaded macOS runner delivered one tick and the
+  // assertion failed for reasons that had nothing to do with locking.
   const lockAtTick = [];
   const versionSkewed = () => {
     lockAtTick.push(existsSync(RESUMER_LOCK) ? readFileSync(RESUMER_LOCK, 'utf-8') : null);
+    if (lockAtTick.length >= 2) ctrl.abort();
     return lockAtTick.length === 1;
   };
 
