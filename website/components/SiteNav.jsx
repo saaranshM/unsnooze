@@ -24,6 +24,7 @@ export default function SiteNav({ page = 'home' }) {
               <a href="#why">why</a>
               <a href="#night">how it works</a>
               <a href="#agents">agents</a>
+              <a href="#terminals">terminals</a>
               <a href="#contract">security</a>
             </>
           ) : (

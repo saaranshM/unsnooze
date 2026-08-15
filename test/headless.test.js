@@ -152,3 +152,14 @@ test('headless is the last-resort default and never pre-empts an installed mux',
   factory = createMultiplexerFactory({ backends, getSetting: () => 'headless', env: { TMUX: '/tmp/x' } });
   assert.equal(factory.getMultiplexer().name, 'headless');
 });
+
+test('headless offers no attach hint — there is no session to attach to', async () => {
+  // A headless "session" is a detached pid. Falling through to the default
+  // `tmux attach -t <name>` would print a command that either does nothing or,
+  // worse, attaches to an unrelated tmux session with a colliding name.
+  const { attachHint } = await import('../src/multiplexers/session-name.js');
+  assert.equal(attachHint('headless', 'unsnooze-resumed'), null);
+  // The backends that do have something joinable still say so.
+  assert.match(attachHint('tmux', 'unsnooze-1'), /tmux attach/);
+  assert.match(attachHint('herdr', 'unsnooze-1'), /herdr session attach/);
+});

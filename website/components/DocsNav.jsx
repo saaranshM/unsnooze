@@ -8,7 +8,7 @@ export const DOC_PAGES = [
   {
     path: '/docs/',
     label: 'Install & setup',
-    sections: [['install', 'Getting started'], ['everyday', 'Day to day']],
+    sections: [['install', 'Getting started'], ['terminals', 'Supported terminals'], ['everyday', 'Day to day']],
   },
   {
     path: '/docs/commands/',

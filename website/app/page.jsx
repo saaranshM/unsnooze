@@ -3,6 +3,7 @@ import Hero from '../components/Hero.jsx';
 import Compare from '../components/Compare.jsx';
 import Timeline from '../components/Timeline.jsx';
 import Agents from '../components/Agents.jsx';
+import Terminals from '../components/Terminals.jsx';
 import Contract from '../components/Contract.jsx';
 import Dashboard from '../components/Dashboard.jsx';
 import Usage from '../components/Usage.jsx';
@@ -44,6 +45,7 @@ export default async function Home() {
         <Compare />
         <Timeline />
         <Agents />
+        <Terminals />
         <Contract />
         <Dashboard />
         <Usage />

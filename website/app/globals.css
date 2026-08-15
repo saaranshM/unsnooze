@@ -590,6 +590,16 @@ h1 .wake {
 .doc-table tr:last-child td { border-bottom: none; }
 .doc-table td:first-child { white-space: nowrap; }
 
+/* Footnotes under a capability table: the caveats that stop a tick from
+   overpromising (herdr never restarts a stopped session, headless has no
+   pane to attach to). Small, but they carry the honest part. */
+.doc-notes {
+  margin: -6px 0 20px; padding-left: 20px;
+  font-size: 13px; line-height: 1.65; color: var(--faint);
+}
+.doc-notes li { margin: 4px 0; }
+.doc-notes li::marker { color: var(--dim); font-family: var(--mono); font-size: 11px; }
+
 /* ---------- feedback board ---------- */
 .fb-form {
   background: var(--panel); border: 1px solid var(--line-soft); border-radius: 14px;

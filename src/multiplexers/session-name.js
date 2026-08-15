@@ -52,6 +52,11 @@ export function attachHint(muxName, sessionName) {
   // is no command that attaches to a surface from outside cmux, so omit the
   // hint rather than print a `tmux attach` that would silently do nothing.
   if (muxName === 'cmux') return null;
+  // headless has no session at all — its "pane" is a detached pid. The default
+  // below would print `tmux attach -t <name>`, which at best does nothing and
+  // at worst attaches to an unrelated tmux session that happens to share the
+  // name. Its output lives in ~/.unsnooze/headless/<session>.log instead.
+  if (muxName === 'headless') return null;
   if (muxName === 'herdr') return `herdr session attach ${sessionName}`;
   if (muxName === 'zellij') return `zellij attach ${sessionName}`;
   return `tmux attach -t ${sessionName}`;

@@ -665,6 +665,38 @@ watcher stops (no pane context) always use native.
 - zsh or bash (wrappers go into `~/.zshrc` / `~/.bashrc`), or PowerShell
   (wrappers go into `$PROFILE.CurrentUserAllHosts`)
 
+### Supported terminals
+
+unsnooze drives four terminal multiplexers, and works without one.
+
+| | [tmux](https://github.com/tmux/tmux) ≥ 3.2 | [Zellij](https://zellij.dev) | [herdr](https://herdr.dev) ≥ 0.8.0 | [cmux](https://cmux.dev) | `headless` |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Detect a limit stop | pane + hook + transcript | pane + hook + transcript | pane + hook + transcript | pane + hook + transcript | hook + transcript |
+| Resume a live session in place | ✅ | ✅ | ✅ | ✅ | — |
+| Answer Claude's limit menu | ✅ | ✅ | ✅ | ✅ | — |
+| Revive a session whose pane died | ✅ | ✅ | ✅¹ | ✅² | ✅³ |
+| Wrap a bare `claude` into a managed session | ✅ | ✅ | ✅ | — | n/a⁴ |
+| `unsnooze reap` idle sessions | ✅ | ✅ | ✅ | — | — |
+| `attach:` hint in `unsnooze status` | ✅ | ✅ | ✅ | — | — |
+| OSC notifications to your terminal | ✅ | — | — | — | — |
+
+¹ Into a fresh session name (`unsnooze-2`), never by restarting the stopped one —
+herdr restores saved agent panes itself, so a revival on top would resume the
+same conversation twice.
+² Into a fresh workspace; cmux has no joinable named-session model.
+³ As a detached process. Its output goes to `~/.unsnooze/headless/<session>.log`,
+since there is no scrollback to read it out of later.
+⁴ Nothing to wrap into — your own terminal is the session.
+
+Pick one explicitly with `unsnooze config set multiplexer tmux|zellij|herdr|cmux|headless`.
+On `auto`, unsnooze uses the multiplexer you are currently inside; failing that,
+the only one installed (tmux breaks ties); failing that, `headless`.
+
+**Install:** `brew install tmux` or `brew install zellij` on macOS,
+`sudo apt install tmux` on Linux/WSL. herdr comes from
+[herdr.dev](https://herdr.dev) — Homebrew still ships 0.7.3, which `available()`
+refuses, so take the release binary.
+
 ### Watching without a multiplexer
 
 A terminal pane is only one of unsnooze's three detection channels. The Claude

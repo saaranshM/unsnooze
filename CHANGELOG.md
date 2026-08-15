@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.16.1 — 2026-08-16
+
+- **`unsnooze status` no longer offers an attach command for headless sessions.**
+  A headless "pane" is a detached pid, but the attach hint fell through to the
+  default `tmux attach -t <session>` — a command that at best does nothing and
+  at worst attaches to an unrelated tmux session that happens to share the name.
+  Headless output lives in `~/.unsnooze/headless/<session>.log`, and status now
+  says nothing rather than something wrong. Found while building the capability
+  table for the new **[Supported terminals](https://unsnooze.dev/docs/#terminals)**
+  docs section, which sets out exactly what each of tmux, Zellij, herdr, cmux
+  and headless does and does not do.
+
 ## 1.16.0 — 2026-08-16
 
 - **Claude Design, and native Windows along the way.** ([#13](https://github.com/saaranshM/unsnooze/issues/13))

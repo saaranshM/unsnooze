@@ -76,6 +76,46 @@ unsnooze doctor: all clear — install is healthy.
                 that need tmux ≥ 3.2.</p>
             </section>
 
+            <section className="doc-sec" id="terminals">
+              <h2>Supported terminals</h2>
+              <p>unsnooze drives four terminal multiplexers — and works without one. Pick one
+                explicitly with <C>unsnooze config set multiplexer tmux|zellij|herdr|cmux|headless</C>.
+                On <C>auto</C> it uses the multiplexer you are currently inside; failing that, the
+                only one installed (tmux breaks ties); failing that, <C>headless</C>.</p>
+              <div className="doc-table-scroll">
+                <table className="doc-table">
+                  <thead><tr>
+                    <th>&nbsp;</th><th>tmux ≥ 3.2</th><th>Zellij</th>
+                    <th>herdr ≥ 0.8</th><th>cmux</th><th>headless</th>
+                  </tr></thead>
+                  <tbody>
+                    <tr><td>Detect a limit stop</td><td>pane + hook + transcript</td><td>pane + hook + transcript</td><td>pane + hook + transcript</td><td>pane + hook + transcript</td><td>hook + transcript</td></tr>
+                    <tr><td>Resume a live session in place</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>—</td></tr>
+                    <tr><td>Answer Claude's limit menu</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>—</td></tr>
+                    <tr><td>Revive a session whose pane died</td><td>✅</td><td>✅</td><td>✅ <sup>1</sup></td><td>✅ <sup>2</sup></td><td>✅ <sup>3</sup></td></tr>
+                    <tr><td>Wrap a bare <C>claude</C> into a managed session</td><td>✅</td><td>✅</td><td>✅</td><td>—</td><td>n/a <sup>4</sup></td></tr>
+                    <tr><td><C>unsnooze reap</C> idle sessions</td><td>✅</td><td>✅</td><td>✅</td><td>—</td><td>—</td></tr>
+                    <tr><td><C>attach:</C> hint in <C>unsnooze status</C></td><td>✅</td><td>✅</td><td>✅</td><td>—</td><td>—</td></tr>
+                    <tr><td>OSC notifications to your terminal</td><td>✅</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <ol className="doc-notes">
+                <li>Into a fresh session name (<C>unsnooze-2</C>), never by restarting the stopped
+                  one — herdr restores saved agent panes itself, so a revival on top would resume
+                  the same conversation twice.</li>
+                <li>Into a fresh workspace; cmux has no joinable named-session model.</li>
+                <li>As a detached process. Its output goes to{' '}
+                  <C>~/.unsnooze/headless/&lt;session&gt;.log</C>, since there is no scrollback to
+                  read it out of later.</li>
+                <li>Nothing to wrap into — your own terminal is the session.</li>
+              </ol>
+              <p><strong>Install:</strong> <C>brew install tmux</C> or <C>brew install zellij</C> on
+                macOS, <C>sudo apt install tmux</C> on Linux/WSL. herdr comes from{' '}
+                <a href="https://herdr.dev">herdr.dev</a> — Homebrew still ships 0.7.3, which
+                unsnooze refuses, so take the release binary.</p>
+            </section>
+
             <section className="doc-sec" id="everyday">
               <h2>Day to day</h2>
               <p>Run your agents like always. When one hits its limit, unsnooze records the stop in{' '}
