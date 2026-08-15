@@ -388,7 +388,7 @@ test('newWindow puts whitelisted launch env on workspace and types ONE quoted co
   };
 
   assert.deepEqual(await mux.newWindow('revival', '/tmp/project', launchSpec), {
-    pane: 'w1:p1', paneOwner: 'revival',
+    pane: 'w1:p1', paneOwner: 'revival', session: 'revival',
   });
   const workspace = spawner.calls.find(call => call.args.includes('workspace'));
   assert.deepEqual(workspace.args, [
@@ -677,4 +677,59 @@ test('the refusal explains itself in terms the user can act on', () => {
   }).bind('work');
   assert.match(mux.addressabilityReason(), /HERDR_SOCKET_PATH=\/tmp\/work\/herdr\.sock/);
   assert.match(mux.addressabilityReason(), /work/);
+});
+
+// herdr keeps stopped sessions listed and will restart one by name, so a
+// stopped session is a TAKEN name, not a free one.
+const stoppedUnsnooze = JSON.stringify({ sessions: [
+  { default: true, name: 'default', running: true },
+  { default: false, name: 'unsnooze', running: false },
+] });
+
+test('a stopped session is a taken name, not a free one', () => {
+  const calls = [];
+  const spawner = fakeSpawner((_file, args, options) => {
+    calls.push(args.join(' '));
+    if (args.join(' ') === 'session list --json') return { status: 0, stdout: stoppedUnsnooze };
+    if (options.detach) return { pid: 1, unref() {} };
+    if (args.includes('workspace')) return { status: 0, stdout: workspaceCreated };
+    return { status: 0, stdout: '' };
+  });
+  const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'unsnooze' } });
+  try { mux.launchWrapped({ file: 'node', args: [], env: {} }); } catch { /* attach is faked away */ }
+
+  assert.equal(calls.some(c => c === '--session unsnooze server'), false,
+    'the user\'s stopped session must never be restarted out from under them');
+  assert.ok(calls.some(c => c.includes('--session unsnooze-2')),
+    'a free name is used instead');
+});
+
+test('newWindow revives into a fresh session rather than restarting a stopped one', async () => {
+  let started = false;   // the server the driver starts must then show up
+  const spawner = fakeSpawner((_file, args, options) => {
+    if (args.join(' ') === 'session list --json') {
+      return JSON.stringify({ sessions: [
+        { default: true, name: 'default', running: true },
+        { default: false, name: 'unsnooze', running: false },
+        ...(started ? [{ default: false, name: 'unsnooze-2', running: true }] : []),
+      ] });
+    }
+    if (options.detach) { started = true; return { pid: 1, unref() {} }; }
+    if (args.includes('workspace')) return workspaceCreated;
+    return '';
+  });
+  const mux = createHerdr({ spawner, env: {} });
+  const address = await mux.newWindow('unsnooze', '/tmp', { file: 'node', args: [], env: {} });
+  assert.equal(address.session, 'unsnooze-2', 'the caller is told which session it really got');
+  assert.equal(address.paneOwner, 'unsnooze-2');
+  assert.equal(spawner.calls.some(call => call.args.join(' ') === '--session unsnooze server'), false);
+});
+
+test('ensureSessionRunning refuses to restart a stopped session, and says why', async () => {
+  const spawner = fakeSpawner(() => stoppedUnsnooze);
+  const mux = createHerdr({ spawner, env: {} });
+  await assert.rejects(
+    () => mux.ensureSessionRunning('unsnooze'),
+    err => err.name === 'SessionCreateError' && /stopped/.test(err.message) && /resume them twice/.test(err.message),
+  );
 });

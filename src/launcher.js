@@ -11,6 +11,7 @@ import { getConfig } from './settings.js';
 import { spawnDetached, monitorSpawnArgs } from './spawn.js';
 import { makeLogger } from './logger.js';
 import { createLeaseId, processBirth, writeLease, removeLease } from './lease.js';
+import { recordOwnedSession } from './mux-sessions.js';
 import { SessionCreateError } from './multiplexers/session-name.js';
 
 const log = makeLogger('launcher');
@@ -67,6 +68,11 @@ export function runLauncher(args, agentId = 'claude', { processBirthFn = process
         file: process.execPath,
         args: [process.argv[1], '_run', agent.id, ...args],
         env: process.env,
+        // Written before the session is used, not after: a launch that dies
+        // halfway still leaves the evidence reap needs to clean up after it.
+        // Without this, reap has no proof of ownership and (correctly) refuses
+        // to delete anything.
+        onSessionCreated: name => recordOwnedSession({ mux: mux.name, name }),
       });
     } catch (err) {
       // Session creation failed (tmux/zellij binary spawn, unexpected throw).

@@ -12,6 +12,7 @@ import { basename } from 'node:path';
 import { promisify } from 'node:util';
 
 import { resolveSessionName, SessionCreateError } from './session-name.js';
+import { recordOwnedSession } from '../mux-sessions.js';
 import { shellLine, UnquotableArgError } from './shell-quote.js';
 
 const execFileAsync = promisify(execFileCb);
@@ -129,7 +130,21 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
       (await backend.listSessions()).some(row => row.name === name && !row.exited);
 
     const ensureSessionRunning = async name => {
-      if (await sessionRunning(name)) return;
+      // One listing answers both questions, so the two states cannot drift
+      // apart between calls: is it already up, and does the name exist at all?
+      const rows = await backend.listSessions();
+      if (rows.some(row => row.name === name && !row.exited)) return;
+      // A stopped session must never be restarted. herdr restores saved agent
+      // panes on restart (resume_agents_on_restore defaults true upstream), so
+      // starting one back up can bring the user's agent back by itself — and
+      // then we would create a workspace and resume the same conversation a
+      // second time. Verified against 0.8.0: `--session <stopped> server` does
+      // restart it. Callers pick a free name instead.
+      if (rows.some(row => row.name === name)) {
+        throw new SessionCreateError(
+          `herdr session "${name}" exists but is stopped — not restarting it,`
+          + ' because herdr would restore its agents and unsnooze would resume them twice');
+      }
       let child;
       try {
         child = spawner('herdr', ['--session', name, 'server'], {
@@ -155,7 +170,11 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
       throw new SessionCreateError(`herdr session "${name}" server did not start`);
     };
 
-    const liveSessionNames = () => {
+    // Every name herdr still knows about, running or stopped. Stopped sessions
+    // stay listed (verified against 0.8.0) and can be restarted by name, so a
+    // stopped session called `unsnooze` is emphatically NOT a free name: taking
+    // it would restart and hijack the user's own session.
+    const existingSessionNames = () => {
       try {
         const result = spawner('herdr', ['session', 'list', '--json'], {
           sync: true,
@@ -163,7 +182,7 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
           env: childEnv(),
         });
         return new Set(parseSessionList(syncOutput(result))
-          .filter(row => row?.running !== false && typeof row?.name === 'string')
+          .filter(row => typeof row?.name === 'string')
           .map(row => row.name));
       } catch {
         return new Set();
@@ -184,8 +203,15 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
       }
     };
 
-    const ensureSessionRunningSync = name => {
+    // `existing` is the caller's already-fetched name set, reused so the check
+    // cannot disagree with the name the caller just resolved as free.
+    const ensureSessionRunningSync = (name, existing = null) => {
       if (sessionRunningSync(name)) return;
+      if ((existing ?? existingSessionNames()).has(name)) {
+        throw new SessionCreateError(
+          `herdr session "${name}" exists but is stopped — not restarting it,`
+          + ' because herdr would restore its agents and unsnooze would resume them twice');
+      }
       let child;
       try {
         child = spawner('herdr', ['--session', name, 'server'], {
@@ -433,9 +459,22 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
       },
 
       async newWindow(sessionName, cwd, launchSpec) {
-        await ensureSessionRunning(sessionName);
+        // The requested session may be stopped rather than absent, and a
+        // stopped one must not be restarted (herdr would restore its agents and
+        // we would resume the same conversation twice). Reviving into a fresh
+        // name is the safe move; the caller learns which one via `session`.
+        const rows = await backend.listSessions();
+        const running = new Set(rows.filter(row => !row.exited).map(row => row.name));
+        const existing = new Set(rows.map(row => row.name));
+        const target = running.has(sessionName)
+          ? sessionName
+          : resolveSessionName(sessionName, candidate => existing.has(candidate));
+        if (!running.has(target)) {
+          await ensureSessionRunning(target);
+          recordOwnedSession({ mux: 'herdr', name: target });
+        }
         const workspace = parseResult(await inSession(
-          sessionName, 'workspace', 'create', '--cwd', cwd, '--label', 'unsnooze',
+          target, 'workspace', 'create', '--cwd', cwd, '--label', 'unsnooze',
           ...envFlags(launchSpec?.env),
         ));
         const pane = workspace?.root_pane?.pane_id;
@@ -445,16 +484,20 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
         // ours. It also submits the line itself (PaneSendInput carries
         // keys: ["Enter"]) — a second Enter here would land in the stdin of
         // whatever just started.
-        await inSession(sessionName, 'pane', 'run', String(pane),
+        await inSession(target, 'pane', 'run', String(pane),
           shellLine(launchSpec.file, launchSpec.args || []));
-        return { pane: String(pane), paneOwner: sessionName };
+        // `session` tells the caller which session this actually landed in —
+        // only herdr can differ from what was asked for. tmux and zellij return
+        // { pane, paneOwner } exactly as before.
+        return { pane: String(pane), paneOwner: target, session: target };
       },
 
       launchWrapped(launchSpec) {
-        const live = liveSessionNames();
-        const name = resolveSessionName(wrappedSessionName(env), candidate => live.has(candidate));
+        const existing = existingSessionNames();
+        const name = resolveSessionName(wrappedSessionName(env), candidate => existing.has(candidate));
+        launchSpec.onSessionCreated?.(name);
         try {
-          ensureSessionRunningSync(name);
+          ensureSessionRunningSync(name, existing);
           const workspace = parseResult(syncCall([
             '--session', name, 'workspace', 'create', '--cwd', process.cwd(), '--label', 'unsnooze',
             ...envFlags(launchSpec?.env),

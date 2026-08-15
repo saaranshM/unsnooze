@@ -6,6 +6,7 @@ import { getMultiplexer } from './multiplexer.js';
 import { readState, updateState } from './state.js';
 import { getConfig } from './settings.js';
 import { paneOwnedByRecord } from './lease.js';
+import { ownsSession, forgetSession } from './mux-sessions.js';
 import { makeLogger } from './logger.js';
 
 const log = makeLogger('reap');
@@ -101,6 +102,18 @@ export function isUnsnoozeSessionName(name, base = MUX_SESSION_NAME) {
   return false;
 }
 
+
+// Sessions created before the ownership record existed, or by a process whose
+// record was cleaned up, are still ours if a live state record points at them.
+function stateClaimsSession(muxName, sessionName) {
+  try {
+    return Object.values(readState().sessions).some(rec =>
+      rec?.mux === muxName && (rec.muxSession ?? rec.tmuxSession) === sessionName);
+  } catch {
+    return false;
+  }
+}
+
 export async function listOwnedSessions({ muxName = null } = {}) {
   const names = muxName ? [muxName] : MUX_NAMES;
   const out = [];
@@ -149,6 +162,11 @@ export async function reap({
   dryRun = true,
   yes = false,
   resolveMux = rec => getMultiplexer(rec.mux, { owner: rec.paneOwner }),
+  // Seams for the session sweep below. It deletes sessions, so it needs to be
+  // testable against a fake rather than only against whatever multiplexer
+  // happens to be running on the machine executing the tests.
+  muxNames = MUX_NAMES,
+  getMux = name => getMultiplexer(name),
 } = {}) {
   // --yes flips dry-run off; plain default stays dry-run.
   if (yes) dryRun = false;
@@ -243,14 +261,29 @@ export async function reap({
   }
 
   // Empty / EXITED unsnooze-owned sessions.
-  for (const name of MUX_NAMES) {
+  for (const name of muxNames) {
     let mux;
-    try { mux = getMultiplexer(name); } catch { continue; }
+    try { mux = getMux(name); } catch { continue; }
     if (!mux.available?.() || typeof mux.listSessions !== 'function') continue;
     let sessions = [];
     try { sessions = await mux.listSessions(); } catch { continue; }
     for (const row of sessions) {
       if (!isUnsnoozeSessionName(row.name)) continue;
+      // A matching name is not proof we created it. Users name sessions too,
+      // and on backends that keep stopped sessions listed (herdr) a user's own
+      // stopped `unsnooze-9` was previously stopped and deleted on sight.
+      // Accept either durable evidence: a record written when we created it, or
+      // a live state record still pointing at it.
+      if (!ownsSession(name, row.name) && !stateClaimsSession(name, row.name)) {
+        actions.push({
+          kind: 'skip-unowned-session',
+          mux: name,
+          name: row.name,
+          reason: 'no record that unsnooze created this session',
+          hint: attachHint(name, row.name),
+        });
+        continue;
+      }
       const bound = mux.bind ? mux.bind(row.name) : mux;
       let panes = [];
       try {
@@ -270,8 +303,10 @@ export async function reap({
         reason: exited ? 'exited' : 'empty',
       });
       if (!dryRun && typeof bound.deleteSession === 'function') {
-        try { await bound.deleteSession(row.name); }
-        catch (err) {
+        try {
+          await bound.deleteSession(row.name);
+          forgetSession(name, row.name);
+        } catch (err) {
           actions.push({ kind: 'error', name: row.name, message: err.message });
         }
       }
