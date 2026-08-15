@@ -11,12 +11,25 @@ import { getConfig } from './settings.js';
 import { spawnDetached, monitorSpawnArgs } from './spawn.js';
 import { makeLogger } from './logger.js';
 import { createLeaseId, processBirth, writeLease, removeLease } from './lease.js';
-import { SessionCreateError } from './multiplexers/session-name.js';
+import { recordOwnedSession } from './mux-sessions.js';
+import { AgentDispatchedError, SessionCreateError, attachHint } from './multiplexers/session-name.js';
 
 const log = makeLogger('launcher');
 
 function isPrintMode(args) {
   return args.includes('-p') || args.includes('--print');
+}
+
+export function resolvePaneOwner(muxName, env = process.env) {
+  if (muxName === 'herdr') {
+    return (env.UNSNOOZE_MUX === 'herdr'
+      ? env.UNSNOOZE_PANE_OWNER : env.HERDR_SESSION || 'default') || null;
+  }
+  if (muxName === 'zellij') {
+    return (env.UNSNOOZE_MUX === 'zellij'
+      ? env.UNSNOOZE_PANE_OWNER : env.ZELLIJ_SESSION_NAME) || null;
+  }
+  return null;
 }
 
 function runUnwatched(agent, args, reason) {
@@ -55,10 +68,29 @@ export function runLauncher(args, agentId = 'claude', { processBirthFn = process
         file: process.execPath,
         args: [process.argv[1], '_run', agent.id, ...args],
         env: process.env,
+        // Written before the session is used, not after: a launch that dies
+        // halfway still leaves the evidence reap needs to clean up after it.
+        // Without this, reap has no proof of ownership and (correctly) refuses
+        // to delete anything.
+        onSessionCreated: name => recordOwnedSession({ mux: mux.name, name }),
       });
     } catch (err) {
-      // Session creation failed (tmux/zellij binary spawn, unexpected throw).
-      // Never brick the user's `claude`/`codex` — fall back unwatched.
+      // The agent may already be running inside the session: the multiplexer
+      // took the command that starts it and something after that failed. The
+      // unwatched fallback below would then start a SECOND agent — two live
+      // sessions, two sets of edits — from one `unsnooze claude`. Tell the user
+      // how to reach the one that exists instead.
+      if (err instanceof AgentDispatchedError) {
+        process.stderr.write(`unsnooze: ${err.message}\n`);
+        const hint = attachHint(err.mux || mux.name, err.session);
+        if (hint) process.stderr.write(`unsnooze: reattach with: ${hint}\n`);
+        process.stderr.write(`unsnooze: not starting ${agent.id} again — it may already be running.\n`);
+        log(`launchWrapped failed after dispatch: ${err.stack || err}`);
+        return 1;
+      }
+      // Session creation failed before anything could start (binary spawn,
+      // duplicate name, unexpected throw). Never brick the user's
+      // `claude`/`codex` — fall back unwatched.
       const msg = err instanceof SessionCreateError
         ? `${err.message} — running without limit-watch.`
         : `failed to wrap into ${mux.name} (${err.message}) — running without limit-watch.`;
@@ -67,17 +99,32 @@ export function runLauncher(args, agentId = 'claude', { processBirthFn = process
     }
   }
 
-  const pane = mux.currentPaneId();
-  const paneOwner = mux.name === 'zellij'
-    ? (process.env.UNSNOOZE_MUX === 'zellij'
-      ? process.env.UNSNOOZE_PANE_OWNER : process.env.ZELLIJ_SESSION_NAME) || null
-    : null;
+  const rawPane = mux.currentPaneId();
+  const paneOwner = resolvePaneOwner(mux.name, process.env);
+  // A backend may know it cannot safely address the pane it is sitting in —
+  // herdr's pane ids are per-server, and an ambient custom socket can point our
+  // commands at a different server's identically-numbered pane. Watching
+  // nothing beats typing into someone else's terminal, so drop to the same
+  // no-pane path a missing pane id already takes: the agent runs normally,
+  // just unwatched, and the user is told why.
+  const addressable = typeof mux.paneAddressable !== 'function' || mux.paneAddressable();
+  if (rawPane && !addressable) {
+    const why = typeof mux.addressabilityReason === 'function'
+      ? mux.addressabilityReason() : `${mux.name} pane ${rawPane} is not safely addressable`;
+    process.stderr.write(`unsnooze: ${why} — running ${agent.id} without limit-watch.\n`);
+    log(`pane ${rawPane} not addressable: ${why}`);
+  }
+  const pane = addressable ? rawPane : null;
   const leaseId = process.env.UNSNOOZE_LEASE_ID || createLeaseId();
   if (pane) {
     // Stamp our own pane (best-effort, tmux only): the identity every later
     // close/inject decision verifies against — pane ids get recycled.
-    if (typeof mux.stampPaneOwner === 'function') {
-      mux.stampPaneOwner(pane, leaseId).catch(() => { /* legacy tmux */ });
+    // Bind to the pane's session first: herdr addresses panes through
+    // `--session`, so an unbound driver cannot write the stamp at all. tmux
+    // ignores the binding.
+    const owner = typeof mux.bind === 'function' ? mux.bind(paneOwner) : mux;
+    if (typeof owner.stampPaneOwner === 'function') {
+      Promise.resolve(owner.stampPaneOwner(pane, leaseId)).catch(() => { /* legacy tmux */ });
     }
     spawnDetached(
       monitorSpawnArgs({ muxName: mux.name, paneOwner, pane, agentId: agent.id, leaseId }),

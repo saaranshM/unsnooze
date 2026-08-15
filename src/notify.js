@@ -63,7 +63,8 @@ export function nativeNotify(title, message, {
   spawner = defaultSpawner,
 } = {}) {
   const mux = process.env.UNSNOOZE_MUX
-    || (process.env.ZELLIJ ? 'zellij' : (process.env.TMUX ? 'tmux' : null));
+    || (process.env.HERDR_ENV ? 'herdr'
+      : (process.env.ZELLIJ ? 'zellij' : (process.env.TMUX ? 'tmux' : null)));
   if (platform === 'darwin') {
     spawner('osascript', ['-e',
       `display notification ${appleScriptString(message)} with title ${appleScriptString(title)}`]);

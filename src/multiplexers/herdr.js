@@ -1,0 +1,613 @@
+// herdr panes have no close-on-exit: when an agent command exits, the pane
+// remains alive with its shell prompt. The resumer must therefore verify
+// agent ownership before injecting, and revival can reuse a surviving pane
+// only when Task 3 wires that path deliberately.
+// Launch env is delivered via workspace create --env. Keep this narrow because
+// pane run types argv into the pane shell, but preserve the two Claude config
+// roots: desktop/isolated Claude sessions cannot be resumed without them.
+
+import { execFile as execFileCb, spawn, spawnSync } from 'node:child_process';
+import { constants as osConstants } from 'node:os';
+import { basename } from 'node:path';
+import { promisify } from 'node:util';
+
+import { resolveSessionName, AgentDispatchedError, SessionCreateError } from './session-name.js';
+import { recordOwnedSession } from '../mux-sessions.js';
+import { shellCommand, UnquotableArgError } from './shell-quote.js';
+
+const execFileAsync = promisify(execFileCb);
+const MIN_VERSION = [0, 8, 0];
+const SERVER_POLL_MS = 50;
+const SERVER_POLL_ATTEMPTS = 80;
+
+function defaultSpawner(file, args, { sync = false, detach = false, ...options } = {}) {
+  if (detach) {
+    const child = spawn(file, args, {
+      ...options,
+      detached: true,
+      stdio: options.stdio ?? 'ignore',
+    });
+    // The listener must exist BEFORE unref(). Node reports an async spawn
+    // failure (ENOENT, EACCES) by emitting 'error', never by setting a field,
+    // and an 'error' event with no listener is an uncaught exception that kills
+    // the process — here, the resumer daemon, silently. child.pid is undefined
+    // synchronously in that case, which is what callers actually check, since
+    // ensureSessionRunningSync blocks the event loop and would never observe
+    // the event at all.
+    child.on('error', error => { child.spawnError = error; });
+    child.unref();
+    return child;
+  }
+  if (sync) return spawnSync(file, args, options);
+  return execFileAsync(file, args, options).then(({ stdout }) => stdout);
+}
+
+// Only the variables that decide WHICH server and WHICH pane a herdr command
+// talks to. Everything else the user exported — HERDR_CONFIG_PATH, HERDR_LOG,
+// HERDR_DISABLE_SOUND, HERDR_PROCESS_DETECTION, HERDR_BIN_PATH — is a setting
+// they chose, and a prefix match threw all of it away along with the routing.
+const HERDR_ROUTING_VARS = new Set([
+  'HERDR_SOCKET_PATH', 'HERDR_CLIENT_SOCKET_PATH', 'HERDR_SESSION', 'HERDR_ENV',
+  'HERDR_PANE_ID', 'HERDR_TAB_ID', 'HERDR_WORKSPACE_ID',
+]);
+
+function scrubHerdrEnv(env) {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !HERDR_ROUTING_VARS.has(key)));
+}
+
+function envFlags(env = {}) {
+  return Object.entries(env)
+    .filter(([key, value]) => (
+      /^UNSNOOZE_/.test(key)
+      || key === 'CLAUDE_CONFIG_DIR'
+      || key === 'CLAUDE_SECURESTORAGE_CONFIG_DIR'
+    ) && value !== undefined)
+    .flatMap(([key, value]) => ['--env', `${key}=${value}`]);
+}
+
+function exitStatus(result) {
+  if (result.status !== null && result.status !== undefined) return result.status;
+  return result.signal ? 128 + (osConstants.signals[result.signal] || 0) : 1;
+}
+
+function wrappedSessionName(env) {
+  return env.UNSNOOZE_SESSION_NAME || env.UNSNOOZE_TMUX_SESSION || 'unsnooze';
+}
+
+function parseResult(stdout) {
+  const parsed = JSON.parse(String(stdout));
+  return (parsed && typeof parsed === 'object' && 'result' in parsed) ? parsed.result : parsed;
+}
+
+function parseVersion(stdout) {
+  const match = String(stdout).match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function versionAtLeast(actual, floor) {
+  for (let index = 0; index < floor.length; index += 1) {
+    const value = actual[index] ?? 0;
+    if (value !== floor[index]) return value > floor[index];
+  }
+  return true;
+}
+
+const KEY_MAP = {
+  Escape: 'esc',
+  Enter: 'enter',
+  Tab: 'tab',
+  Backspace: 'backspace',
+  Down: 'down',
+  Up: 'up',
+  Right: 'right',
+  Left: 'left',
+};
+
+export const SUBMIT_DELAY_MS = 150;
+
+export { SessionCreateError, AgentDispatchedError };
+
+export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}) {
+  const childEnv = () => scrubHerdrEnv(env);
+  const run = (args, options = {}) => spawner('herdr', args, { env: childEnv(), ...options });
+
+  const parseSessionList = stdout => {
+    const result = parseResult(stdout);
+    return Array.isArray(result?.sessions) ? result.sessions : [];
+  };
+
+  const syncOutput = result => typeof result === 'string' ? result : (result?.stdout ?? '');
+
+  const sleepSync = milliseconds => {
+    const buffer = new Int32Array(new SharedArrayBuffer(4));
+    Atomics.wait(buffer, 0, 0, milliseconds);
+  };
+
+  const build = owner => {
+    const owned = (...args) => {
+      if (!owner) throw new Error('unsnooze: herdr pane operation requires a session owner');
+      return run(['--session', owner, ...args]);
+    };
+    const inSession = (session, ...args) => {
+      if (!session) throw new Error('unsnooze: herdr pane operation requires a session owner');
+      return run(['--session', session, ...args]);
+    };
+
+    const sessionRunning = async name =>
+      (await backend.listSessions()).some(row => row.name === name && !row.exited);
+
+    const ensureSessionRunning = async name => {
+      // One listing answers both questions, so the two states cannot drift
+      // apart between calls: is it already up, and does the name exist at all?
+      const rows = await backend.listSessions();
+      if (rows.some(row => row.name === name && !row.exited)) return;
+      // A stopped session must never be restarted. herdr restores saved agent
+      // panes on restart (resume_agents_on_restore defaults true upstream), so
+      // starting one back up can bring the user's agent back by itself — and
+      // then we would create a workspace and resume the same conversation a
+      // second time. Verified against 0.8.0: `--session <stopped> server` does
+      // restart it. Callers pick a free name instead.
+      if (rows.some(row => row.name === name)) {
+        throw new SessionCreateError(
+          `herdr session "${name}" exists but is stopped — not restarting it,`
+          + ' because herdr would restore its agents and unsnooze would resume them twice');
+      }
+      let child;
+      try {
+        child = spawner('herdr', ['--session', name, 'server'], {
+          detach: true,
+          detached: true,
+          stdio: 'ignore',
+          env: childEnv(),
+        });
+      } catch (error) {
+        throw new SessionCreateError(
+          `failed to start herdr session "${name}": ${error.message}`, error,
+        );
+      }
+      const spawnFailure = child?.error || child?.spawnError
+        || (child && child.pid === undefined ? new Error('herdr could not be spawned') : null);
+      if (spawnFailure) {
+        throw new SessionCreateError(
+          `failed to start herdr session "${name}": ${spawnFailure.message}`, spawnFailure,
+        );
+      }
+      for (let attempt = 0; attempt < SERVER_POLL_ATTEMPTS; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, SERVER_POLL_MS));
+        if (await sessionRunning(name)) return;
+      }
+      throw new SessionCreateError(`herdr session "${name}" server did not start`);
+    };
+
+    // Every name herdr still knows about, running or stopped. Stopped sessions
+    // stay listed (verified against 0.8.0) and can be restarted by name, so a
+    // stopped session called `unsnooze` is emphatically NOT a free name: taking
+    // it would restart and hijack the user's own session.
+    const existingSessionNames = () => {
+      try {
+        const result = spawner('herdr', ['session', 'list', '--json'], {
+          sync: true,
+          encoding: 'utf8',
+          env: childEnv(),
+        });
+        return new Set(parseSessionList(syncOutput(result))
+          .filter(row => typeof row?.name === 'string')
+          .map(row => row.name));
+      } catch {
+        return new Set();
+      }
+    };
+
+    const sessionRunningSync = name => {
+      try {
+        const result = spawner('herdr', ['session', 'list', '--json'], {
+          sync: true,
+          encoding: 'utf8',
+          env: childEnv(),
+        });
+        return parseSessionList(syncOutput(result))
+          .some(row => row.name === name && row.running !== false);
+      } catch {
+        return false;
+      }
+    };
+
+    // `existing` is the caller's already-fetched name set, reused so the check
+    // cannot disagree with the name the caller just resolved as free.
+    const ensureSessionRunningSync = (name, existing = null) => {
+      if (sessionRunningSync(name)) return;
+      if ((existing ?? existingSessionNames()).has(name)) {
+        throw new SessionCreateError(
+          `herdr session "${name}" exists but is stopped — not restarting it,`
+          + ' because herdr would restore its agents and unsnooze would resume them twice');
+      }
+      let child;
+      try {
+        child = spawner('herdr', ['--session', name, 'server'], {
+          detach: true,
+          detached: true,
+          stdio: 'ignore',
+          env: childEnv(),
+        });
+      } catch (error) {
+        throw new SessionCreateError(
+          `failed to start herdr session "${name}": ${error.message}`, error,
+        );
+      }
+      const spawnFailure = child?.error || child?.spawnError
+        || (child && child.pid === undefined ? new Error('herdr could not be spawned') : null);
+      if (spawnFailure) {
+        throw new SessionCreateError(
+          `failed to start herdr session "${name}": ${spawnFailure.message}`, spawnFailure,
+        );
+      }
+      for (let attempt = 0; attempt < SERVER_POLL_ATTEMPTS; attempt += 1) {
+        sleepSync(SERVER_POLL_MS);
+        if (sessionRunningSync(name)) return;
+      }
+      throw new SessionCreateError(`herdr session "${name}" server did not start`);
+    };
+
+    const syncCall = (args, name, operation) => {
+      let result;
+      try {
+        result = spawner('herdr', args, {
+          sync: true,
+          encoding: 'utf8',
+          env: childEnv(),
+        });
+      } catch (error) {
+        throw new SessionCreateError(
+          `failed to ${operation} herdr session "${name}": ${error.message}`, error,
+        );
+      }
+      if (result?.error) {
+        throw new SessionCreateError(
+          `failed to ${operation} herdr session "${name}": ${result.error.message}`, result.error,
+        );
+      }
+      if (result?.status !== null && result?.status !== undefined && result.status !== 0) {
+        const stderr = result.stderr ? `: ${String(result.stderr).trim()}` : '';
+        throw new SessionCreateError(
+          `failed to ${operation} herdr session "${name}"${stderr}`,
+        );
+      }
+      return syncOutput(result);
+    };
+
+    const backend = {
+      name: 'herdr',
+      owner,
+      SUBMIT_DELAY_MS,
+
+      ensureSessionRunning,
+
+      available() {
+        try {
+          const result = spawner('herdr', ['--version'], {
+            sync: true,
+            encoding: 'utf8',
+            env: childEnv(),
+          });
+          if (result.status !== 0) return false;
+          const version = parseVersion(result.stdout);
+          return !!version && versionAtLeast(version, MIN_VERSION);
+        } catch {
+          return false;
+        }
+      },
+
+      inside() {
+        return !!(env.HERDR_ENV || env.HERDR_PANE_ID);
+      },
+
+      // Can we safely address this pane at all?
+      //
+      // herdr resolves an explicit `--session <name>` BEFORE it honours
+      // HERDR_SOCKET_PATH (upstream src/server/socket_paths.rs), and every call
+      // this driver makes passes --session. So inside a pane belonging to a
+      // server on a non-default socket, our commands would be answered by a
+      // DIFFERENT server — and pane ids are server-local, so `w1:p1` exists on
+      // both. That is not a failed capture, it is a resume prompt typed into
+      // someone else's terminal.
+      //
+      // herdr reports each session's socket_path in `session list --json`, so
+      // this compares rather than blanket-refusing: same socket, same server,
+      // safe to proceed. Anything we cannot positively confirm fails closed.
+      paneAddressable() {
+        const socket = env.HERDR_SOCKET_PATH;
+        if (!socket) return true;              // default resolution, nothing to disagree with
+        const target = owner || env.HERDR_SESSION || 'default';
+        try {
+          const result = spawner('herdr', ['session', 'list', '--json'], {
+            sync: true, encoding: 'utf8', env: childEnv(),
+          });
+          const row = parseSessionList(syncOutput(result)).find(entry => entry?.name === target);
+          return !!row && row.socket_path === socket;
+        } catch {
+          return false;
+        }
+      },
+
+      // The message the user needs when the above says no.
+      addressabilityReason() {
+        const target = owner || env.HERDR_SESSION || 'default';
+        return `herdr is running on a custom socket (HERDR_SOCKET_PATH=${env.HERDR_SOCKET_PATH})`
+          + ` that does not match session "${target}"; pane ids are per-server, so unsnooze would`
+          + ' risk addressing a pane on the wrong server';
+      },
+
+      currentPaneId() {
+        if (env.UNSNOOZE_MUX === 'herdr' && env.UNSNOOZE_PANE) return env.UNSNOOZE_PANE;
+        return env.HERDR_PANE_ID || null;
+      },
+
+      async capturePane(pane, lines = 200) {
+        // `detection` is the source every decision here wants: it is pinned to
+        // the live bottom of the pane.
+        //
+        // Not `recent` with a tall --lines: for an idle alternate-screen agent
+        // (Claude Code, OpenCode) herdr satisfies an over-tall read by driving
+        // the agent's own mouse-scroll interface to page through its
+        // transcript, which yanks the user's view on every scrape tick.
+        //
+        // Not `visible` either: that follows the user's viewport, so a user who
+        // scrolls up hands the monitor stale history — and a limit banner that
+        // has scrolled off, or an old one that has scrolled back into view, is
+        // a decision made against the wrong screen.
+        //
+        // --lines is deliberately not passed: verified against herdr 0.8.0,
+        // detection ignores it and returns the viewport (23 rows on an 80x24).
+        // Every caller reads only the last PANE_SCAN_LINES (12) — banner, busy
+        // footer, prompt — which are on the live screen by definition.
+        void lines;
+        return owned('pane', 'read', String(pane), '--source', 'detection', '--format', 'text');
+      },
+
+      async capturePaneVisible(pane) {
+        return owned('pane', 'read', String(pane), '--source', 'visible', '--format', 'text');
+      },
+
+      // History, for `unsnooze report` — the one caller that wants what the
+      // user saw rather than what is true now, and the only one that can pay
+      // the scroll side effect of a tall `recent` read (it runs once, by hand,
+      // on a pane whose agent has already stopped). tmux and zellij have real
+      // host scrollback and need no equivalent, so callers feature-detect this.
+      async captureScrollback(pane, lines = 200) {
+        return owned('pane', 'read', String(pane),
+          '--source', 'recent', '--lines', String(lines), '--format', 'text');
+      },
+
+      async sendText(pane, text) {
+        await owned('pane', 'send-text', String(pane), text);
+        await new Promise(resolve => setTimeout(resolve, SUBMIT_DELAY_MS));
+        await owned('pane', 'send-keys', String(pane), 'enter');
+      },
+
+      async sendKey(pane, key) {
+        const named = KEY_MAP[key];
+        if (named) {
+          await owned('pane', 'send-keys', String(pane), named);
+          return;
+        }
+        await owned('pane', 'send-text', String(pane), key);
+      },
+
+      // Pane identity, the same contract tmux gets from `set-option -p
+      // @unsnooze_owner`. Without it, ownership falls back to comparing the
+      // agent process's start time — which is unavailable on Windows and on any
+      // host where `ps` fails, and there the answer degrades to "not ours",
+      // meaning unsnooze quietly declines to resume its own session.
+      //
+      // herdr keeps arbitrary per-pane metadata tokens, readable back through
+      // `pane get`. Verified against 0.8.0: the token round-trips, survives
+      // unrelated metadata writes, and clears cleanly.
+      async stampPaneOwner(pane, leaseId) {
+        try {
+          await owned('pane', 'report-metadata', String(pane),
+            '--source', 'unsnooze', '--token', `unsnooze_owner=${leaseId}`);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+
+      async paneOwnerStamp(pane) {
+        try {
+          const info = parseResult(await owned('pane', 'get', String(pane)));
+          return info?.pane?.tokens?.unsnooze_owner || null;
+        } catch {
+          return null;
+        }
+      },
+
+      async paneAlive(pane) {
+        try {
+          const result = parseResult(await owned('pane', 'get', String(pane)));
+          return result?.pane?.pane_id === String(pane);
+        } catch {
+          return false;
+        }
+      },
+
+      async sessionForPane(_pane) {
+        if (owner) return owner;
+        if (env.HERDR_SESSION) return env.HERDR_SESSION;
+        return backend.inside() ? 'default' : null;
+      },
+
+      async paneCurrentCommand(pane) {
+        try {
+          const info = parseResult(
+            await owned('pane', 'process-info', '--pane', String(pane)),
+          )?.process_info;
+          const processes = info?.foreground_processes;
+          if (!Array.isArray(processes) || processes.length === 0) return null;
+          const foreground = processes.find(process =>
+            process.pid === info.foreground_process_group_id) || processes[0];
+          if (Array.isArray(foreground.argv) && foreground.argv[0]) {
+            return basename(foreground.argv[0].split(/\s+/)[0]);
+          }
+          return foreground.name ? basename(foreground.name) : null;
+        } catch {
+          return null;
+        }
+      },
+
+      async sessionExists(name) {
+        try {
+          return (await backend.listSessions()).some(row => row.name === name);
+        } catch {
+          return false;
+        }
+      },
+
+      async listSessions() {
+        try {
+          const result = parseResult(await run(['session', 'list', '--json']));
+          const rows = Array.isArray(result?.sessions) ? result.sessions : [];
+          return rows
+            .filter(row => typeof row?.name === 'string' && row.name)
+            .map(row => ({ name: row.name, exited: row.running === false }));
+        } catch {
+          return [];
+        }
+      },
+
+      async listSessionPanes(sessionName) {
+        try {
+          const result = parseResult(await inSession(sessionName, 'pane', 'list'));
+          const panes = Array.isArray(result?.panes) ? result.panes : [];
+          return panes.map(entry => String(entry.pane_id)).filter(Boolean);
+        } catch {
+          return [];
+        }
+      },
+
+      async closePane(pane) {
+        await owned('pane', 'close', String(pane));
+      },
+
+      async deleteSession(name) {
+        try {
+          await run(['session', 'stop', name]);
+        } catch {
+          // The session may already be stopped or unreachable.
+        }
+        await run(['session', 'delete', name]);
+      },
+
+      async newWindow(sessionName, cwd, launchSpec) {
+        // The requested session may be stopped rather than absent, and a
+        // stopped one must not be restarted (herdr would restore its agents and
+        // we would resume the same conversation twice). Reviving into a fresh
+        // name is the safe move; the caller learns which one via `session`.
+        const rows = await backend.listSessions();
+        const running = new Set(rows.filter(row => !row.exited).map(row => row.name));
+        const existing = new Set(rows.map(row => row.name));
+        const target = running.has(sessionName)
+          ? sessionName
+          : resolveSessionName(sessionName, candidate => existing.has(candidate));
+        if (!running.has(target)) {
+          await ensureSessionRunning(target);
+          recordOwnedSession({ mux: 'herdr', name: target });
+        }
+        // Build the command first: an argument that cannot be typed (a
+        // multi-line resume message) travels as environment instead, and that
+        // environment has to be on the workspace before the pane exists.
+        const { line, env: argEnv } = shellCommand(launchSpec.file, launchSpec.args || []);
+        const workspace = parseResult(await inSession(
+          target, 'workspace', 'create', '--cwd', cwd, '--label', 'unsnooze',
+          ...envFlags({ ...launchSpec?.env, ...argEnv }),
+        ));
+        const pane = workspace?.root_pane?.pane_id;
+        if (!pane) throw new Error('unsnooze: unexpected herdr workspace shape: no root_pane');
+        // One argument, already quoted: `pane run` joins its operands with
+        // spaces and types them into the pane's shell, so the quoting has to be
+        // ours. It also submits the line itself (PaneSendInput carries
+        // keys: ["Enter"]) — a second Enter here would land in the stdin of
+        // whatever just started.
+        await inSession(target, 'pane', 'run', String(pane), line);
+        // `session` tells the caller which session this actually landed in —
+        // only herdr can differ from what was asked for. tmux and zellij return
+        // { pane, paneOwner } exactly as before.
+        return { pane: String(pane), paneOwner: target, session: target };
+      },
+
+      launchWrapped(launchSpec) {
+        const existing = existingSessionNames();
+        const name = resolveSessionName(wrappedSessionName(env), candidate => existing.has(candidate));
+        launchSpec.onSessionCreated?.(name);
+
+        // Phase 1 — nothing has been dispatched yet. Every failure here is
+        // safe for the launcher to answer by running the agent unwatched,
+        // because no agent was started.
+        let command;
+        let pane;
+        try {
+          const built = shellCommand(launchSpec.file, launchSpec.args || []);
+          command = built.line;
+          ensureSessionRunningSync(name, existing);
+          const workspace = parseResult(syncCall([
+            '--session', name, 'workspace', 'create', '--cwd', process.cwd(), '--label', 'unsnooze',
+            ...envFlags({ ...launchSpec?.env, ...built.env }),
+          ], name, 'create workspace'));
+          pane = workspace?.root_pane?.pane_id;
+          if (!pane) throw new Error('unsnooze: unexpected herdr workspace shape: no root_pane');
+        } catch (error) {
+          if (error instanceof SessionCreateError) throw error;
+          throw new SessionCreateError(
+            `failed to start herdr session "${name}": ${error.message}`, error,
+          );
+        }
+
+        // Phase 2 — the dispatch itself. From here on the agent may be running,
+        // so no failure may lead to a second launch. A failed `pane run` is
+        // treated as dispatched too: the call types keystrokes into a live
+        // shell, and a non-zero exit afterwards cannot prove they did not land.
+        try {
+          syncCall(['--session', name, 'pane', 'run', String(pane), command], name, 'run pane');
+        } catch (error) {
+          throw new AgentDispatchedError(
+            `herdr may already be running the agent in session "${name}": ${error.message}`,
+            { session: name, mux: 'herdr', cause: error },
+          );
+        }
+
+        // Phase 3 — attaching a client. The agent is definitely running by now;
+        // failing to show it to the user is not a reason to start a second one.
+        const result = spawner('herdr', ['session', 'attach', name], {
+          sync: true,
+          stdio: 'inherit',
+          env: childEnv(),
+        });
+        if (result?.error) {
+          throw new AgentDispatchedError(
+            `agent started, but attaching to herdr session "${name}" failed:`
+            + ` ${result.error.message}`,
+            { session: name, mux: 'herdr', cause: result.error },
+          );
+        }
+        return exitStatus(result);
+      },
+
+      bind(nextOwner) {
+        return build(nextOwner);
+      },
+    };
+
+    return backend;
+  };
+
+  return build(null);
+}
+
+const herdr = createHerdr();
+
+export const available = (...args) => herdr.available(...args);
+export const inside = (...args) => herdr.inside(...args);
+export const currentPaneId = (...args) => herdr.currentPaneId(...args);
+export const launchWrapped = (...args) => herdr.launchWrapped(...args);
+
+export default herdr;

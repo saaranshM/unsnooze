@@ -6,6 +6,8 @@ import { getMultiplexer } from './multiplexer.js';
 import { readState, updateState } from './state.js';
 import { getConfig } from './settings.js';
 import { paneOwnedByRecord } from './lease.js';
+import { ownsSession, forgetSession } from './mux-sessions.js';
+import { attachHint } from './multiplexers/session-name.js';
 import { makeLogger } from './logger.js';
 
 const log = makeLogger('reap');
@@ -82,15 +84,9 @@ function restoreFailedClaim(rec) {
 }
 
 // How a user reaches a revived session. Shared by status, toast, and `sessions`.
-// cmux has no joinable named-session model (see multiplexers/cmux.js) — there
-// is no command that attaches to a surface from outside cmux, so omit the hint
-// rather than print a `tmux attach` that would silently do nothing useful.
-export function attachHint(muxName, sessionName) {
-  if (!sessionName) return null;
-  if (muxName === 'cmux') return null;
-  if (muxName === 'zellij') return `zellij attach ${sessionName}`;
-  return `tmux attach -t ${sessionName}`;
-}
+// Re-exported from its new home so the launch path can use it without pulling
+// reap (and the state layer) in behind it. Consumers here are unchanged.
+export { attachHint };
 
 // A session name is unsnooze-owned if it is the interactive base, a collision
 // suffix (`unsnooze-2`…), the dedicated resume session, or a pid fallback.
@@ -102,6 +98,18 @@ export function isUnsnoozeSessionName(name, base = MUX_SESSION_NAME) {
   // base-N / base-<pid>
   if (name.startsWith(`${base}-`) && /^[0-9]+$/.test(name.slice(base.length + 1))) return true;
   return false;
+}
+
+
+// Sessions created before the ownership record existed, or by a process whose
+// record was cleaned up, are still ours if a live state record points at them.
+function stateClaimsSession(muxName, sessionName) {
+  try {
+    return Object.values(readState().sessions).some(rec =>
+      rec?.mux === muxName && (rec.muxSession ?? rec.tmuxSession) === sessionName);
+  } catch {
+    return false;
+  }
 }
 
 export async function listOwnedSessions({ muxName = null } = {}) {
@@ -152,6 +160,11 @@ export async function reap({
   dryRun = true,
   yes = false,
   resolveMux = rec => getMultiplexer(rec.mux, { owner: rec.paneOwner }),
+  // Seams for the session sweep below. It deletes sessions, so it needs to be
+  // testable against a fake rather than only against whatever multiplexer
+  // happens to be running on the machine executing the tests.
+  muxNames = MUX_NAMES,
+  getMux = name => getMultiplexer(name),
 } = {}) {
   // --yes flips dry-run off; plain default stays dry-run.
   if (yes) dryRun = false;
@@ -246,14 +259,29 @@ export async function reap({
   }
 
   // Empty / EXITED unsnooze-owned sessions.
-  for (const name of MUX_NAMES) {
+  for (const name of muxNames) {
     let mux;
-    try { mux = getMultiplexer(name); } catch { continue; }
+    try { mux = getMux(name); } catch { continue; }
     if (!mux.available?.() || typeof mux.listSessions !== 'function') continue;
     let sessions = [];
     try { sessions = await mux.listSessions(); } catch { continue; }
     for (const row of sessions) {
       if (!isUnsnoozeSessionName(row.name)) continue;
+      // A matching name is not proof we created it. Users name sessions too,
+      // and on backends that keep stopped sessions listed (herdr) a user's own
+      // stopped `unsnooze-9` was previously stopped and deleted on sight.
+      // Accept either durable evidence: a record written when we created it, or
+      // a live state record still pointing at it.
+      if (!ownsSession(name, row.name) && !stateClaimsSession(name, row.name)) {
+        actions.push({
+          kind: 'skip-unowned-session',
+          mux: name,
+          name: row.name,
+          reason: 'no record that unsnooze created this session',
+          hint: attachHint(name, row.name),
+        });
+        continue;
+      }
       const bound = mux.bind ? mux.bind(row.name) : mux;
       let panes = [];
       try {
@@ -263,7 +291,8 @@ export async function reap({
       } catch { panes = []; }
       const empty = panes.length === 0;
       const exited = !!row.exited;
-      // tmux auto-destroys empty sessions; only act when empty (or EXITED for zellij).
+      // tmux auto-destroys empty sessions; only act when empty (or EXITED for
+      // backends that retain an exited session, including zellij and herdr).
       if (!empty && !exited) continue;
       actions.push({
         kind: 'delete-session',
@@ -272,8 +301,10 @@ export async function reap({
         reason: exited ? 'exited' : 'empty',
       });
       if (!dryRun && typeof bound.deleteSession === 'function') {
-        try { await bound.deleteSession(row.name); }
-        catch (err) {
+        try {
+          await bound.deleteSession(row.name);
+          forgetSession(name, row.name);
+        } catch (err) {
           actions.push({ kind: 'error', name: row.name, message: err.message });
         }
       }

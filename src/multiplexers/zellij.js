@@ -281,6 +281,7 @@ export function createZellij({ spawner = defaultSpawner, env = process.env } = {
         // owns the terminal, so Ctrl-C reaches zellij and its active pane.
         const live = liveSessionNames();
         const name = resolveSessionName(wrappedSessionName(env), c => live.has(c));
+        launchSpec.onSessionCreated?.(name);
         // Session name is discovered live via sessionForPane at record-write
         // time — do NOT inject UNSNOOZE_SESSION_NAME into the layout env.
         const result = spawner('zellij', [

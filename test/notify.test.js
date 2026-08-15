@@ -98,6 +98,24 @@ test('zellij intentionally has no statusline notification fallback', () => {
   assert.deepEqual(calls, []);
 });
 
+test('ambient herdr takes precedence over tmux notification fallback', () => {
+  const calls = [];
+  const oldTmux = process.env.TMUX;
+  const oldHerdr = process.env.HERDR_ENV;
+  const oldMux = process.env.UNSNOOZE_MUX;
+  delete process.env.UNSNOOZE_MUX;
+  process.env.TMUX = '/tmp/tmux';
+  process.env.HERDR_ENV = '1';
+  try {
+    notify('x', 'y', { platform: 'freebsd', spawner: (cmd, args) => calls.push({ cmd, args }) });
+  } finally {
+    if (oldTmux === undefined) delete process.env.TMUX; else process.env.TMUX = oldTmux;
+    if (oldHerdr === undefined) delete process.env.HERDR_ENV; else process.env.HERDR_ENV = oldHerdr;
+    if (oldMux === undefined) delete process.env.UNSNOOZE_MUX; else process.env.UNSNOOZE_MUX = oldMux;
+  }
+  assert.deepEqual(calls, []);
+});
+
 test('managed tmux uses its fallback even with nested Zellij environment', () => {
   const calls = [];
   const oldTmux = process.env.TMUX;

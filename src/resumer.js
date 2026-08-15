@@ -258,8 +258,8 @@ function reopenEnv(rec, leaseId, target) {
   const env = { ...(rec.env || {}) };
   env.UNSNOOZE_MUX = rec.mux;
   // tmux pane ids are server-global — paneOwner is always null there. Only
-  // zellij needs UNSNOOZE_PANE_OWNER so bind() can address the right session.
-  if (rec.mux === 'zellij') {
+  // zellij and herdr need UNSNOOZE_PANE_OWNER so bind() can address the right session.
+  if (rec.mux === 'zellij' || rec.mux === 'herdr') {
     env.UNSNOOZE_PANE_OWNER = target || rec.paneOwner || rec.muxSession || '';
   }
   env.UNSNOOZE_LEASE_ID = leaseId;
@@ -710,21 +710,30 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
   }
   // Stamp the fresh pane as ours (best-effort; tmux only) so later close /
   // inject decisions can prove identity even after the agent process exits.
-  if (address?.pane && typeof mux.stampPaneOwner === 'function') {
-    try { await mux.stampPaneOwner(address.pane, leaseId); } catch { /* legacy tmux */ }
+  // A backend may revive into a different session than we asked for — herdr
+  // refuses to restart a stopped one and picks a free name instead. `session`
+  // is that answer; it is not part of the pane address and must not reach state.
+  // `?? {}` because every use of the address below this point was written
+  // defensively (`address?.pane`) and a backend returning nothing must keep
+  // degrading rather than throwing here.
+  const { session: usedSession = target, ...address2 } = address ?? {};
+  address = address2;
+  const stamper = typeof mux.bind === 'function' ? mux.bind(address.paneOwner ?? usedSession) : mux;
+  if (address?.pane && typeof stamper.stampPaneOwner === 'function') {
+    try { await stamper.stampPaneOwner(address.pane, leaseId); } catch { /* legacy tmux */ }
   }
-  // Persist the revival target as muxSession so future joins and attach hints
-  // name the session the pane actually lives in.
+  // Persist the session the pane actually lives in, so future joins and attach
+  // hints name something the user can really attach to.
   updateState(state => {
     const s = state.sessions[key];
     if (s?.status === 'resuming' && (s.bannerAt ?? s.detectedAt) === cutoff) {
-      Object.assign(s, address, { leaseId, muxSession: target });
+      Object.assign(s, address, { leaseId, muxSession: usedSession });
     }
     return state;
   });
-  const rebound = { ...rec, ...address, leaseId, muxSession: target };
+  const rebound = { ...rec, ...address, leaseId, muxSession: usedSession };
   mux = resolveMux(rebound);
-  log(`${key}: re-opened via ${rec.mux} ${address.paneOwner ?? '-'}:${address.pane} in session ${target}`);
+  log(`${key}: re-opened via ${rec.mux} ${address.paneOwner ?? '-'}:${address.pane} in session ${usedSession}`);
 
   // The resume prompt traveled in argv (e.g. `codex resume <id> "msg"`) —
   // nothing to type into the TUI; verifyOne checks the outcome later.

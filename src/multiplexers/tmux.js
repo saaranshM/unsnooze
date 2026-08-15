@@ -262,6 +262,7 @@ export function createTmux({ spawner = defaultSpawner, env = process.env } = {})
           return false;
         }
       });
+      launchSpec.onSessionCreated?.(name);
       // Session name is discovered live via sessionForPane at record-write
       // time — do NOT inject UNSNOOZE_SESSION_NAME (would leak into daemons
       // spawned from the agent via {...process.env}).
