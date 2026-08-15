@@ -152,6 +152,16 @@ async function main() {
   check(/CFG=\/tmp\/cfg/.test(printed), 'the Claude config root reaches the pane', printed);
   check(!/LEAK=leaked/.test(printed), 'unrelated environment does not', printed);
 
+  section('pane ownership stamp');
+  // The identity every later inject/close decision verifies against. Without
+  // it herdr would fall back to comparing process start times, which do not
+  // exist on every host.
+  await sess.stampPaneOwner(address.pane, 'lease-e2e-1');
+  check(await sess.paneOwnerStamp(address.pane) === 'lease-e2e-1', 'a pane stamp round-trips');
+  await sess.stampPaneOwner(address.pane, 'lease-e2e-2');
+  check(await sess.paneOwnerStamp(address.pane) === 'lease-e2e-2', 'and a relaunch overwrites it');
+  check(await sess.paneOwnerStamp('w99:p99') === null, 'a pane that does not exist has no stamp');
+
   section('pane queries');
   check(await sess.paneAlive(address.pane), 'paneAlive is true for a live pane');
   check(!(await sess.paneAlive('w99:p99')), 'paneAlive is false for a pane that does not exist');

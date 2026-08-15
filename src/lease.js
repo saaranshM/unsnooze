@@ -81,8 +81,22 @@ export async function leaseMatches(rec, {
   if (!stored || stored.leaseId !== rec.leaseId || stored.agent !== rec.agent) return false;
   if (stored.mux !== rec.mux || stored.paneOwner !== rec.paneOwner || stored.pane !== rec.pane) return false;
   if (!pidAlive(stored.pid)) return false;
+  // The birth time is what makes a recycled pid detectable: same number, later
+  // start, different process. Where it is available on both sides it must
+  // match exactly.
+  //
+  // It is not available everywhere. processBirth() reads /proc on linux and
+  // `ps` on darwin and returns null otherwise — on Windows, and on any host
+  // where that call fails. Treating "this host cannot tell me" the same as
+  // "the process is an impostor" meant unsnooze silently refused to resume its
+  // own session there, forever. When neither the lease nor the host can supply
+  // a birth time, fall back to the identity that is still verifiable: the
+  // lease's own fields matched above, the pid is alive, and the pane is alive.
+  // That leaves pid reuse as the only false positive, which is the exposure
+  // every pre-birth-time version of this code already carried.
   const birth = processBirthFn(stored.pid);
-  if (!birth || birth !== stored.pidBirth) return false;
+  const unavailable = birth == null && stored.pidBirth == null;
+  if (!unavailable && (!birth || birth !== stored.pidBirth)) return false;
   try { return await mux.paneAlive(rec.pane); } catch { return false; }
 }
 

@@ -382,12 +382,13 @@ export async function dispatchPromptEntry(entry, {
   }
 
   // Stamp the fresh pane as ours (best-effort; tmux only) — same as reopen().
-  if (address?.pane && typeof mux.stampPaneOwner === 'function') {
-    try { await mux.stampPaneOwner(address.pane, leaseId); } catch { /* legacy tmux */ }
-  }
   // herdr can land the pane in a different session than requested (it refuses
   // to restart a stopped one), and `session` is how it says so.
   const usedSession = address?.session ?? target;
+  const stamper = typeof mux.bind === 'function' ? mux.bind(address?.paneOwner ?? usedSession) : mux;
+  if (address?.pane && typeof stamper.stampPaneOwner === 'function') {
+    try { await stamper.stampPaneOwner(address.pane, leaseId); } catch { /* legacy tmux */ }
+  }
   updateEntry(cased.id, { pane: address?.pane ?? null, muxSession: usedSession, leaseId });
   log(`${cased.id}: opened ${agent.id} in ${mux.name} ${address?.paneOwner ?? '-'}:${address?.pane} (session ${usedSession})`);
 

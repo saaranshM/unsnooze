@@ -119,8 +119,12 @@ export function runLauncher(args, agentId = 'claude', { processBirthFn = process
   if (pane) {
     // Stamp our own pane (best-effort, tmux only): the identity every later
     // close/inject decision verifies against — pane ids get recycled.
-    if (typeof mux.stampPaneOwner === 'function') {
-      mux.stampPaneOwner(pane, leaseId).catch(() => { /* legacy tmux */ });
+    // Bind to the pane's session first: herdr addresses panes through
+    // `--session`, so an unbound driver cannot write the stamp at all. tmux
+    // ignores the binding.
+    const owner = typeof mux.bind === 'function' ? mux.bind(paneOwner) : mux;
+    if (typeof owner.stampPaneOwner === 'function') {
+      Promise.resolve(owner.stampPaneOwner(pane, leaseId)).catch(() => { /* legacy tmux */ });
     }
     spawnDetached(
       monitorSpawnArgs({ muxName: mux.name, paneOwner, pane, agentId: agent.id, leaseId }),

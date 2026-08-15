@@ -715,8 +715,9 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
   // is that answer; it is not part of the pane address and must not reach state.
   const { session: usedSession = target, ...address2 } = address;
   address = address2;
-  if (address?.pane && typeof mux.stampPaneOwner === 'function') {
-    try { await mux.stampPaneOwner(address.pane, leaseId); } catch { /* legacy tmux */ }
+  const stamper = typeof mux.bind === 'function' ? mux.bind(address.paneOwner ?? usedSession) : mux;
+  if (address?.pane && typeof stamper.stampPaneOwner === 'function') {
+    try { await stamper.stampPaneOwner(address.pane, leaseId); } catch { /* legacy tmux */ }
   }
   // Persist the session the pane actually lives in, so future joins and attach
   // hints name something the user can really attach to.

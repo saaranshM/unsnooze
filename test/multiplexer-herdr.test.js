@@ -307,11 +307,43 @@ test('bind creates independent owner-bound backends', async () => {
   assert.equal(spawner.calls[1].args[1], 'two');
 });
 
-test('herdr does not expose tmux-only tty or ownership methods', () => {
+test('herdr does not expose the tty methods it has no equivalent for', () => {
   const mux = createHerdr({ spawner: fakeSpawner(), env: {} });
-  for (const method of ['clientTtys', 'paneTty', 'globalEnv', 'stampPaneOwner', 'paneOwnerStamp']) {
+  for (const method of ['clientTtys', 'paneTty', 'globalEnv']) {
     assert.equal(typeof mux[method], 'undefined', method);
   }
+});
+
+test('a pane is stamped with the lease that owns it, and the stamp reads back', async () => {
+  const spawner = fakeSpawner((_file, args) => {
+    if (args.includes('get')) {
+      return JSON.stringify({ result: { pane: { pane_id: 'w1:p1', tokens: { unsnooze_owner: 'lease-7' } } } });
+    }
+    return '';
+  });
+  const mux = createHerdr({ spawner, env: {} }).bind('OWNER');
+
+  assert.equal(await mux.stampPaneOwner('w1:p1', 'lease-7'), true);
+  assert.deepEqual(spawner.calls[0].args, ['--session', 'OWNER', 'pane', 'report-metadata', 'w1:p1',
+    '--source', 'unsnooze', '--token', 'unsnooze_owner=lease-7']);
+  assert.equal(await mux.paneOwnerStamp('w1:p1'), 'lease-7');
+});
+
+test('an unstamped pane reports no owner rather than guessing', async () => {
+  const mux = createHerdr({
+    spawner: fakeSpawner(() => JSON.stringify({ result: { pane: { pane_id: 'w1:p1' } } })),
+    env: {},
+  }).bind('OWNER');
+  assert.equal(await mux.paneOwnerStamp('w1:p1'), null);
+});
+
+test('a failed stamp is reported, never thrown into a launch', async () => {
+  const mux = createHerdr({
+    spawner: fakeSpawner(() => { throw new Error('herdr gone'); }),
+    env: {},
+  }).bind('OWNER');
+  assert.equal(await mux.stampPaneOwner('w1:p1', 'lease-7'), false);
+  assert.equal(await mux.paneOwnerStamp('w1:p1'), null);
 });
 
 const noNamedSession = JSON.stringify({

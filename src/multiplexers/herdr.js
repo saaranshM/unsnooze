@@ -394,6 +394,34 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
         await owned('pane', 'send-text', String(pane), key);
       },
 
+      // Pane identity, the same contract tmux gets from `set-option -p
+      // @unsnooze_owner`. Without it, ownership falls back to comparing the
+      // agent process's start time — which is unavailable on Windows and on any
+      // host where `ps` fails, and there the answer degrades to "not ours",
+      // meaning unsnooze quietly declines to resume its own session.
+      //
+      // herdr keeps arbitrary per-pane metadata tokens, readable back through
+      // `pane get`. Verified against 0.8.0: the token round-trips, survives
+      // unrelated metadata writes, and clears cleanly.
+      async stampPaneOwner(pane, leaseId) {
+        try {
+          await owned('pane', 'report-metadata', String(pane),
+            '--source', 'unsnooze', '--token', `unsnooze_owner=${leaseId}`);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+
+      async paneOwnerStamp(pane) {
+        try {
+          const info = parseResult(await owned('pane', 'get', String(pane)));
+          return info?.pane?.tokens?.unsnooze_owner || null;
+        } catch {
+          return null;
+        }
+      },
+
       async paneAlive(pane) {
         try {
           const result = parseResult(await owned('pane', 'get', String(pane)));
