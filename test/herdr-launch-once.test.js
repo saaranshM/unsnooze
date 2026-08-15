@@ -15,7 +15,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, existsSync, r
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const test = process.platform === 'win32'
   ? (name, fn) => baseTest(name, { skip: 'unix-only surface (sh/PATH shims)' }, fn)
@@ -181,7 +181,7 @@ test('a detached spawn of a missing herdr binary reports an error instead of kil
   // that is an uncaught exception, and this path runs inside the resumer
   // daemon. The assertion is that the process survives to print its own error.
   const script = `
-    import { createHerdr } from ${JSON.stringify(join(process.cwd(), 'src/multiplexers/herdr.js'))};
+    import { createHerdr } from ${JSON.stringify(pathToFileURL(join(process.cwd(), 'src/multiplexers/herdr.js')).href)};
     const mux = createHerdr({ env: {} });
     try {
       await mux.ensureSessionRunning('nope');
