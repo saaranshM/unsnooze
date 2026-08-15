@@ -54,19 +54,41 @@ WAIT_TRIES="${UNSNOOZE_E2E_WAIT_TRIES:-75}"               # 30s at 0.4s/poll
 SESSIONS=()
 PIDS=()
 
+# Only processes belonging to THIS suite run. `pgrep -f 'unsnooze.js daemon'`
+# also matches the daemon the developer running this script has installed, and
+# killing that is both rude and futile: the launchd/systemd unit has KeepAlive
+# set, so it respawns immediately and the teardown check below can never pass.
+# Every process the suite starts inherits $WORK through UNSNOOZE_CLAUDE_DIR and
+# friends, so the environment is what tells them apart — argv cannot, because
+# the state dir never appears there.
+ours() {  # $1 pid
+  if [ -r "/proc/$1/environ" ]; then
+    tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | grep -qF "$WORK"
+  else
+    ps eww -p "$1" 2>/dev/null | grep -qF "$WORK"     # darwin
+  fi
+}
+
+suite_pids() {  # $1 pgrep -f pattern
+  local pid
+  for pid in $(pgrep -f "$1" 2>/dev/null || true); do
+    ours "$pid" && printf '%s ' "$pid"
+  done
+}
+
 stop_matching() {  # $1 pgrep -f pattern
   local pattern="$1" pids remaining
-  pids="$(pgrep -f "$pattern" 2>/dev/null || true)"
+  pids="$(suite_pids "$pattern")"
   [ -z "$pids" ] && return 0
   kill $pids 2>/dev/null || true
   for _ in $(seq 1 100); do
-    remaining="$(pgrep -f "$pattern" 2>/dev/null || true)"
+    remaining="$(suite_pids "$pattern")"
     [ -z "$remaining" ] && return 0
     sleep 0.05
   done
   kill -KILL $remaining 2>/dev/null || true
   for _ in $(seq 1 20); do
-    remaining="$(pgrep -f "$pattern" 2>/dev/null || true)"
+    remaining="$(suite_pids "$pattern")"
     [ -z "$remaining" ] && return 0
     sleep 0.05
   done
