@@ -52,8 +52,29 @@ export const patterns = {
     /API Error:?\s*\(?5\d\d/i,
     /overloaded_error/i,
     /API Error:?\s*\(?429/i,
+    // "API Error: Server is temporarily limiting requests (not your usage
+    // limit)" — a server-side throttle. It clears in seconds, so it belongs on
+    // this ladder; patterns.js separately refuses to read its parenthetical as
+    // a usage limit.
+    /temporarily limiting requests/i,
   ],
   transientPatterns: [],   // claude's transient errors are the overload set
+  // Stops that waiting cannot clear: notify once, never enter the ledger
+  // (monitor.js). Scheduling a wake for these would burn the attempt cap on a
+  // condition only a human can fix.
+  //
+  // All verbatim from the shipped 2.1.233 bundle. The Claude Design ones matter
+  // most for headless/unattended runs: a revived session has no interactive
+  // terminal, so an expired design credential produces a stop that can never
+  // self-resolve. Anchored to the error phrasings rather than to the bare
+  // command name, so an agent explaining "/design-login" is not a stop.
+  terminalPatterns: [
+    /rejected your \/design-login credential/i,
+    /could not refresh the design access token/i,
+    /could not save the design credential/i,
+    /\/design-login requires an interactive terminal/i,
+    /credit balance is too low/i,
+  ],
 };
 
 // --- Interactive /rate-limit-options menu (Claude Code only) ---
@@ -94,10 +115,21 @@ export default {
   experimental: false,
   patterns,
   menu: { isPrompt: isRateLimitOptionsPrompt, stepsToWait: menuStepsToWaitOption },
-  // How to reopen a dead session. messageViaPane: the resume prompt is typed
-  // into the TUI once it's ready (claude has no resume-with-prompt argv form).
-  resumeArgs(sessionId) {
-    return { args: sessionId ? ['--resume', sessionId] : ['-c'], messageViaPane: true };
+  // How to reopen a dead session.
+  //
+  // Default (a real pane): the prompt is typed into the TUI once it's ready.
+  // That path is load-bearing on tmux/zellij/herdr and stays exactly as it was.
+  //
+  // canType: false (headless — no pane to type into): the prompt rides in argv.
+  // `claude --resume <id> "<prompt>"` resumes that session id and acts on the
+  // prompt, verified against claude 2.1.233 on 2026-08-16. Without a TTY it
+  // runs to completion non-interactively, which is what an unattended overnight
+  // resume wants anyway.
+  resumeArgs(sessionId, message, { canType = true } = {}) {
+    const args = sessionId ? ['--resume', sessionId] : ['-c'];
+    if (canType) return { args, messageViaPane: true };
+    if (message) args.push(message);
+    return { args, messageViaPane: false };
   },
   // v1: every agent launches the bare TUI and gets the prompt typed once idle.
   launchArgs(message) { return { args: [], messageViaPane: true }; },

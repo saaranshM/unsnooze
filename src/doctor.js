@@ -14,6 +14,8 @@ import { CLAUDE_SETTINGS, RESUMER_LOCK } from './config.js';
 import { getMultiplexer } from './multiplexer.js';
 import { makeLogger } from './logger.js';
 import { shouldUseTui, formatDoctorTui } from './tui.js';
+import { designRegisteredOffline } from './design.js';
+import { powershellProfilePath } from './powershell.js';
 
 const log = makeLogger('doctor');
 
@@ -104,11 +106,31 @@ function defaultHookInstalled(settingsPath = CLAUDE_SETTINGS) {
   }
 }
 
-function defaultWrappersInstalled() {
-  return [join(homedir(), '.zshrc'), join(homedir(), '.bashrc')].some(rc => {
-    try { return readFileSync(rc, 'utf-8').includes('# >>> unsnooze >>>'); }
-    catch { return false; }
-  });
+const WRAPPER_MARK = '# >>> unsnooze >>>';
+
+function readOrEmpty(path) {
+  try { return readFileSync(path, 'utf-8'); } catch { return ''; }
+}
+
+// The wrapper shadowing the real CLI is unsnooze's entry point, so "are the
+// wrappers installed" is a health question — but it has to be asked of the
+// right file. A PowerShell user has no ~/.zshrc, so checking only the POSIX rc
+// files made every native-Windows `unsnooze doctor` report the wrappers
+// missing and point the user at an install they had already run.
+function defaultWrappersInstalled({
+  platform = process.platform,
+  rcContent = readOrEmpty,
+  profileContent = null,
+} = {}) {
+  const rcs = [join(homedir(), '.zshrc'), join(homedir(), '.bashrc')];
+  if (rcs.some(rc => rcContent(rc).includes(WRAPPER_MARK))) return true;
+  if (platform !== 'win32') return false;
+  const readProfile = profileContent
+    || (() => {
+      const p = powershellProfilePath({ platform });
+      return p ? readOrEmpty(p) : '';
+    });
+  return readProfile().includes(WRAPPER_MARK);
 }
 
 function daemonRunning() {
@@ -136,8 +158,11 @@ export async function runDoctor({
   csgStateDir = join(homedir(), '.claude-session-guard'),
   csgBinPath = defaultCsgPackagePath({ runner }),
   mux = getMultiplexer(),
+  designRegistered = designRegisteredOffline,
   hookInstalled = defaultHookInstalled,
   wrappersInstalled = defaultWrappersInstalled,
+  rcContent = undefined,
+  profileContent = undefined,
   autostartDir = null,
 } = {}) {
   const findings = [];
@@ -188,7 +213,7 @@ export async function runDoctor({
       detail: '  run: unsnooze install --yes',
     });
   }
-  if (!wrappersInstalled()) {
+  if (!wrappersInstalled({ platform, ...(rcContent ? { rcContent } : {}), ...(profileContent ? { profileContent } : {}) })) {
     findings.push({
       id: 'wrappers-missing', kind: 'health',
       title: 'shell wrappers are not installed',
@@ -227,6 +252,18 @@ export async function runDoctor({
   findings.push({
     id: 'daemon', kind: 'info',
     title: daemonRunning() ? 'resumer/daemon: running' : 'resumer/daemon: not running (starts on the next limit stop)',
+    detail: '',
+  });
+
+  // Claude Design (issue #13). Informational only — Design is optional, so a
+  // machine without it is not unhealthy. Read from config rather than
+  // `claude mcp list`, which health-checks every server and would put seconds
+  // onto every doctor run.
+  findings.push({
+    id: 'claude-design', kind: 'info',
+    title: designRegistered()
+      ? 'Claude Design: MCP server registered (run `unsnooze design` to check sign-in)'
+      : 'Claude Design: not set up (optional — `unsnooze design setup`)',
     detail: '',
   });
 

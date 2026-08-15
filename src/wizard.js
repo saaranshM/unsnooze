@@ -27,10 +27,16 @@ export async function runWizard() {
 
   const { getMultiplexer } = await import('./multiplexer.js');
   const mux = getMultiplexer();
+  // headless is always available, so this only fires for an explicitly
+  // configured multiplexer that is missing. "No multiplexer at all" is no
+  // longer an error state — it resolves to headless and still watches.
   if (!mux.available()) {
-    p.log.warn(process.platform === 'win32'
-      ? 'No supported multiplexer found — unsnooze does not support native Windows.\nRun it inside WSL.'
-      : `${mux.name} not found — install it, then re-run \`unsnooze setup\`.`);
+    p.log.warn(`${mux.name} not found — install it, then re-run \`unsnooze setup\`.`);
+  } else if (mux.name === 'headless') {
+    p.log.info('No terminal multiplexer found — unsnooze will watch headless\n'
+      + '  (StopFailure hook + session transcripts). Limit stops are still caught\n'
+      + '  and resumed; you just get no live pane. Install tmux'
+      + `${process.platform === 'win32' ? ' under WSL' : ''} for pane-level watching.`);
   }
 
   const detected = detectInstalledAgents();
@@ -71,12 +77,14 @@ export async function runWizard() {
   });
   if (p.isCancel(notifications)) return cancelled();
 
-  // GUI watching: only meaningful where an autostart daemon can run.
+  // GUI watching: only meaningful where an autostart daemon can run. Windows
+  // joined that list with the Task Scheduler unit — and needs it most, since
+  // headless has no pane monitor and the transcript watcher lives in the daemon.
   let guiWatch = false;
-  if (process.platform === 'darwin' || process.platform === 'linux') {
+  if (['darwin', 'linux', 'win32'].includes(process.platform)) {
     const answer = await p.confirm({
       message: 'Also guard GUI sessions (Claude Code in VS Code/desktop, Codex app/IDE)?\n'
-        + '  Installs a small background daemon (launchd/systemd) that watches session\n'
+        + '  Installs a small background daemon (launchd/systemd/Task Scheduler) that watches session\n'
         + '  files for limit stops; revived sessions open in the configured multiplexer and stay visible in\n'
         + '  the GUI\'s own history.',
       initialValue: DEFAULTS.guiWatch,

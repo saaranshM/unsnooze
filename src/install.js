@@ -19,6 +19,7 @@ import { installGrokHooks, uninstallGrokHooks } from './agents/grok.js';
 import { findCsgProcesses, findCsgAutostarts } from './doctor.js';
 import { UNSNOOZE_BIN, stopResumer } from './spawn.js';
 import { uninstallStatuslineShim } from './usage.js';
+import { powershellProfilePath } from './powershell.js';
 
 const FENCE_OPEN = '# >>> unsnooze >>>';
 const FENCE_CLOSE = '# <<< unsnooze <<<';
@@ -67,18 +68,36 @@ function isLegacy(entry) {
   return (entry.hooks || []).some(h => /claude-auto-retry|csg\.js _hook-stopfailure/.test(h.command || ''));
 }
 
+// The StopFailure hook command, per platform.
+//
+// Guarded like the shell wrapper: a vanished entry point must exit 0, not
+// spray MODULE_NOT_FOUND errors into every Claude Code turn. The guard has to
+// be written in the shell that will actually run it — Claude Code runs hooks
+// through cmd.exe on native Windows, where `test` does not exist, so the POSIX
+// form silently failed on every turn and took the hook detection channel with
+// it. That mattered little while Windows had no multiplexer to watch with; it
+// matters entirely now that headless leans on the hook.
+export function hookCommand({ platform = process.platform, bin = UNSNOOZE_BIN, agent = null } = {}) {
+  const agentFlag = agent ? ` --agent ${agent}` : '';
+  if (platform === 'win32') {
+    return `if exist "${bin}" (node "${bin}" _hook-stopfailure${agentFlag}) else (exit 0)`;
+  }
+  return `test -f "${bin}" && node "${bin}" _hook-stopfailure${agentFlag} || exit 0`;
+}
+
 // agent/matcher options cover CLIs with Claude-shaped hook config in their own
 // settings.json (qwen); the default stays byte-identical for claude.
-export function mergeHookIntoSettings(settingsJson, { agent = null, matcher = 'overloaded|server_error|rate_limit' } = {}) {
+export function mergeHookIntoSettings(settingsJson, {
+  agent = null,
+  matcher = 'overloaded|server_error|rate_limit',
+  platform = process.platform,
+} = {}) {
   const settings = JSON.parse(settingsJson);
   settings.hooks = settings.hooks || {};
   const list = (settings.hooks.StopFailure || []).filter(e => !isLegacy(e) && !isOurs(e));
-  const agentFlag = agent ? ` --agent ${agent}` : '';
   list.push({
     matcher,
-    // Guarded like the shell wrapper: a vanished entry point must exit 0, not
-    // spray MODULE_NOT_FOUND errors into every Claude Code turn.
-    hooks: [{ type: 'command', command: `test -f "${UNSNOOZE_BIN}" && node "${UNSNOOZE_BIN}" _hook-stopfailure${agentFlag} || exit 0`, timeout: 5 }],
+    hooks: [{ type: 'command', command: hookCommand({ platform, agent }), timeout: 5 }],
   });
   settings.hooks.StopFailure = list;
   return JSON.stringify(settings, null, 2) + '\n';
@@ -115,6 +134,38 @@ ${fns}
 ${FENCE_CLOSE}`;
 }
 
+// The PowerShell twin of wrapperBlock(), for native Windows where there is no
+// ~/.zshrc or ~/.bashrc to put a function in. Nobody types `unsnooze claude` —
+// the wrapper shadowing the real CLI *is* the entry point, so without this
+// nothing on native Windows routes through unsnooze at all.
+//
+// PowerShell comments are `#`, so the same fence markers work and
+// stripFencedBlock() removes it unchanged.
+export function powershellWrapperBlock(agents = ['claude'], bin = UNSNOOZE_BIN) {
+  const fns = agents.map(id => `Remove-Item -Path Alias:${id} -Force -ErrorAction SilentlyContinue
+function ${id} {
+  if ($env:UNSNOOZE_ACTIVE -eq '1' -or -not (Test-Path -LiteralPath '${bin}')) {
+    $real = Get-Command ${id} -CommandType Application -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+    if ($real) { & $real.Source @args } else { Write-Error '${id}: not found' }
+    return
+  }
+  & node '${bin}' _run ${id} @args
+}`).join('\n');
+  return `${FENCE_OPEN}
+# unsnooze wrappers: route every interactive launch of the CLIs below through
+# unsnooze so limit stops are recorded and auto-resumed.
+${fns}
+${FENCE_CLOSE}`;
+}
+
+// installZshrcBlock's PowerShell twin. Same fence, same replace-don't-append
+// behaviour, so re-running setup never stacks a second copy of the wrappers.
+export function installPowershellBlock(content, agents = ['claude'], bin = UNSNOOZE_BIN) {
+  const { content: cleaned } = stripFencedBlock(content, FENCE_OPEN, FENCE_CLOSE);
+  return cleaned.replace(/\n+$/, '\n') + '\n' + powershellWrapperBlock(agents, bin) + '\n';
+}
+
 export function stripFencedBlock(content, open, close) {
   const lines = content.split('\n');
   const out = [];
@@ -148,6 +199,9 @@ export function installZshrcBlock(content, agents = ['claude']) {
 // user unit on Linux/WSL.
 
 export const DAEMON_LABEL = 'com.unsnooze.daemon';
+// Task Scheduler has no reverse-DNS convention and shows this name to the user
+// in taskschd.msc, so it is a plain word rather than the launchd label.
+export const WINDOWS_TASK_NAME = 'unsnooze';
 
 // Is this process running under the supervisor we install, rather than from
 // somebody's shell? It decides whether exiting is safe: a supervised daemon
@@ -163,7 +217,15 @@ export const DAEMON_LABEL = 'com.unsnooze.daemon';
 export function isSupervised({ platform = process.platform, env = process.env } = {}) {
   if (platform === 'darwin') return env.XPC_SERVICE_NAME === DAEMON_LABEL;
   if (platform === 'linux') return typeof env.INVOCATION_ID === 'string' && env.INVOCATION_ID !== '';
-  return false;   // nowhere else do we install a supervisor to be run by
+  // win32 stays false on purpose, even though we now install a Scheduled Task.
+  // launchd KeepAlive and systemd Restart=always bring the daemon straight
+  // back; a logon-triggered task does not restart anything until the next
+  // logon. Answering true here would let the version-skew guard exit 0 into
+  // nothing and stop Windows watching silently — the exact failure mode of
+  // issue #8, just with a different trigger. The cost is that a Windows daemon
+  // keeps running pre-upgrade code until the user logs back in; that is the
+  // lesser of the two, and `unsnooze doctor` reports the skew.
+  return false;
 }
 
 // Env overrides keep tests/e2e away from the real LaunchAgents / systemd dirs.
@@ -323,8 +385,20 @@ function defaultActivate(cmd, args) {
 export function installDaemonAutostart({
   platform = process.platform, dir = null, activate = defaultActivate, path = undefined,
 } = {}) {
+  // Native Windows has no unit *file* — the Task Scheduler holds the record —
+  // so it is handled before the file-based platforms below. It matters more
+  // here than anywhere else: the transcript watcher lives in the daemon, and
+  // headless has no pane monitor to fall back on, so without this a Windows
+  // machine only ever catches limit stops through the StopFailure hook.
+  if (platform === 'win32') {
+    // /f overwrites an existing task rather than failing with "already exists",
+    // which is what re-running setup does every time.
+    activate('schtasks', ['/create', '/f', '/tn', WINDOWS_TASK_NAME, '/sc', 'onlogon',
+      '/tr', `"${process.execPath}" "${UNSNOOZE_BIN}" daemon`]);
+    return `Scheduled Task \\${WINDOWS_TASK_NAME}`;
+  }
   const target = autostartUnitPath({ platform, dir });
-  if (!target) return null;   // native Windows: no supported multiplexer to revive into
+  if (!target) return null;
   // Safety interlock. Every unit we generate carries the SAME label, so running
   // the real launchctl/systemctl against a unit written somewhere else (a test
   // fixture, a staging copy) does not create a second job — it HIJACKS the
@@ -403,6 +477,11 @@ export function healDaemonAutostart({
 }
 
 export function uninstallDaemonAutostart({ platform = process.platform, dir = null, activate = defaultActivate } = {}) {
+  if (platform === 'win32') {
+    // /f so a missing task is not an interactive prompt on an uninstall path.
+    activate('schtasks', ['/delete', '/f', '/tn', WINDOWS_TASK_NAME]);
+    return `Scheduled Task \\${WINDOWS_TASK_NAME}`;
+  }
   if (platform === 'darwin') {
     const target = join(dir || autostartDir(platform), `${DAEMON_LABEL}.plist`);
     if (!existsSync(target)) return null;
@@ -516,6 +595,22 @@ export function cmdInstall(rest, { agents = enabledAgents() } = {}) {
     console.log(`unsnooze: wrappers (${agents.join(', ')}) installed in ${rc}${oldRemoved ? ' (legacy wrapper block removed)' : ''}`);
   }
 
+  // 3b. PowerShell profile (native Windows). The rc loop above only ever
+  //     reaches ~/.zshrc and ~/.bashrc, which a PowerShell user does not have —
+  //     without this nothing routes their `claude` through unsnooze at all.
+  const psProfile = powershellProfilePath();
+  if (psProfile) {
+    try {
+      mkdirSync(dirname(psProfile), { recursive: true });
+      const before = existsSync(psProfile) ? readFileSync(psProfile, 'utf-8') : '';
+      if (existsSync(psProfile)) backupOnce(psProfile);
+      atomicWrite(psProfile, installPowershellBlock(before, agents, UNSNOOZE_BIN));
+      console.log(`unsnooze: PowerShell wrappers (${agents.join(', ')}) installed in ${psProfile}`);
+    } catch (err) {
+      console.log(`unsnooze: could not write the PowerShell profile (${err.message})`);
+    }
+  }
+
   // 4. Daemon autostart (GUI-session watching), opt-in via --daemon / wizard.
   if (opts.daemon) {
     const target = installDaemonAutostart();
@@ -573,6 +668,22 @@ export function cmdUninstall(rest) {
       atomicWrite(rc, content);
       console.log(`unsnooze: wrappers removed from ${rc}`);
     }
+  }
+
+  // The PowerShell profile is a wrapper site too — leaving its block behind
+  // would keep shadowing `claude` with a function pointing at a bin that
+  // uninstall just removed.
+  try {
+    const psProfile = powershellProfilePath();
+    if (psProfile && existsSync(psProfile)) {
+      const { content, found } = stripFencedBlock(readFileSync(psProfile, 'utf-8'), FENCE_OPEN, FENCE_CLOSE);
+      if (found) {
+        atomicWrite(psProfile, content);
+        console.log(`unsnooze: PowerShell wrappers removed from ${psProfile}`);
+      }
+    }
+  } catch (err) {
+    console.log(`unsnooze: could not clean the PowerShell profile (${err.message})`);
   }
 
   const autostart = uninstallDaemonAutostart();

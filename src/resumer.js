@@ -7,7 +7,7 @@
 import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { getMultiplexer } from './multiplexer.js';
+import { getMultiplexer, backendCanType } from './multiplexer.js';
 import {
   RESUMER_LOCK, STATE_DIR, POLL_INTERVAL_MS, STAGGER_MS, VERIFY_DELAY_MS,
   BUSY_DEFER_MS, MAX_BUSY_DEFERS, MAX_RESUME_ATTEMPTS, READY_TIMEOUT_MS,
@@ -165,6 +165,13 @@ function finishIfClaudeProgressed(rec, agent) {
       Object.assign(current, {
         status: 'resumed', lastAttemptAt: Date.now(), bannerCleared: true,
         lastError: null, verifyRetries: 0, resumeEpisodeAt: null,
+        // Something other than unsnooze got this session moving: the user, or
+        // (since 2026-08-14) Claude's own auto-continue, which resumes a
+        // five_hour stop in-process when the window resets. Recording who did
+        // it keeps `unsnooze status` honest — a session that woke itself
+        // otherwise looks exactly like one unsnooze woke, and the difference is
+        // the whole reason unsnooze is not double-resuming anything.
+        resumedBy: 'native',
       });
       applied = true;
     }
@@ -234,6 +241,10 @@ function claimStopForResume(rec) {
       Object.assign(current, {
         status: 'resuming', lastAttemptAt: now, lastError: null, verifyRetries: 0,
         resumeEpisodeAt: cutoff,
+        // The counterpart to finishIfClaudeProgressed's 'native': this is the
+        // single point where unsnooze takes ownership of a stop, whether the
+        // wake is typed, driven through the menu, or reopened.
+        resumedBy: 'unsnooze',
       });
       claimed = true;
     }
@@ -741,7 +752,9 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
     log(`${key}: reopen skipped — superseded by ${superseded.key} (anonymous record for the same project)`);
     return 'skipped';
   }
-  const resume = agent.resumeArgs(rec.sessionId, resumeMessage);
+  // A backend with no pane cannot be typed into, so the prompt has to ride in
+  // argv instead. Adapters that already do that (codex, kimi) ignore the flag.
+  const resume = agent.resumeArgs(rec.sessionId, resumeMessage, { canType: backendCanType(mux) });
   const leaseId = createLeaseId();
   const target = await reviveTarget(mux, rec);
   const launchSpec = {
