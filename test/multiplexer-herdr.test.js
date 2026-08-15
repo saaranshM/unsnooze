@@ -102,12 +102,15 @@ const sessionList = JSON.stringify({
   ],
 });
 
-test('available enforces the herdr 0.7.5 version floor and handles failures', () => {
+test('available enforces the herdr 0.8.0 version floor and handles failures', () => {
   const versions = [
-    ['herdr 0.7.5\n', true],
-    ['herdr 0.7.6\n', true],
+    ['herdr 0.8.0\n', true],
+    ['herdr 0.8.1\n', true],
     ['herdr 1.0.0\n', true],
-    ['herdr 0.7.4\n', false],
+    // 0.7.x is what Homebrew still ships; the backend is only verified against
+    // 0.8.0, so it declines rather than half-working.
+    ['herdr 0.7.9\n', false],
+    ['herdr 0.7.3\n', false],
     ['herdr 0.6.0\n', false],
   ];
   for (const [stdout, expected] of versions) {
@@ -117,7 +120,7 @@ test('available enforces the herdr 0.7.5 version floor and handles failures', ()
     assert.equal(mux.available(), expected, stdout);
   }
   assert.equal(createHerdr({
-    spawner: fakeSpawner(() => ({ status: 1, stdout: 'herdr 0.7.5\n' })), env: {},
+    spawner: fakeSpawner(() => ({ status: 1, stdout: 'herdr 0.8.0\n' })), env: {},
   }).available(), false);
   assert.equal(createHerdr({
     spawner: fakeSpawner(() => { throw new Error('not installed'); }), env: {},

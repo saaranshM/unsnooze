@@ -16,7 +16,7 @@ import { recordOwnedSession } from '../mux-sessions.js';
 import { shellLine, UnquotableArgError } from './shell-quote.js';
 
 const execFileAsync = promisify(execFileCb);
-const MIN_VERSION = [0, 7, 5];
+const MIN_VERSION = [0, 8, 0];
 const SERVER_POLL_MS = 50;
 const SERVER_POLL_ATTEMPTS = 80;
 

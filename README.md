@@ -614,7 +614,7 @@ watcher stops (no pane context) always use native.
 
 ## Requirements
 
-- Node ≥ 20 and tmux ≥ 3.2, Zellij, **or** herdr ≥ 0.7.5
+- Node ≥ 20 and tmux ≥ 3.2, Zellij, **or** herdr ≥ 0.8.0
 - macOS, Linux, or **Windows via WSL** (see below)
 - zsh or bash (the wrappers are installed into `~/.zshrc` / `~/.bashrc`)
 
@@ -627,13 +627,15 @@ agent CLIs live on Windows anyway:
 ```sh
 # inside your WSL distro (Ubuntu etc.)
 sudo apt install tmux             # or install Zellij: https://zellij.dev/documentation/installation
-# install herdr from https://herdr.dev (requires herdr >= 0.7.5)
+# install herdr from https://herdr.dev (requires herdr >= 0.8.0)
 npm install -g unsnooze && unsnooze setup
 ```
 
 On macOS, install either backend with `brew install tmux` or
 `brew install zellij`; install herdr from [herdr.dev](https://herdr.dev).
-herdr >= 0.7.5 (socket protocol 17); older 0.x releases are untested and refused by available().
+herdr >= 0.8.0, which is the version the backend is verified against; older 0.x
+releases are refused by available(). Homebrew currently ships 0.7.3, so install
+the release binary from herdr.dev or GitHub rather than `brew install herdr`.
 In `auto` mode unsnooze uses the multiplexer you are currently inside; choose one
 explicitly with `unsnooze config set multiplexer tmux`, `zellij`, or `herdr`.
 
@@ -714,7 +716,7 @@ npm test                     # unit tests (node:test)
 ./scripts/e2e-simulate.sh    # full detect → wait → re-open cycle in a
                              # scratch tmux session (no real limits needed)
 bash -n scripts/e2e-zellij.sh # syntax-check the reserved-session Zellij smoke test
-bash scripts/e2e-herdr.sh     # headless Herdr smoke test (scratch --session)
+node scripts/e2e-herdr.mjs    # drives src/multiplexers/herdr.js against a real herdr (not run by CI)
 vhs demo/demo.tape           # regenerate assets/demo.gif (brew install vhs)
 ```
 
