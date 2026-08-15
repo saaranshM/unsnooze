@@ -31,6 +31,13 @@ export const patterns = {
     /limit.*(?:this|per)\s+week/i,
   ],
   fiveHourPatterns: [/\d+-hour limit/i, /session limit/i],
+  // Per-model limits carry NO reset time and are not cleared by waiting:
+  //   "You've reached your Fable 5 limit. Run /usage-credits to continue
+  //    or switch models with /model."
+  // The remedy hint is required, not optional — it is what separates a real
+  // banner from an agent discussing usage limits in its own output.
+  modelLimitPatterns: [/(?:reached|hit)\s+(?:your|the)\s+[\w.\s-]{0,24}?\blimit\b/i],
+  modelRemedyPatterns: [/\/usage-credits\b/i, /switch\s+models?\b/i, /\/model\b/i],
   // While Claude is streaming ("esc to interrupt") or running its own internal
   // retries ("Retrying in 5s · attempt 3/10"), never inject keys.
   busyPatterns: [

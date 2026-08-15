@@ -36,18 +36,56 @@ export function contentLines(text, tailLines) {
   return tailLines > 0 ? trimmed.slice(-tailLines) : trimmed;
 }
 
-function hasNearbyMatch(lines, idx, patterns) {
+// `skip` (optional) marks lines that must not count as corroboration — a
+// remedy hint the agent is quoting is not the terminal offering a remedy.
+function hasNearbyMatch(lines, idx, patterns, skip = null) {
   const start = Math.max(0, idx - PROXIMITY);
   const end = Math.min(lines.length, idx + PROXIMITY + 1);
   for (let j = start; j < end; j++) {
-    if (patterns.some(p => p.test(lines[j]))) return true;
+    if (skip && skip[j]) continue;
+    if (patterns.some(p => p.test(lines[j])
+      && !(skip && inlineQuoted(lines[j], p)))) return true;
   }
   return false;
+}
+
+// Whether the text this pattern matched is wrapped in backticks or quotes
+// where it sits — `/usage-credits` written mid-sentence is the agent citing a
+// command, not the terminal offering one.
+function inlineQuoted(line, pattern) {
+  const m = line.match(pattern);
+  if (!m) return false;
+  const before = line[m.index - 1];
+  const after = line[m.index + m[0].length];
+  return (before === '`' && after === '`')
+    || (before === '"' && after === '"')
+    || (before === "'" && after === "'");
 }
 
 // Main entry: detect a live usage-limit banner in the pane tail.
 // Returns { hit, limitType: '5h'|'weekly'|'unknown', resetLine } — resetLine is
 // the text to feed to time-parser (most recent reset mention, bottom-up).
+// Which lines are the agent quoting rather than the terminal showing.
+// Fences are tracked across the window so a banner pasted inside ``` is
+// excluded even when the individual line looks bare.
+// "you could hit your limit", "this may hit the limit" — a warning about a
+// limit that has not happened. The banner always asserts that it has.
+const HYPOTHETICAL_LIMIT = /\b(?:could|would|might|may|will|can|if you)\b[^.]{0,40}?\b(?:reached|hit)\b/i;
+
+function quotedLineFlags(lines) {
+  const flags = new Array(lines.length).fill(false);
+  let inFence = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (/^(```|~~~)/.test(line)) { inFence = !inFence; flags[i] = true; continue; }
+    if (inFence) { flags[i] = true; continue; }
+    flags[i] = /^[>|]/.test(line)                      // markdown quote / table cell
+      || /^[`"'\u201c\u2018]/.test(line)                // opens with a quote or backtick
+      || /[`"'\u201d\u2019][.,;:!?]?$/.test(line);      // closes with one
+  }
+  return flags;
+}
+
 export function detectLimit(text, tailLines = 12, sets = claudePatterns) {
   const lines = contentLines(text, tailLines);
 
@@ -56,6 +94,27 @@ export function detectLimit(text, tailLines = 12, sets = claudePatterns) {
     if (sets.limitPatterns.some(p => p.test(lines[i])) && hasNearbyMatch(lines, i, sets.resetPatterns)) {
       hit = true;
       break;
+    }
+  }
+  // A per-model limit has no reset time to pair with, so the loop above can
+  // never see it. Detect it separately — a limit phrase backed by the banner's
+  // own remedy hint (/model, /usage-credits) — and report it with a null
+  // resetLine: there is nothing to schedule, only something to probe for.
+  if (!hit && (sets.modelLimitPatterns || []).length) {
+    const quoted = quotedLineFlags(lines);
+    for (let i = 0; i < lines.length; i++) {
+      // The remedy hint alone is not evidence: an agent explaining what the
+      // banner says writes the same words, including `/model`. What separates
+      // them is that prose QUOTES it — in backticks, in quotation marks, in a
+      // fenced block, or behind a markdown quote marker — while the terminal's
+      // own banner is plain. Reproduced in production before this check: an
+      // assistant paragraph about usage limits recorded a stop on the first
+      // monitor tick.
+      if (quoted[i] || HYPOTHETICAL_LIMIT.test(lines[i])) continue;
+      if (sets.modelLimitPatterns.some(p => p.test(lines[i]))
+        && hasNearbyMatch(lines, i, sets.modelRemedyPatterns || [], quoted)) {
+        return { hit: true, limitType: 'model', resetLine: null };
+      }
     }
   }
   if (!hit) return { hit: false, limitType: null, resetLine: null };

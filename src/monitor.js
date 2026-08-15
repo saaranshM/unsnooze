@@ -131,6 +131,10 @@ export function createMonitor({
   function isCorroborated(resolved, at, source) {
     if (resolved.via === 'transcript' && resolved.bannerAt != null) return true;
     if (source === 'absolute' && at - RESET_MARGIN_MS > Date.now()) return true;
+    // A model limit carries no time to corroborate — its own remedy hint is
+    // the evidence, and the record only ever probes (never blind-wakes), so
+    // recording it cannot cause a premature resume.
+    if (resolved.limitType === 'model') return true;
     return false;
   }
 
@@ -202,7 +206,13 @@ export function createMonitor({
     // is ambiguous when historical records exist for the same address.
     trackedKey = appliedKey;
     log(`pane ${pane}: limit recorded (${resolved.limitType}, via ${detectedVia}), resets ${new Date(at).toISOString()} (${source})`);
-    notifier(`${agent.name} hit a usage limit`, `${cwd} — auto-resume at ${new Date(at).toLocaleTimeString()}`, { context: notifyCtx });
+    if (resolved.limitType === 'model') {
+      notifier(`${agent.name} hit a model limit — needs you`,
+        `${cwd} — switch models (/model) or add credits (/usage-credits); unsnooze wakes it once the banner clears`,
+        { context: notifyCtx });
+    } else {
+      notifier(`${agent.name} hit a usage limit`, `${cwd} — auto-resume at ${new Date(at).toLocaleTimeString()}`, { context: notifyCtx });
+    }
     spawnResumerIfNeeded();
     return { at, source, resolved };
   }

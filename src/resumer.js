@@ -351,6 +351,20 @@ function rescheduleProbe(rec, now = Date.now()) {
   // Past the hard ceiling: schedule a final attempt at the ceiling (or now
   // if already past) and stop tagging as endless probes — reopen path runs.
   if (now >= ceiling) {
+    // A model limit is lifted by a human choice (switch models, add credits),
+    // never by waiting it out. Typing a wake into it would hit the same wall,
+    // so make the stall a visible terminal state instead of a futile resume.
+    if (rec.limitType === 'model') {
+      setStatus(key, 'failed', {
+        lastError: 'model limit still active — switch models (/model) or add credits',
+        probeCount: probeCount + 1,
+      }, { expect: ['stopped'] });
+      log(`${key}: model limit still active at probe ceiling — needs a human`);
+      notify('unsnooze: model limit needs you ⚠️',
+        `${rec.cwd}: still limited after probing — /model to switch or /usage-credits`,
+        { context: ctxOf(rec), priority: 4 });
+      return 'held';
+    }
     const applied = transitionStopEpisode(rec, 'stopped', {
       resetAt: now,
       resetSource: 'fallback',
