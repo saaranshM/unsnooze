@@ -614,7 +614,7 @@ watcher stops (no pane context) always use native.
 
 ## Requirements
 
-- Node ≥ 20 and tmux ≥ 3.2, Zellij, **or** herdr ≥ 0.8.0
+- Node ≥ 20.12 and tmux ≥ 3.2, Zellij, **or** herdr ≥ 0.8.0
 - macOS, Linux, or **Windows via WSL** (see below)
 - zsh or bash (the wrappers are installed into `~/.zshrc` / `~/.bashrc`)
 

@@ -27,6 +27,12 @@ const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-failsafe-'));
 mkdirSync(join(DIR, 'bin'));
 const BROKEN_BIN = join(DIR, 'bin', 'unsnooze.js');
 copyFileSync(REAL_BIN, BROKEN_BIN);   // bin exists, ../src/ does not
+// npm writes package.json before it unpacks the rest, so a half-installed
+// package always still has one — and the bin is ESM, which Node only knows
+// from `"type": "module"`. Omitting it made this fixture depend on Node's
+// module-syntax detection instead, which is a 20.19+ feature and made these
+// tests, alone in the suite, fail on every earlier Node 20.
+writeFileSync(join(DIR, 'package.json'), JSON.stringify({ name: 'unsnooze', type: 'module' }));
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
