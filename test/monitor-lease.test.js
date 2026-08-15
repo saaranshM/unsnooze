@@ -29,10 +29,30 @@ process.env.UNSNOOZE_STATE_DIR = DIR;
 process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 process.env.UNSNOOZE_CLAUDE_DIR = join(DIR, 'claude');
 
+// The launch fixture has to exist before the imports below: src/agents/claude.js
+// reads UNSNOOZE_CLAUDE_BIN at module-eval time, so setting it inside the test
+// would be too late and the launcher would try to spawn the real `claude`.
+const SHIMS = join(DIR, 'shims');
+const LEASE_SEEN = join(DIR, 'lease-seen.json');
+const AGENT_SHIM = join(SHIMS, 'slow-agent');
+if (process.platform !== 'win32') {
+  mkdirSync(SHIMS, { recursive: true });
+  // tmux: alive enough to resolve a pane, and paneAlive answers "gone" (empty
+  // stdout) so the detached monitor this launch spawns exits immediately.
+  writeFileSync(join(SHIMS, 'tmux'), '#!/bin/sh\ncase "$1" in -V) echo "tmux 3.7b";; esac\nexit 0\n');
+  chmodSync(join(SHIMS, 'tmux'), 0o755);
+  // The launcher removes the lease the moment the agent exits, so reading it
+  // from the test is a race. The agent records what it sees instead: it is the
+  // only thing guaranteed to be alive at the same time as the lease.
+  writeFileSync(AGENT_SHIM, `#!/bin/sh\nsleep 1\ncat "${join(DIR, 'leases')}"/*.json > "${LEASE_SEEN}" 2>/dev/null\n`);
+  chmodSync(AGENT_SHIM, 0o755);
+  process.env.UNSNOOZE_CLAUDE_BIN = AGENT_SHIM;
+}
+
 const { createMonitor } = await import('../src/monitor.js');
 const { writeLease, readLease } = await import('../src/lease.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 function fakeMux(script = {}) {
   return {
@@ -84,49 +104,41 @@ test('no leaseId at all: the grace is not armed (nothing to wait for)', async ()
   assert.ok(true, 'a monitor with no lease to watch exits on pane death as before');
 });
 
-// Driven through the real bin, with a `ps` shim that fails so processBirth()
-// returns null exactly as it does on Windows. Unix-only because it depends on
-// PATH/sh shim semantics.
+// Unix-only: it drives sh shims and PATH semantics. Run in-process rather than
+// through the bin, because "this host cannot report a birth time" has no single
+// external cause to fake — darwin loses it when `ps` fails, linux reads
+// /proc/<pid>/stat instead, and Windows has neither. Shimming `ps` only
+// reproduces it on darwin, which is how the first version of this test passed
+// locally and failed on ubuntu. The seam is the honest way to say it.
 const launchTest = process.platform === 'win32'
   ? (name, fn) => test(name, { skip: 'unix-only surface (sh/PATH shims)' }, fn)
   : test;
 
-launchTest('the launcher writes a lease even when the process birth time is unavailable', () => {
-  const state = join(DIR, 'launch-state');
-  const shims = join(DIR, 'shims');
-  mkdirSync(shims, { recursive: true });
-  // tmux: alive enough to resolve a pane, and paneAlive answers "gone" (empty
-  // stdout) so the detached monitor this launch spawns exits immediately.
-  writeFileSync(join(shims, 'tmux'), '#!/bin/sh\ncase "$1" in -V) echo "tmux 3.7b";; esac\nexit 0\n');
-  chmodSync(join(shims, 'tmux'), 0o755);
-  // ps failing is how a darwin host loses birth times; Windows never has them.
-  writeFileSync(join(shims, 'ps'), '#!/bin/sh\nexit 1\n');
-  chmodSync(join(shims, 'ps'), 0o755);
-
-  // The launcher removes the lease the moment the agent exits, so polling from
-  // out here is a race. The agent shim records what it sees instead: it is the
-  // only thing guaranteed to be alive at the same time as the lease.
-  const seen = join(DIR, 'lease-seen.json');
-  const agent = join(shims, 'slow-agent');
-  writeFileSync(agent, `#!/bin/sh\nsleep 1\ncat "${state}"/leases/*.json > "${seen}" 2>/dev/null\n`);
-  chmodSync(agent, 0o755);
-
-  const r = spawnSync(process.execPath, [REAL_BIN, '_run', 'claude'], {
-    encoding: 'utf-8',
-    env: {
-      ...process.env,
-      PATH: `${shims}:/usr/bin:/bin`,
-      UNSNOOZE_STATE_DIR: state,
-      UNSNOOZE_CLAUDE_BIN: agent,
-      UNSNOOZE_MULTIPLEXER: 'tmux',
-      TMUX: '/tmp/fake,1,0', TMUX_PANE: '%14',
-      ZELLIJ: '', UNSNOOZE_ACTIVE: '', UNSNOOZE_NOTIFICATIONS: 'off',
-    },
+launchTest('the launcher writes a lease even when the process birth time is unavailable', async () => {
+  // Earlier tests in this file wrote leases into the same directory; the shim
+  // reads every one it finds, so start from an empty one.
+  rmSync(join(DIR, 'leases'), { recursive: true, force: true });
+  const { runLauncher } = await import('../src/launcher.js');
+  const saved = { ...process.env };
+  Object.assign(process.env, {
+    PATH: `${SHIMS}:/usr/bin:/bin`,
+    UNSNOOZE_MULTIPLEXER: 'tmux',
+    TMUX: '/tmp/fake,1,0',
+    TMUX_PANE: '%14',
+    ZELLIJ: '', UNSNOOZE_ACTIVE: '',
   });
-  assert.equal(r.status, 0, `launch must succeed: ${r.stderr}`);
+  try {
+    // processBirthFn is the seam runLauncher exposes precisely so this case is
+    // reachable on every platform.
+    const status = await runLauncher([], 'claude', { processBirthFn: () => null });
+    assert.equal(status, 0, 'the agent still runs');
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
 
-  const lease = JSON.parse(readFileSync(seen, 'utf-8'));
-  assert.equal(lease.pidBirth, null, 'this host genuinely has no birth time (ps shim fails)');
+  const lease = JSON.parse(readFileSync(LEASE_SEEN, 'utf-8'));
+  assert.equal(lease.pidBirth, null, 'a lease is written even with no birth time to record');
   assert.equal(lease.agent, 'claude', 'the lease belongs to the launched agent');
   assert.ok(lease.pane, 'the lease carries the pane it watches');
   assert.ok(lease.leaseId, 'the lease carries its id');

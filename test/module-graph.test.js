@@ -14,7 +14,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const SRC = join(dirname(dirname(fileURLToPath(import.meta.url))), 'src');
@@ -26,7 +26,9 @@ const ENTRY_POINTS = ['config.js', 'settings.js', 'multiplexer.js', 'monitor.js'
 
 for (const entry of ENTRY_POINTS) {
   test(`src/${entry} imports cleanly as the first module in the graph`, () => {
-    const target = JSON.stringify(join(SRC, entry));
+    // A file URL, not a path: `import("C:\\…")` is not a valid specifier on
+    // Windows, and this test would fail there for that reason alone.
+    const target = JSON.stringify(pathToFileURL(join(SRC, entry)).href);
     assert.doesNotThrow(() => {
       execFileSync(process.execPath, ['-e', `import(${target}).catch(e => { console.error(e.message); process.exit(1); })`],
         { stdio: 'pipe', encoding: 'utf8' });

@@ -56,7 +56,7 @@ const {
 
 const { readState, updateState } = await import('../src/state.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 // --- weighting ---
 

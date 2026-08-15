@@ -21,7 +21,7 @@ process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 const { createWatcher, claudeSource, claudeDesktopSource, codexSource, dispatchCandidate } = await import('../src/watcher.js');
 const { readState, setStatus } = await import('../src/state.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 const SESSION_TEXT = "You've hit your session limit · resets 6:40pm (Asia/Calcutta)";
 

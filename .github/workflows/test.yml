@@ -18,7 +18,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node: [20, 22]
+        # 20.12 is the declared floor in package.json engines, not just a
+        # spot check: @clack/core imports styleText from node:util, which does
+        # not exist before it. Testing only the latest 20.x would let the floor
+        # drift out of date silently — a user on 20.11 crashes on startup (#2).
+        node: ['20.12', 20, 22]
         include:
           # tmux-independent core (unit tests use a fake tmux) must stay
           # portable — WSL users run the linux path, but keep win32 honest.

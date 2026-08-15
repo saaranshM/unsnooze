@@ -12,7 +12,7 @@ const {
   removeLease, leaseMatches,
 } = await import('../src/lease.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 const address = { mux: 'zellij', paneOwner: 'main', pane: '1' };
 

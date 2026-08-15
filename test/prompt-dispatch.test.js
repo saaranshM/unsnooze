@@ -24,7 +24,7 @@ const { runResumer, retryBackoffMs } = await import('../src/resumer.js');
 const { RESUME_SESSION_NAME, VERIFY_DELAY_MS, MAX_RESUME_ATTEMPTS, RESET_MARGIN_MS, PROBE_INTERVAL_MS, READY_TIMEOUT_MS } = await import('../src/config.js');
 const { parseResetTime, resetAtMs } = await import('../src/time-parser.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 

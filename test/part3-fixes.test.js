@@ -31,7 +31,7 @@ const { reap } = await import('../src/reap.js');
 const { cmdInstall } = await import('../src/install.js');
 const { LOCK_DIR } = await import('../src/config.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 let seedCounter = 100;
 function seed(overrides = {}) {

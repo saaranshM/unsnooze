@@ -11,7 +11,7 @@ const SKIP_WIN32 = process.platform === 'win32' ? 'fake ssh is a POSIX shell scr
 process.env.UNSNOOZE_STATE_DIR = DIR;
 
 after(() => {
-  rmSync(DIR, { recursive: true, force: true });
+  rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 const {

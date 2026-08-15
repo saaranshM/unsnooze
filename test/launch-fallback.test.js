@@ -24,7 +24,7 @@ const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-launchfb-'));
 const SHIMS = join(DIR, 'shims');
 mkdirSync(SHIMS);
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 function installTmuxShim(newSessionBody) {
   const shim = join(SHIMS, 'tmux');

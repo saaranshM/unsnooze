@@ -26,7 +26,7 @@ const { queueList, queueAdd } = await import('../src/prompt-queue.js');
 const { updateState } = await import('../src/state.js');
 const { writeHosts, frameEnvelope } = await import('../src/fleet.js');
 
-after(() => { rmSync(DIR, { recursive: true, force: true }); rmSync(PROJ, { recursive: true, force: true }); });
+after(() => { rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); rmSync(PROJ, { recursive: true, force: true }); });
 
 function resetState() {
   updateState(state => { state.sessions = {}; state.promptQueue = []; return state; });

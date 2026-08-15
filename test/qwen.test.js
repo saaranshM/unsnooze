@@ -11,7 +11,7 @@ import { getAgent } from '../src/agents/index.js';
 import { detectLimit, isBusy, overloadMatch } from '../src/patterns.js';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-qwen-test-'));
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 test('qwen is registered and experimental', () => {
   assert.equal(getAgent('qwen').id, 'qwen');

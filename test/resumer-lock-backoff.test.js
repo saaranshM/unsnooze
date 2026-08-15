@@ -21,7 +21,7 @@ const {
 const { upsertSession, readState } = await import('../src/state.js');
 const { RESUMER_LOCK } = await import('../src/config.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 function seed(overrides = {}) {
   const rec = {

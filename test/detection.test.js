@@ -15,7 +15,7 @@ const { readState, upsertSession } = await import('../src/state.js');
 const { dashCwd } = await import('../src/sessions.js');
 const { default: claudeAgent } = await import('../src/agents/claude.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 function fakeTmux(script) {
   const sent = [];

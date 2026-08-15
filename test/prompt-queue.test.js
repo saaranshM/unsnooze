@@ -25,7 +25,7 @@ const {
   resolveAgentResetAnchor, duePromptEntries,
 } = await import('../src/prompt-queue.js');
 
-after(() => { rmSync(DIR, { recursive: true, force: true }); rmSync(CLAUDE_DIR, { recursive: true, force: true }); });
+after(() => { rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); rmSync(CLAUDE_DIR, { recursive: true, force: true }); });
 
 function resetState() {
   rmSync(STATE_FILE_PATH, { force: true });
