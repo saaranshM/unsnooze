@@ -94,10 +94,21 @@ export default {
   experimental: false,
   patterns,
   menu: { isPrompt: isRateLimitOptionsPrompt, stepsToWait: menuStepsToWaitOption },
-  // How to reopen a dead session. messageViaPane: the resume prompt is typed
-  // into the TUI once it's ready (claude has no resume-with-prompt argv form).
-  resumeArgs(sessionId) {
-    return { args: sessionId ? ['--resume', sessionId] : ['-c'], messageViaPane: true };
+  // How to reopen a dead session.
+  //
+  // Default (a real pane): the prompt is typed into the TUI once it's ready.
+  // That path is load-bearing on tmux/zellij/herdr and stays exactly as it was.
+  //
+  // canType: false (headless — no pane to type into): the prompt rides in argv.
+  // `claude --resume <id> "<prompt>"` resumes that session id and acts on the
+  // prompt, verified against claude 2.1.233 on 2026-08-16. Without a TTY it
+  // runs to completion non-interactively, which is what an unattended overnight
+  // resume wants anyway.
+  resumeArgs(sessionId, message, { canType = true } = {}) {
+    const args = sessionId ? ['--resume', sessionId] : ['-c'];
+    if (canType) return { args, messageViaPane: true };
+    if (message) args.push(message);
+    return { args, messageViaPane: false };
   },
   // v1: every agent launches the bare TUI and gets the prompt typed once idle.
   launchArgs(message) { return { args: [], messageViaPane: true }; },

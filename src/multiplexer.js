@@ -2,11 +2,24 @@ import tmux from './multiplexers/tmux.js';
 import zellij from './multiplexers/zellij.js';
 import herdr from './multiplexers/herdr.js';
 import cmux from './multiplexers/cmux.js';
+import headless from './multiplexers/headless.js';
 import { getConfig } from './settings.js';
 import { MUX_NAMES as NAMES } from './config.js';
 
+// Can this backend deliver a resume prompt by typing it into a live pane?
+// headless cannot — there is no pane — so adapters must put the prompt in argv
+// instead. This is a property of the backend family, not of the particular
+// object: the resumer asks before newWindow(), and the object that ends up
+// doing the typing is the *rebound* one returned by resolveMux(). Probing for
+// a sendText method instead would answer "no" for any legitimately partial
+// mux (every fake in the resumer tests, and any bound wrapper), silently
+// converting a working typed resume into an argv one.
+export function backendCanType(backend) {
+  return backend?.name !== 'headless';
+}
+
 export function createMultiplexerFactory({
-  backends = { tmux, zellij, herdr, cmux },
+  backends = { tmux, zellij, herdr, cmux, headless },
   getSetting = () => getConfig('multiplexer'),
   env = process.env,
 } = {}) {
@@ -46,7 +59,14 @@ export function createMultiplexerFactory({
       ['tmux', tmuxInstalled], ['zellij', zellijInstalled], ['herdr', herdrInstalled],
     ].filter(([, present]) => present).map(([name]) => name);
     if (installed.length === 1) return installed[0];
-    return 'tmux';
+    // Several installed (or a tmux we can see): tmux stays the tie-breaker.
+    if (installed.length > 1) return 'tmux';
+    // None installed. This used to guess tmux anyway, which on native Windows
+    // meant "not found — running without limit-watch". headless watches via the
+    // hook and the transcript instead, so a machine with no multiplexer is
+    // still covered. It is chosen only here, never from ambient env, so a real
+    // pane always wins.
+    return backends.headless ? 'headless' : 'tmux';
   };
 
   const getMultiplexer = (name, { owner = null } = {}) => {

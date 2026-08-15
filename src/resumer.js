@@ -7,7 +7,7 @@
 import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { getMultiplexer } from './multiplexer.js';
+import { getMultiplexer, backendCanType } from './multiplexer.js';
 import {
   RESUMER_LOCK, STATE_DIR, POLL_INTERVAL_MS, STAGGER_MS, VERIFY_DELAY_MS,
   BUSY_DEFER_MS, MAX_BUSY_DEFERS, MAX_RESUME_ATTEMPTS, READY_TIMEOUT_MS,
@@ -741,7 +741,9 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
     log(`${key}: reopen skipped — superseded by ${superseded.key} (anonymous record for the same project)`);
     return 'skipped';
   }
-  const resume = agent.resumeArgs(rec.sessionId, resumeMessage);
+  // A backend with no pane cannot be typed into, so the prompt has to ride in
+  // argv instead. Adapters that already do that (codex, kimi) ignore the flag.
+  const resume = agent.resumeArgs(rec.sessionId, resumeMessage, { canType: backendCanType(mux) });
   const leaseId = createLeaseId();
   const target = await reviveTarget(mux, rec);
   const launchSpec = {

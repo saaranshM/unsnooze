@@ -77,7 +77,14 @@ export const LEASE_GRACE_MS = envInt('UNSNOOZE_LEASE_GRACE_MS', 60_000);
 // it in either one puts the other in a temporal dead zone at import time.
 // cmux is last: an agent can run tmux inside a cmux surface, so tmux/zellij
 // must win detection when both are signalled (see multiplexer.js: detect()).
-export const MUX_NAMES = ['tmux', 'zellij', 'herdr', 'cmux'];
+// headless is last of all and never auto-detected from the environment: it is
+// the no-multiplexer fallback (native Windows, servers, CI), and a real pane
+// must always beat it.
+export const MUX_NAMES = ['tmux', 'zellij', 'herdr', 'cmux', 'headless'];
+
+// Where a headless revive tees the agent's output. There is no pane to scroll
+// back through, so the log is the only record of what an unattended run did.
+export const HEADLESS_LOG_DIR = join(STATE_DIR, 'headless');
 
 // Pane scanning
 export const PANE_SCAN_LINES = envInt('UNSNOOZE_PANE_SCAN_LINES', 12);

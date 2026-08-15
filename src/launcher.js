@@ -130,6 +130,16 @@ export function runLauncher(args, agentId = 'claude', { processBirthFn = process
       monitorSpawnArgs({ muxName: mux.name, paneOwner, pane, agentId: agent.id, leaseId }),
       { UNSNOOZE_CWD: process.cwd() });
     log(`launching ${agent.id} in ${mux.name} ${paneOwner ?? '-'}:${pane}, monitor spawned`);
+  } else if (mux.name === 'headless') {
+    // Headless has no pane, so there is no monitor to spawn — the StopFailure
+    // hook and the transcript watcher do the detecting. Say so: this is real
+    // watching, not the unwatched fallback, but it is weaker than a pane
+    // (no menu driving, no busy detection), so name the way out of it.
+    process.stderr.write('unsnooze: no multiplexer found — watching '
+      + `${agent.id} headless (hook + transcript).\n`);
+    process.stderr.write('unsnooze: install tmux'
+      + `${process.platform === 'win32' ? ' under WSL' : ''} for pane-level watching.\n`);
+    log(`headless: launching ${agent.id} with no pane; detection via hook + transcript`);
   } else {
     log(`inside ${mux.name} but pane id unset — launching ${agent.id} without monitor`);
   }
