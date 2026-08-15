@@ -14,6 +14,7 @@ import { resolveClaudeResetAnchor, readUsageStore, readExactClaudeFromStatusline
 import { spawnResumerIfNeeded, UNSNOOZE_BIN } from './spawn.js';
 import { getMultiplexer } from './multiplexer.js';
 import { createLeaseId } from './lease.js';
+import { resolveResumeExtraArgs } from './settings.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { detectLimit } from './patterns.js';
 import { notify } from './notify.js';
@@ -366,7 +367,7 @@ export async function dispatchPromptEntry(entry, {
   const selfCmd = selfCommand();
   const launchSpec = {
     file: selfCmd[0],
-    args: [...selfCmd.slice(1), '_run', agent.id, ...launch.args],
+    args: [...selfCmd.slice(1), '_run', agent.id, ...launch.args, ...resolveResumeExtraArgs(agent.id)],
     env: dispatchEnv(cased, leaseId, mux, target),
   };
 

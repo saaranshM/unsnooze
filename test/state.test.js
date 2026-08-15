@@ -242,3 +242,49 @@ test('upsert fingerprints git workspaces; dedupe merge keeps the original', asyn
   const rec3 = Object.values(s3.sessions).find(r => r.pane === '%91');
   assert.equal(rec3.workspace, null);
 });
+
+test('a new stop is not held back by the abandoned record it replaces', () => {
+  // The guard above stops a stale banner re-parse from delaying a live wake.
+  // It must not also stop a genuinely NEW stop from scheduling itself: a
+  // record left behind days ago has no authority over the stop that just
+  // happened, and markStaleAbandoned races exactly this window.
+  const now = Date.now();
+  const ancient = now - 8 * 86_400_000;
+  const first = upsertSession(record({
+    sessionId: 'abandoned-then-new', pane: '%98',
+    detectedAt: ancient, bannerAt: ancient, resetAt: ancient + 60_000,
+  }));
+  const key = Object.keys(first.sessions).find(k => first.sessions[k].pane === '%98');
+  // Same record, updated in place — the shape markStaleAbandoned races with.
+  const s = upsertSession({
+    ...first.sessions[key], detectedAt: now, bannerAt: now, resetAt: now + 3_600_000,
+  });
+  const r = s.sessions[key];
+  assert.equal(r.resetAt, now + 3_600_000, 'the new stop schedules itself');
+  assert.equal(r.bannerAt, now, 'and dates itself');
+});
+
+test('duplicate merge may never push resetAt later for a same-or-worse source', () => {
+  const now = Date.now();
+  // Correct absolute reset that just became due...
+  upsertSession(record({ pane: '%95', detectedAt: now - 10_000, resetAt: now - 5_000 }));
+  // ...then a stale-banner re-parse 5s later tries to push it to now+60s
+  // (same source rank). Unguarded, this repeats every scrape tick and the
+  // resumer never sees the session become due (livelock).
+  const s1 = upsertSession(record({ pane: '%95', detectedAt: now - 5_000, resetAt: now + 60_000 }));
+  const r1 = Object.values(s1.sessions).find(r => r.pane === '%95');
+  assert.ok(r1.resetAt <= now, 'same-rank duplicate must not delay the wake');
+
+  // A better source may still push later (fallback -> absolute upgrade)...
+  upsertSession(record({ pane: '%96', detectedAt: now - 10_000, resetAt: now + 10_000, resetSource: 'fallback' }));
+  const s2 = upsertSession(record({ pane: '%96', detectedAt: now - 5_000, resetAt: now + 3_600_000, resetSource: 'absolute' }));
+  const r2 = Object.values(s2.sessions).find(r => r.pane === '%96');
+  assert.equal(r2.resetAt, now + 3_600_000, 'absolute upgrade still wins');
+  assert.equal(r2.resetSource, 'absolute');
+
+  // ...and a same-rank EARLIER reset stays accepted.
+  upsertSession(record({ pane: '%97', detectedAt: now - 10_000, resetAt: now + 3_600_000 }));
+  const s3 = upsertSession(record({ pane: '%97', detectedAt: now - 5_000, resetAt: now + 60_000 }));
+  const r3 = Object.values(s3.sessions).find(r => r.pane === '%97');
+  assert.equal(r3.resetAt, now + 60_000, 'pulling the wake earlier is allowed');
+});

@@ -46,6 +46,11 @@ export const DEFAULTS = {
   remoteQueue: true,
   resumeMessage: 'Continue where you left off. The session was interrupted by a usage limit which has now reset — pick up the task you were working on and finish it.',
   resumeMessages: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '' },  // per-agent override; '' = use resumeMessage
+  // Extra argv appended when unsnooze itself launches the agent binary (dead-pane
+  // reopen, queued prompts). Space-separated. Lets a revived session match the
+  // user's normal launch mode — shell aliases don't apply to direct spawns
+  // (e.g. claude users who always launch with --dangerously-skip-permissions).
+  resumeExtraArgs: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '' },
   agents: { claude: true, codex: true, grok: false, qwen: false, kimi: false, opencode: false, agy: false },   // experimental agents default off
 };
 
@@ -79,6 +84,13 @@ const ENV_NAMES = {
   'resumeMessages.kimi': 'UNSNOOZE_RESUME_MESSAGE_KIMI',
   'resumeMessages.opencode': 'UNSNOOZE_RESUME_MESSAGE_OPENCODE',
   'resumeMessages.agy': 'UNSNOOZE_RESUME_MESSAGE_AGY',
+  'resumeExtraArgs.claude': 'UNSNOOZE_RESUME_EXTRA_ARGS_CLAUDE',
+  'resumeExtraArgs.codex': 'UNSNOOZE_RESUME_EXTRA_ARGS_CODEX',
+  'resumeExtraArgs.grok': 'UNSNOOZE_RESUME_EXTRA_ARGS_GROK',
+  'resumeExtraArgs.qwen': 'UNSNOOZE_RESUME_EXTRA_ARGS_QWEN',
+  'resumeExtraArgs.kimi': 'UNSNOOZE_RESUME_EXTRA_ARGS_KIMI',
+  'resumeExtraArgs.opencode': 'UNSNOOZE_RESUME_EXTRA_ARGS_OPENCODE',
+  'resumeExtraArgs.agy': 'UNSNOOZE_RESUME_EXTRA_ARGS_AGY',
   'agents.claude': 'UNSNOOZE_AGENT_CLAUDE',
   'agents.codex': 'UNSNOOZE_AGENT_CODEX',
   'agents.grok': 'UNSNOOZE_AGENT_GROK',
@@ -155,6 +167,50 @@ export function resolveResumeMessage(agentId) {
   const set = v => (typeof v === 'string' && v.trim() ? v : '');
   const perAgent = agentId && KNOWN_KEYS.includes(key) ? getConfig(key) : '';
   return set(perAgent) || set(getConfig('resumeMessage')) || DEFAULTS.resumeMessage;
+}
+
+// Extra argv for agent launches unsnooze performs itself. Space-separated
+// string in config → array. Unknown agents and blank values yield [].
+// Split a command-line string the way a shell would: quotes group words, a
+// backslash escapes the next character. Splitting on whitespace instead turns
+// `--append-system-prompt "Stay in this repo"` into five arguments, and a path
+// like "/tmp/My Project" into two — silently, at revival time.
+export function splitArgString(text) {
+  const out = [];
+  let current = '';
+  let quote = null;
+  let open = false;      // distinguishes a deliberate empty argument ('') from a gap
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) { quote = null; continue; }
+      // Only double quotes honour escapes, as in sh.
+      if (quote === '"' && ch === '\\' && i + 1 < text.length) { current += text[i += 1]; continue; }
+      current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; open = true; continue; }
+    if (ch === '\\' && i + 1 < text.length) { current += text[i += 1]; open = true; continue; }
+    if (/\s/.test(ch)) {
+      if (open || current) { out.push(current); current = ''; open = false; }
+      continue;
+    }
+    current += ch;
+    open = true;
+  }
+  if (open || current) out.push(current);
+  return out;
+}
+
+// Extra argv for launches unsnooze performs itself. Accepts either the array
+// form in config.json — the honest one, no parsing involved — or a string,
+// which is all an environment variable can carry.
+export function resolveResumeExtraArgs(agentId) {
+  const key = `resumeExtraArgs.${agentId}`;
+  if (!agentId || !KNOWN_KEYS.includes(key)) return [];
+  const value = getConfig(key);
+  if (Array.isArray(value)) return value.filter(arg => typeof arg === 'string' && arg !== '');
+  return typeof value === 'string' && value.trim() ? splitArgString(value) : [];
 }
 
 export function setConfigValue(key, rawValue) {
