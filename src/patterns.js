@@ -72,6 +72,16 @@ function inlineQuoted(line, pattern) {
 // limit that has not happened. The banner always asserts that it has.
 const HYPOTHETICAL_LIMIT = /\b(?:could|would|might|may|will|can|if you)\b[^.]{0,40}?\b(?:reached|hit)\b/i;
 
+// A line that denies being a usage limit is not one. Claude Code's server-side
+// throttle names the very thing it is not:
+//   "API Error: Server is temporarily limiting requests (not your usage limit)"
+// `/usage limit/i` matches that parenthetical, so with any stale "resets 3pm"
+// left in the pane tail — the TUI never clears old banners from scrollback —
+// unsnooze recorded an hours-long wait for a throttle that clears in seconds.
+// The message is on the transient overload ladder instead, which is where a
+// 429-shaped server condition belongs.
+const DISCLAIMED_LIMIT = /\bnot\s+(?:your|a|an|the)\s+(?:[\w-]+\s+){0,2}limit\b/i;
+
 function quotedLineFlags(lines) {
   const flags = new Array(lines.length).fill(false);
   let inFence = false;
@@ -91,6 +101,7 @@ export function detectLimit(text, tailLines = 12, sets = claudePatterns) {
 
   let hit = false;
   for (let i = 0; i < lines.length; i++) {
+    if (DISCLAIMED_LIMIT.test(lines[i])) continue;
     if (sets.limitPatterns.some(p => p.test(lines[i])) && hasNearbyMatch(lines, i, sets.resetPatterns)) {
       hit = true;
       break;

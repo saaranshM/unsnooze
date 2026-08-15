@@ -34,6 +34,23 @@
   Scheduled Task, and `unsnooze doctor` stops reporting wrappers as missing
   when they are installed. WSL remains the richer option.
 
+- **A server throttle is no longer mistaken for your usage limit.** Claude Code
+  says *"API Error: Server is temporarily limiting requests (not your usage
+  limit)"* — and `usage limit` matched the parenthetical. Since the TUI never
+  clears old banners from scrollback, any stale *"resets 3pm"* nearby was enough
+  to turn a throttle that clears in seconds into an hours-long scheduled wait.
+  It is now read as what it is and handled on the transient overload ladder.
+
+- **Non-resetting Claude stops are notified, not scheduled.** The claude adapter
+  gained the `terminalPatterns` every other adapter already had. An expired
+  Claude Design credential and an exhausted credit balance are stops no amount
+  of waiting clears, so unsnooze says so once instead of booking a wake and
+  burning the attempt cap. This matters most for unattended runs: a revived
+  headless session has no interactive terminal, so `/design-login` cannot even
+  be offered there. All patterns are anchored to the CLI's real error phrasings
+  rather than to the bare command name, so an agent explaining `/design-login`
+  is not a stop.
+
 - **`launchExtraArgs.<agent>`.** The launch-side twin of `resumeExtraArgs`, for
   flags that must hold for a whole session rather than just a revival —
   `unsnooze config set launchExtraArgs.claude "--autocompact 400000"` keeps a

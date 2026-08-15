@@ -52,8 +52,29 @@ export const patterns = {
     /API Error:?\s*\(?5\d\d/i,
     /overloaded_error/i,
     /API Error:?\s*\(?429/i,
+    // "API Error: Server is temporarily limiting requests (not your usage
+    // limit)" — a server-side throttle. It clears in seconds, so it belongs on
+    // this ladder; patterns.js separately refuses to read its parenthetical as
+    // a usage limit.
+    /temporarily limiting requests/i,
   ],
   transientPatterns: [],   // claude's transient errors are the overload set
+  // Stops that waiting cannot clear: notify once, never enter the ledger
+  // (monitor.js). Scheduling a wake for these would burn the attempt cap on a
+  // condition only a human can fix.
+  //
+  // All verbatim from the shipped 2.1.233 bundle. The Claude Design ones matter
+  // most for headless/unattended runs: a revived session has no interactive
+  // terminal, so an expired design credential produces a stop that can never
+  // self-resolve. Anchored to the error phrasings rather than to the bare
+  // command name, so an agent explaining "/design-login" is not a stop.
+  terminalPatterns: [
+    /rejected your \/design-login credential/i,
+    /could not refresh the design access token/i,
+    /could not save the design credential/i,
+    /\/design-login requires an interactive terminal/i,
+    /credit balance is too low/i,
+  ],
 };
 
 // --- Interactive /rate-limit-options menu (Claude Code only) ---
