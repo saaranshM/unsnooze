@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import {
   mergeHookIntoSettings, hookCommand, powershellWrapperBlock,
   powershellProfilePath, installPowershellBlock,
-  stripFencedBlock,
+  stripFencedBlock, installDaemonAutostart, uninstallDaemonAutostart, isSupervised,
 } from '../src/install.js';
 
 // --- StopFailure hook command ---------------------------------------------
@@ -160,4 +160,51 @@ test('the default runner is wired up, not just the injected one', () => {
   // NOT throw — and must not silently swallow a bug in the lookup itself.
   assert.equal(powershellProfilePath({ platform: 'win32' }),
     process.platform === 'win32' ? powershellProfilePath({ platform: 'win32' }) : null);
+});
+
+// --- Windows daemon autostart (Scheduled Tasks) ----------------------------
+
+test('windows autostart registers a logon-triggered scheduled task', () => {
+  const calls = [];
+  const target = installDaemonAutostart({
+    platform: 'win32',
+    activate: (file, args) => { calls.push({ file, args }); return true; },
+  });
+  assert.ok(target, 'win32 must now report an autostart target');
+  assert.equal(calls[0].file, 'schtasks');
+  const args = calls[0].args.join(' ');
+  assert.match(args, /\/create/i);
+  assert.match(args, /\/tn\s+\S*[Uu]nsnooze/);
+  assert.match(args, /\/sc\s+onlogon/i);
+  assert.match(args, /daemon/, 'the task must actually run the daemon');
+});
+
+test('windows autostart replaces an existing task instead of erroring on it', () => {
+  const calls = [];
+  installDaemonAutostart({
+    platform: 'win32',
+    activate: (file, args) => { calls.push(args.join(' ')); return true; },
+  });
+  assert.ok(calls.some(a => /\/f\b/.test(a)),
+    're-running setup must overwrite the task, not fail on "already exists"');
+});
+
+test('uninstall removes the scheduled task', () => {
+  const calls = [];
+  const target = uninstallDaemonAutostart({
+    platform: 'win32',
+    activate: (file, args) => { calls.push({ file, args }); return true; },
+  });
+  assert.ok(target);
+  assert.equal(calls[0].file, 'schtasks');
+  assert.match(calls[0].args.join(' '), /\/delete/i);
+  assert.match(calls[0].args.join(' '), /\/f\b/, 'delete must not prompt');
+});
+
+test('a scheduled task is not a supervisor, so the daemon must never exit into it', () => {
+  // launchd KeepAlive and systemd Restart=always bring the daemon back; a
+  // logon-triggered task does not. isSupervised() gates the version-skew exit,
+  // so answering true here would stop Windows watching until the next logon.
+  assert.equal(isSupervised({ platform: 'win32', env: {} }), false);
+  assert.equal(isSupervised({ platform: 'win32', env: { INVOCATION_ID: 'x' } }), false);
 });

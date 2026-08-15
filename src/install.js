@@ -234,6 +234,9 @@ export function installZshrcBlock(content, agents = ['claude']) {
 // user unit on Linux/WSL.
 
 export const DAEMON_LABEL = 'com.unsnooze.daemon';
+// Task Scheduler has no reverse-DNS convention and shows this name to the user
+// in taskschd.msc, so it is a plain word rather than the launchd label.
+export const WINDOWS_TASK_NAME = 'unsnooze';
 
 // Is this process running under the supervisor we install, rather than from
 // somebody's shell? It decides whether exiting is safe: a supervised daemon
@@ -249,7 +252,15 @@ export const DAEMON_LABEL = 'com.unsnooze.daemon';
 export function isSupervised({ platform = process.platform, env = process.env } = {}) {
   if (platform === 'darwin') return env.XPC_SERVICE_NAME === DAEMON_LABEL;
   if (platform === 'linux') return typeof env.INVOCATION_ID === 'string' && env.INVOCATION_ID !== '';
-  return false;   // nowhere else do we install a supervisor to be run by
+  // win32 stays false on purpose, even though we now install a Scheduled Task.
+  // launchd KeepAlive and systemd Restart=always bring the daemon straight
+  // back; a logon-triggered task does not restart anything until the next
+  // logon. Answering true here would let the version-skew guard exit 0 into
+  // nothing and stop Windows watching silently — the exact failure mode of
+  // issue #8, just with a different trigger. The cost is that a Windows daemon
+  // keeps running pre-upgrade code until the user logs back in; that is the
+  // lesser of the two, and `unsnooze doctor` reports the skew.
+  return false;
 }
 
 // Env overrides keep tests/e2e away from the real LaunchAgents / systemd dirs.
@@ -409,8 +420,20 @@ function defaultActivate(cmd, args) {
 export function installDaemonAutostart({
   platform = process.platform, dir = null, activate = defaultActivate, path = undefined,
 } = {}) {
+  // Native Windows has no unit *file* — the Task Scheduler holds the record —
+  // so it is handled before the file-based platforms below. It matters more
+  // here than anywhere else: the transcript watcher lives in the daemon, and
+  // headless has no pane monitor to fall back on, so without this a Windows
+  // machine only ever catches limit stops through the StopFailure hook.
+  if (platform === 'win32') {
+    // /f overwrites an existing task rather than failing with "already exists",
+    // which is what re-running setup does every time.
+    activate('schtasks', ['/create', '/f', '/tn', WINDOWS_TASK_NAME, '/sc', 'onlogon',
+      '/tr', `"${process.execPath}" "${UNSNOOZE_BIN}" daemon`]);
+    return `Scheduled Task \\${WINDOWS_TASK_NAME}`;
+  }
   const target = autostartUnitPath({ platform, dir });
-  if (!target) return null;   // native Windows: no supported multiplexer to revive into
+  if (!target) return null;
   // Safety interlock. Every unit we generate carries the SAME label, so running
   // the real launchctl/systemctl against a unit written somewhere else (a test
   // fixture, a staging copy) does not create a second job — it HIJACKS the
@@ -489,6 +512,11 @@ export function healDaemonAutostart({
 }
 
 export function uninstallDaemonAutostart({ platform = process.platform, dir = null, activate = defaultActivate } = {}) {
+  if (platform === 'win32') {
+    // /f so a missing task is not an interactive prompt on an uninstall path.
+    activate('schtasks', ['/delete', '/f', '/tn', WINDOWS_TASK_NAME]);
+    return `Scheduled Task \\${WINDOWS_TASK_NAME}`;
+  }
   if (platform === 'darwin') {
     const target = join(dir || autostartDir(platform), `${DAEMON_LABEL}.plist`);
     if (!existsSync(target)) return null;

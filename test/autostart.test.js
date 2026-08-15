@@ -92,9 +92,20 @@ test('uninstall removes the artifacts again', () => {
   assert.ok(!existsSync(join(dir2, 'unsnooze.service')));
 });
 
+test('windows autostarts through the Task Scheduler, not a unit file', () => {
+  // Was null: native Windows had no multiplexer to revive into, so there was
+  // nothing for a daemon to do. headless changed that, and the daemon is where
+  // the transcript watcher lives — without autostart a Windows box catches
+  // limit stops only through the StopFailure hook.
+  assert.ok(installDaemonAutostart({ platform: 'win32', dir: DIR, activate: () => true }));
+  assert.ok(uninstallDaemonAutostart({ platform: 'win32', dir: DIR, activate: () => true }));
+  // ...and writes no unit file, since Task Scheduler holds the record itself.
+  assert.equal(autostartUnitPath({ platform: 'win32', dir: DIR }), null);
+});
+
 test('unsupported platform → null, never throws', () => {
-  assert.equal(installDaemonAutostart({ platform: 'win32', dir: DIR, activate: () => true }), null);
-  assert.equal(uninstallDaemonAutostart({ platform: 'win32', dir: DIR, activate: () => true }), null);
+  assert.equal(installDaemonAutostart({ platform: 'sunos', dir: DIR, activate: () => true }), null);
+  assert.equal(uninstallDaemonAutostart({ platform: 'sunos', dir: DIR, activate: () => true }), null);
 });
 
 test('launchd plist carries the install-time PATH (daemon revival needs tmux)', () => {
