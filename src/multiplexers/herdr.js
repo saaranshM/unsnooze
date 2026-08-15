@@ -261,21 +261,39 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
       },
 
       async capturePane(pane, lines = 200) {
-        // Deliberately the VISIBLE screen, never `recent` with a tall --lines.
-        // For an idle alternate-screen agent (Claude Code, OpenCode) Herdr
-        // satisfies an over-tall `recent` read by driving the agent's own
-        // mouse-scroll interface to page through its transcript, then scrolls
-        // back to the bottom. Every caller here reads only the last
-        // PANE_SCAN_LINES rows — the banner, the busy footer, the prompt —
-        // which are always on screen. Paging buys nothing and yanks the user's
-        // view around on every scrape tick (once per SCRAPE_INTERVAL_MS, per
-        // pane, for as long as the agent sits idle).
+        // `detection` is the source every decision here wants: it is pinned to
+        // the live bottom of the pane.
+        //
+        // Not `recent` with a tall --lines: for an idle alternate-screen agent
+        // (Claude Code, OpenCode) herdr satisfies an over-tall read by driving
+        // the agent's own mouse-scroll interface to page through its
+        // transcript, which yanks the user's view on every scrape tick.
+        //
+        // Not `visible` either: that follows the user's viewport, so a user who
+        // scrolls up hands the monitor stale history — and a limit banner that
+        // has scrolled off, or an old one that has scrolled back into view, is
+        // a decision made against the wrong screen.
+        //
+        // --lines is deliberately not passed: verified against herdr 0.8.0,
+        // detection ignores it and returns the viewport (23 rows on an 80x24).
+        // Every caller reads only the last PANE_SCAN_LINES (12) — banner, busy
+        // footer, prompt — which are on the live screen by definition.
         void lines;
-        return owned('pane', 'read', String(pane), '--source', 'visible', '--format', 'text');
+        return owned('pane', 'read', String(pane), '--source', 'detection', '--format', 'text');
       },
 
       async capturePaneVisible(pane) {
         return owned('pane', 'read', String(pane), '--source', 'visible', '--format', 'text');
+      },
+
+      // History, for `unsnooze report` — the one caller that wants what the
+      // user saw rather than what is true now, and the only one that can pay
+      // the scroll side effect of a tall `recent` read (it runs once, by hand,
+      // on a pane whose agent has already stopped). tmux and zellij have real
+      // host scrollback and need no equivalent, so callers feature-detect this.
+      async captureScrollback(pane, lines = 200) {
+        return owned('pane', 'read', String(pane),
+          '--source', 'recent', '--lines', String(lines), '--format', 'text');
       },
 
       async sendText(pane, text) {

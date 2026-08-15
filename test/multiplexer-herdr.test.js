@@ -155,10 +155,12 @@ test('owner-bound calls scrub inherited HERDR variables and pass explicit sessio
   }).bind('OWNER');
 
   assert.equal(await mux.capturePane('w1:p1', 5), 'screen text');
-  // Never `recent` with a line count: an over-tall read makes Herdr mouse-scroll
-  // an idle alternate-screen agent through its transcript, moving the user's view.
+  // `detection`, not `recent` (an over-tall read makes herdr mouse-scroll an
+  // idle alternate-screen agent through its transcript, moving the user's
+  // view) and not `visible` (which follows the user's scroll position, so a
+  // scrolled-up pane would be judged on stale history).
   assert.deepEqual(spawner.calls[0].args,
-    ['--session', 'OWNER', 'pane', 'read', 'w1:p1', '--source', 'visible', '--format', 'text']);
+    ['--session', 'OWNER', 'pane', 'read', 'w1:p1', '--source', 'detection', '--format', 'text']);
   assert.equal(spawner.calls[0].options.env.PATH, '/bin');
   assert.equal(spawner.calls[0].options.env.KEEP, 'yes');
   assert.equal(Object.keys(spawner.calls[0].options.env).some(key => key.startsWith('HERDR')), false);
@@ -598,4 +600,21 @@ test('newWindow refuses to type a message containing a keystroke character', asy
   );
   assert.equal(spawner.calls.some(call => call.args.includes('run')), false,
     'nothing was dispatched into the pane');
+});
+
+test('captureScrollback is the only path that asks herdr for history', async () => {
+  const spawner = fakeSpawner(() => 'history');
+  const mux = createHerdr({ spawner, env: {} }).bind('OWNER');
+  assert.equal(await mux.captureScrollback('w1:p1', 200), 'history');
+  assert.deepEqual(spawner.calls[0].args, ['--session', 'OWNER', 'pane', 'read', 'w1:p1',
+    '--source', 'recent', '--lines', '200', '--format', 'text']);
+});
+
+test('a monitor decision never asks for a line count herdr would answer by scrolling', async () => {
+  const spawner = fakeSpawner(() => 'text');
+  const mux = createHerdr({ spawner, env: {} }).bind('OWNER');
+  await mux.capturePane('w1:p1', 200);
+  assert.equal(spawner.calls[0].args.includes('--lines'), false,
+    'detection is viewport-bounded; passing --lines would imply a tall read');
+  assert.equal(spawner.calls[0].args.includes('recent'), false);
 });
