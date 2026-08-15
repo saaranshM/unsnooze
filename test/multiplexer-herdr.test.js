@@ -429,7 +429,8 @@ test('newWindow throws when workspace create has no root pane id', async () => {
   );
 });
 
-function syncLaunchSpawner({ sessions, attachResult = { status: 0 }, onCall = () => {} }) {
+function syncLaunchSpawner({ sessions, attachResult = { status: 0 },
+  runResult = { status: 0, stdout: '' }, onCall = () => {} }) {
   return fakeSpawner((_file, args, options) => {
     onCall(args, options);
     if (args.join(' ') === 'session list --json') {
@@ -440,7 +441,7 @@ function syncLaunchSpawner({ sessions, attachResult = { status: 0 }, onCall = ()
     if (args.includes('workspace') && args.includes('create')) {
       return { status: 0, stdout: workspaceCreated };
     }
-    if (args.includes('pane') && (args.includes('run') || args.includes('send-keys'))) return { status: 0, stdout: '' };
+    if (args.includes('pane') && (args.includes('run') || args.includes('send-keys'))) return runResult;
     if (args[0] === 'session' && args[1] === 'attach') return attachResult;
     throw new Error(`unexpected call: ${args.join(' ')}`);
   });
@@ -487,7 +488,7 @@ test('launchWrapped sidesteps a taken session name and attaches synchronously', 
   assert.equal(spawner.calls.some(call => call.options.detach), true);
 });
 
-test('launchWrapped throws SessionCreateError when attach reports a spawn error', () => {
+test('launchWrapped reports a post-dispatch attach failure as AgentDispatchedError', () => {
   let listCalls = 0;
   const cause = new Error('herdr unavailable');
   const spawner = syncLaunchSpawner({
@@ -502,9 +503,12 @@ test('launchWrapped throws SessionCreateError when attach reports a spawn error'
     attachResult: { error: cause },
   });
   const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'revival' } });
+  // The agent is already running in the session by the time attach fails, so
+  // this must NOT be the error class that makes the launcher run it again.
   assert.throws(
     () => mux.launchWrapped({ file: 'node', args: [], env: {} }),
-    err => err.name === 'SessionCreateError' && err.cause === cause && /revival/.test(err.message),
+    err => err.name === 'AgentDispatchedError' && err.cause === cause
+      && err.session === 'revival-2' && /attaching/.test(err.message),
   );
 });
 
@@ -732,4 +736,44 @@ test('ensureSessionRunning refuses to restart a stopped session, and says why', 
     () => mux.ensureSessionRunning('unsnooze'),
     err => err.name === 'SessionCreateError' && /stopped/.test(err.message) && /resume them twice/.test(err.message),
   );
+});
+
+test('a failed pane run is treated as dispatched — keystrokes cannot be unsent', () => {
+  let listCalls = 0;
+  const spawner = syncLaunchSpawner({
+    sessions: () => {
+      listCalls += 1;
+      return listCalls === 1 ? runningNamedSession : JSON.stringify({ sessions: [
+        { default: true, name: 'default', running: true },
+        { default: false, name: 'revival', running: true },
+        { default: false, name: 'revival-2', running: true },
+      ] });
+    },
+    runResult: { status: 1, stderr: 'pane run failed' },
+  });
+  const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'revival' } });
+  assert.throws(
+    () => mux.launchWrapped({ file: 'node', args: [], env: {} }),
+    err => err.name === 'AgentDispatchedError' && err.session === 'revival-2',
+  );
+});
+
+test('a failure BEFORE dispatch stays a SessionCreateError, so the agent can still run unwatched', () => {
+  const spawner = syncLaunchSpawner({ sessions: noNamedSession });
+  const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'never' } });
+  assert.throws(
+    () => mux.launchWrapped({ file: 'node', args: [], env: {} }),
+    err => err.name === 'SessionCreateError',
+  );
+});
+
+test('an untypeable resume message fails before dispatch, not after', () => {
+  const spawner = syncLaunchSpawner({ sessions: () => runningNamedSession });
+  const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'revival' } });
+  assert.throws(
+    () => mux.launchWrapped({ file: 'node', args: ['-e', 'a\nb'], env: {} }),
+    err => err.name === 'SessionCreateError',
+  );
+  assert.equal(spawner.calls.some(call => call.args.includes('run')), false,
+    'nothing was typed into a pane');
 });

@@ -7,6 +7,7 @@ import { readState, updateState } from './state.js';
 import { getConfig } from './settings.js';
 import { paneOwnedByRecord } from './lease.js';
 import { ownsSession, forgetSession } from './mux-sessions.js';
+import { attachHint } from './multiplexers/session-name.js';
 import { makeLogger } from './logger.js';
 
 const log = makeLogger('reap');
@@ -83,12 +84,9 @@ function restoreFailedClaim(rec) {
 }
 
 // How a user reaches a revived session. Shared by status, toast, and `sessions`.
-export function attachHint(muxName, sessionName) {
-  if (!sessionName) return null;
-  if (muxName === 'herdr') return `herdr session attach ${sessionName}`;
-  if (muxName === 'zellij') return `zellij attach ${sessionName}`;
-  return `tmux attach -t ${sessionName}`;
-}
+// Re-exported from its new home so the launch path can use it without pulling
+// reap (and the state layer) in behind it. Consumers here are unchanged.
+export { attachHint };
 
 // A session name is unsnooze-owned if it is the interactive base, a collision
 // suffix (`unsnooze-2`…), the dedicated resume session, or a pid fallback.

@@ -11,7 +11,7 @@ import { constants as osConstants } from 'node:os';
 import { basename } from 'node:path';
 import { promisify } from 'node:util';
 
-import { resolveSessionName, SessionCreateError } from './session-name.js';
+import { resolveSessionName, AgentDispatchedError, SessionCreateError } from './session-name.js';
 import { recordOwnedSession } from '../mux-sessions.js';
 import { shellLine, UnquotableArgError } from './shell-quote.js';
 
@@ -27,6 +27,14 @@ function defaultSpawner(file, args, { sync = false, detach = false, ...options }
       detached: true,
       stdio: options.stdio ?? 'ignore',
     });
+    // The listener must exist BEFORE unref(). Node reports an async spawn
+    // failure (ENOENT, EACCES) by emitting 'error', never by setting a field,
+    // and an 'error' event with no listener is an uncaught exception that kills
+    // the process — here, the resumer daemon, silently. child.pid is undefined
+    // synchronously in that case, which is what callers actually check, since
+    // ensureSessionRunningSync blocks the event loop and would never observe
+    // the event at all.
+    child.on('error', error => { child.spawnError = error; });
     child.unref();
     return child;
   }
@@ -98,7 +106,7 @@ const KEY_MAP = {
 
 export const SUBMIT_DELAY_MS = 150;
 
-export { SessionCreateError };
+export { SessionCreateError, AgentDispatchedError };
 
 export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}) {
   const childEnv = () => scrubHerdrEnv(env);
@@ -158,9 +166,11 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
           `failed to start herdr session "${name}": ${error.message}`, error,
         );
       }
-      if (child?.error) {
+      const spawnFailure = child?.error || child?.spawnError
+        || (child && child.pid === undefined ? new Error('herdr could not be spawned') : null);
+      if (spawnFailure) {
         throw new SessionCreateError(
-          `failed to start herdr session "${name}": ${child.error.message}`, child.error,
+          `failed to start herdr session "${name}": ${spawnFailure.message}`, spawnFailure,
         );
       }
       for (let attempt = 0; attempt < SERVER_POLL_ATTEMPTS; attempt += 1) {
@@ -225,9 +235,11 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
           `failed to start herdr session "${name}": ${error.message}`, error,
         );
       }
-      if (child?.error) {
+      const spawnFailure = child?.error || child?.spawnError
+        || (child && child.pid === undefined ? new Error('herdr could not be spawned') : null);
+      if (spawnFailure) {
         throw new SessionCreateError(
-          `failed to start herdr session "${name}": ${child.error.message}`, child.error,
+          `failed to start herdr session "${name}": ${spawnFailure.message}`, spawnFailure,
         );
       }
       for (let attempt = 0; attempt < SERVER_POLL_ATTEMPTS; attempt += 1) {
@@ -496,18 +508,21 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
         const existing = existingSessionNames();
         const name = resolveSessionName(wrappedSessionName(env), candidate => existing.has(candidate));
         launchSpec.onSessionCreated?.(name);
+
+        // Phase 1 — nothing has been dispatched yet. Every failure here is
+        // safe for the launcher to answer by running the agent unwatched,
+        // because no agent was started.
+        let command;
+        let pane;
         try {
+          command = shellLine(launchSpec.file, launchSpec.args || []);
           ensureSessionRunningSync(name, existing);
           const workspace = parseResult(syncCall([
             '--session', name, 'workspace', 'create', '--cwd', process.cwd(), '--label', 'unsnooze',
             ...envFlags(launchSpec?.env),
           ], name, 'create workspace'));
-          const pane = workspace?.root_pane?.pane_id;
+          pane = workspace?.root_pane?.pane_id;
           if (!pane) throw new Error('unsnooze: unexpected herdr workspace shape: no root_pane');
-          syncCall([
-            '--session', name, 'pane', 'run', String(pane),
-            shellLine(launchSpec.file, launchSpec.args || []),
-          ], name, 'run pane');
         } catch (error) {
           if (error instanceof SessionCreateError) throw error;
           throw new SessionCreateError(
@@ -515,14 +530,31 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
           );
         }
 
+        // Phase 2 — the dispatch itself. From here on the agent may be running,
+        // so no failure may lead to a second launch. A failed `pane run` is
+        // treated as dispatched too: the call types keystrokes into a live
+        // shell, and a non-zero exit afterwards cannot prove they did not land.
+        try {
+          syncCall(['--session', name, 'pane', 'run', String(pane), command], name, 'run pane');
+        } catch (error) {
+          throw new AgentDispatchedError(
+            `herdr may already be running the agent in session "${name}": ${error.message}`,
+            { session: name, mux: 'herdr', cause: error },
+          );
+        }
+
+        // Phase 3 — attaching a client. The agent is definitely running by now;
+        // failing to show it to the user is not a reason to start a second one.
         const result = spawner('herdr', ['session', 'attach', name], {
           sync: true,
           stdio: 'inherit',
           env: childEnv(),
         });
         if (result?.error) {
-          throw new SessionCreateError(
-            `failed to attach herdr session "${name}": ${result.error.message}`, result.error,
+          throw new AgentDispatchedError(
+            `agent started, but attaching to herdr session "${name}" failed:`
+            + ` ${result.error.message}`,
+            { session: name, mux: 'herdr', cause: result.error },
           );
         }
         return exitStatus(result);

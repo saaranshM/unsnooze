@@ -12,7 +12,7 @@ import { spawnDetached, monitorSpawnArgs } from './spawn.js';
 import { makeLogger } from './logger.js';
 import { createLeaseId, processBirth, writeLease, removeLease } from './lease.js';
 import { recordOwnedSession } from './mux-sessions.js';
-import { SessionCreateError } from './multiplexers/session-name.js';
+import { AgentDispatchedError, SessionCreateError, attachHint } from './multiplexers/session-name.js';
 
 const log = makeLogger('launcher');
 
@@ -75,8 +75,22 @@ export function runLauncher(args, agentId = 'claude', { processBirthFn = process
         onSessionCreated: name => recordOwnedSession({ mux: mux.name, name }),
       });
     } catch (err) {
-      // Session creation failed (tmux/zellij binary spawn, unexpected throw).
-      // Never brick the user's `claude`/`codex` — fall back unwatched.
+      // The agent may already be running inside the session: the multiplexer
+      // took the command that starts it and something after that failed. The
+      // unwatched fallback below would then start a SECOND agent — two live
+      // sessions, two sets of edits — from one `unsnooze claude`. Tell the user
+      // how to reach the one that exists instead.
+      if (err instanceof AgentDispatchedError) {
+        process.stderr.write(`unsnooze: ${err.message}\n`);
+        const hint = attachHint(err.mux || mux.name, err.session);
+        if (hint) process.stderr.write(`unsnooze: reattach with: ${hint}\n`);
+        process.stderr.write(`unsnooze: not starting ${agent.id} again — it may already be running.\n`);
+        log(`launchWrapped failed after dispatch: ${err.stack || err}`);
+        return 1;
+      }
+      // Session creation failed before anything could start (binary spawn,
+      // duplicate name, unexpected throw). Never brick the user's
+      // `claude`/`codex` — fall back unwatched.
       const msg = err instanceof SessionCreateError
         ? `${err.message} — running without limit-watch.`
         : `failed to wrap into ${mux.name} (${err.message}) — running without limit-watch.`;
