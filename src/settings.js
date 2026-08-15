@@ -13,7 +13,7 @@ import { MUX_NAMES, STATE_DIR } from './config.js';
 export const CONFIG_FILE = () => join(process.env.UNSNOOZE_STATE_DIR || STATE_DIR, 'config.json');
 
 export const DEFAULTS = {
-  multiplexer: 'auto',    // auto | tmux | zellij | herdr
+  multiplexer: 'auto',    // auto | tmux | zellij | herdr | cmux
   autoResume: true,        // master switch: dispatch resumes when limits reset
   menuAutoAnswer: true,    // may unsnooze drive Claude's limit menu (send keys)?
   notifications: true,     // desktop notifications on detect/resume

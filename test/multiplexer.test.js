@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 import { createTmux } from '../src/multiplexers/tmux.js';
 import { createZellij } from '../src/multiplexers/zellij.js';
+import { createCmux } from '../src/multiplexers/cmux.js';
 import { createMultiplexerFactory } from '../src/multiplexer.js';
 import { DEFAULTS, getConfig, setConfigValue } from '../src/settings.js';
 import { MUX_NAMES } from '../src/config.js';
@@ -95,6 +96,8 @@ test('multiplexer setting is registered and enum-validated', () => {
     assert.equal(getConfig('multiplexer'), 'zellij');
     assert.equal(setConfigValue('multiplexer', 'herdr'), 'herdr');
     assert.equal(getConfig('multiplexer'), 'herdr');
+    assert.equal(setConfigValue('multiplexer', 'cmux'), 'cmux');
+    assert.equal(getConfig('multiplexer'), 'cmux');
     assert.throws(() => setConfigValue('multiplexer', 'screen'), /one of/i);
     // The enum tracks MUX_NAMES: a backend registered in config.js is settable
     // without touching settings.js, which is what keeps backend PRs conflict-free.
@@ -542,4 +545,165 @@ test('zellij capturePane falls back to viewport when --full is unsupported (pre-
   await mux.capturePane('3');
   const fullAttempts = spawner.calls.filter(c => c.args.includes('--full')).length;
   assert.equal(fullAttempts, 1, 'unsupported --full is remembered, not retried every tick');
+});
+
+test('cmux backend probes, inside(), and currentPaneId prefer the managed unsnooze pane', () => {
+  const spawner = fakeSpawner(() => ({ status: 0 }));
+  const env = { CMUX_SOCKET_PATH: '/tmp/cmux.sock', CMUX_SURFACE_ID: 'surface:1' };
+  const mux = createCmux({ spawner, env });
+  assert.equal(mux.available(), true);
+  assert.deepEqual(spawner.calls[0].args, ['--version']);
+  assert.equal(mux.inside(), true);
+  assert.equal(mux.currentPaneId(), 'surface:1');
+
+  const managed = createCmux({
+    spawner: fakeSpawner(),
+    env: { ...env, UNSNOOZE_MUX: 'cmux', UNSNOOZE_PANE: 'surface:managed' },
+  });
+  assert.equal(managed.currentPaneId(), 'surface:managed');
+
+  assert.equal(createCmux({ spawner: fakeSpawner(), env: {} }).inside(), false);
+});
+
+test('cmux capturePane requests scrollback with a line limit; capturePaneVisible does not', async () => {
+  const spawner = fakeSpawner(() => 'screen text');
+  const mux = createCmux({ spawner, env: {} });
+  assert.equal(await mux.capturePane('surface:7', 50), 'screen text');
+  assert.deepEqual(spawner.calls[0].args,
+    ['read-screen', '--surface', 'surface:7', '--scrollback', '--lines', '50']);
+  assert.equal(await mux.capturePaneVisible('surface:7'), 'screen text');
+  assert.deepEqual(spawner.calls[1].args, ['read-screen', '--surface', 'surface:7']);
+});
+
+test('cmux sendText types the literal text then presses enter as a separate call', async () => {
+  const spawner = fakeSpawner(() => '');
+  const mux = createCmux({ spawner, env: {} });
+  await mux.sendText('surface:1', 'hello');
+  assert.deepEqual(spawner.calls[0].args, ['send', '--surface', 'surface:1', '--', 'hello']);
+  assert.deepEqual(spawner.calls[1].args, ['send-key', '--surface', 'surface:1', 'enter']);
+});
+
+test('cmux sendKey maps unsnooze\'s capitalized key names to cmux\'s lowercase vocabulary', async () => {
+  const spawner = fakeSpawner(() => '');
+  const mux = createCmux({ spawner, env: {} });
+  await mux.sendKey('surface:1', 'Down');
+  assert.deepEqual(spawner.calls[0].args, ['send-key', '--surface', 'surface:1', 'down']);
+  await mux.sendKey('surface:1', 'Up');
+  assert.deepEqual(spawner.calls[1].args, ['send-key', '--surface', 'surface:1', 'up']);
+  await mux.sendKey('surface:1', 'Enter');
+  assert.deepEqual(spawner.calls[2].args, ['send-key', '--surface', 'surface:1', 'enter']);
+});
+
+test('cmux paneAlive trusts read-screen\'s exit status — cmux errors explicitly instead of tmux\'s blank-success quirk', async () => {
+  const alive = createCmux({ spawner: fakeSpawner(() => ''), env: {} });
+  assert.equal(await alive.paneAlive('surface:1'), true);
+
+  const dead = createCmux({
+    spawner: fakeSpawner(() => { throw new Error('not_found: Surface not found for the given surface_id'); }),
+    env: {},
+  });
+  assert.equal(await dead.paneAlive('surface:1'), false);
+});
+
+test('cmux newWindow creates a workspace, shell-quotes argv for keystroke typing, and returns the created surface ref', async () => {
+  const spawner = fakeSpawner((_file, args) => {
+    if (args.includes('create')) return JSON.stringify({ workspace_ref: 'workspace:3', surface_ref: 'surface:9' });
+    return '';
+  });
+  const mux = createCmux({ spawner, env: {} });
+
+  const created = await mux.newWindow('revival', '/tmp/project', {
+    file: '/usr/bin/node', args: ['agent.js', '--resume', "abc's session"], env: { LEASE: 'xyz', EMPTY: '' },
+  });
+
+  assert.deepEqual(created, { pane: 'surface:9', paneOwner: null });
+  assert.deepEqual(spawner.calls[0].args, [
+    '--json', 'workspace', 'create', '--name', 'revival', '--cwd', '/tmp/project',
+    '--command', "'/usr/bin/node' 'agent.js' '--resume' 'abc'\\''s session'",
+    '--env', 'LEASE=xyz', '--env', 'EMPTY=',
+  ]);
+});
+
+test('cmux newWindow carries an untypeable argument as environment, not keystrokes', async () => {
+  // `--command` is typed into the workspace's shell, so a newline in it submits
+  // half a command and the remainder runs as its own command. Quoting cannot
+  // prevent that — the value has to travel out of band.
+  const spawner = fakeSpawner((_file, args) => {
+    if (args.includes('create')) return JSON.stringify({ surface_ref: 'surface:9' });
+    return '';
+  });
+  const mux = createCmux({ spawner, env: {} });
+  const message = 'Continue where you left off.\n\nFocus on the failing test first.';
+
+  await mux.newWindow('revival', '/tmp', {
+    file: 'node', args: ['_run', 'codex', 'resume', '01J', message], env: { LEASE: 'xyz' },
+  });
+
+  const args = spawner.calls[0].args;
+  const command = args[args.indexOf('--command') + 1];
+  assert.doesNotMatch(command, /\n/, 'nothing with a newline in it may be typed');
+  assert.equal(command, `'node' '_run' 'codex' 'resume' '01J' "$UNSNOOZE_ARGV_5"`);
+  assert.ok(args.includes(`UNSNOOZE_ARGV_5=${message}`),
+    'the message rides in the workspace environment, where cmux passes it as real argv');
+  assert.ok(args.includes('LEASE=xyz'), 'and the caller\'s own environment still goes through');
+});
+
+test('cmux newWindow throws when workspace create returns no surface reference', async () => {
+  const spawner = fakeSpawner(() => JSON.stringify({ workspace_ref: 'workspace:3' }));
+  const mux = createCmux({ spawner, env: {} });
+  await assert.rejects(
+    () => mux.newWindow('revival', '/tmp', { file: 'claude', args: [], env: {} }),
+    /no surface/,
+  );
+});
+
+test('cmux newWindow throws on unparseable workspace create output', async () => {
+  const spawner = fakeSpawner(() => 'not json');
+  const mux = createCmux({ spawner, env: {} });
+  await assert.rejects(
+    () => mux.newWindow('revival', '/tmp', { file: 'claude', args: [], env: {} }),
+    /unexpected cmux workspace create output/,
+  );
+});
+
+test('cmux launchWrapped always throws SessionCreateError — there is no attach-from-outside path', () => {
+  const mux = createCmux({ spawner: fakeSpawner(), env: {} });
+  assert.throws(
+    () => mux.launchWrapped({ file: 'node', args: [], env: {} }),
+    err => err.name === 'SessionCreateError',
+  );
+});
+
+test('cmux closePane targets close-surface', async () => {
+  const spawner = fakeSpawner(() => '');
+  const mux = createCmux({ spawner, env: {} });
+  await mux.closePane('surface:1');
+  assert.deepEqual(spawner.calls[0].args, ['close-surface', '--surface', 'surface:1']);
+});
+
+test('cmux bind is inert — surface ids are global handles, not scoped to an owning session', () => {
+  const mux = createCmux({ spawner: fakeSpawner(), env: {} });
+  assert.equal(mux.bind('anything'), mux);
+});
+
+test('factory prefers ambient tmux/zellij over cmux, but resolves cmux when only its socket env is set', () => {
+  const tmux = fakeBackend('tmux');
+  const zellij = fakeBackend('zellij');
+  const cmux = fakeBackend('cmux');
+  const backends = { tmux, zellij, cmux };
+
+  let env = { TMUX: '/tmp/tmux', CMUX_SOCKET_PATH: '/tmp/cmux.sock' };
+  let factory = createMultiplexerFactory({ backends, getSetting: () => 'auto', env });
+  assert.equal(factory.getMultiplexer().name, 'tmux');
+
+  env = { ZELLIJ: '0', CMUX_SOCKET_PATH: '/tmp/cmux.sock' };
+  factory = createMultiplexerFactory({ backends, getSetting: () => 'auto', env });
+  assert.equal(factory.getMultiplexer().name, 'zellij');
+
+  env = { CMUX_SOCKET_PATH: '/tmp/cmux.sock' };
+  factory = createMultiplexerFactory({ backends, getSetting: () => 'auto', env });
+  assert.equal(factory.getMultiplexer().name, 'cmux');
+
+  factory = createMultiplexerFactory({ backends, getSetting: () => 'cmux', env: {} });
+  assert.equal(factory.getMultiplexer().name, 'cmux');
 });

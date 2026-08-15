@@ -845,6 +845,9 @@ export const MUX_SESSION_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 // validation — callers must treat null as "omit the attach line".
 export function attachHintRemote(dest, muxName, muxSession) {
   if (!validHostToken(dest) || typeof muxSession !== 'string' || !MUX_SESSION_RE.test(muxSession)) return null;
+  // cmux has no joinable named-session model — there is no remote command
+  // that reattaches to a surface, so omit the hint (see attachHint).
+  if (muxName === 'cmux') return null;
   const inner = muxName === 'herdr' ? `herdr session attach ${muxSession}`
     : muxName === 'zellij' ? `zellij attach ${muxSession}` : `tmux new -A -s ${muxSession}`;
   return `ssh -t ${dest} '${inner}'`;

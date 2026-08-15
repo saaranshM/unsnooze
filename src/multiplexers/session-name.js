@@ -48,6 +48,10 @@ export class AgentDispatchedError extends Error {
 // whole state layer) into the hot path of every `unsnooze claude`.
 export function attachHint(muxName, sessionName) {
   if (!sessionName) return null;
+  // cmux has no joinable named-session model (see multiplexers/cmux.js): there
+  // is no command that attaches to a surface from outside cmux, so omit the
+  // hint rather than print a `tmux attach` that would silently do nothing.
+  if (muxName === 'cmux') return null;
   if (muxName === 'herdr') return `herdr session attach ${sessionName}`;
   if (muxName === 'zellij') return `zellij attach ${sessionName}`;
   return `tmux attach -t ${sessionName}`;

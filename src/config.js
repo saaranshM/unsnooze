@@ -75,7 +75,9 @@ export const LEASE_GRACE_MS = envInt('UNSNOOZE_LEASE_GRACE_MS', 60_000);
 // this list. It lives here, in a module that imports nothing but node builtins,
 // because settings.js and multiplexer.js already import each other — declaring
 // it in either one puts the other in a temporal dead zone at import time.
-export const MUX_NAMES = ['tmux', 'zellij', 'herdr'];
+// cmux is last: an agent can run tmux inside a cmux surface, so tmux/zellij
+// must win detection when both are signalled (see multiplexer.js: detect()).
+export const MUX_NAMES = ['tmux', 'zellij', 'herdr', 'cmux'];
 
 // Pane scanning
 export const PANE_SCAN_LINES = envInt('UNSNOOZE_PANE_SCAN_LINES', 12);
