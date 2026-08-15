@@ -603,6 +603,30 @@ test('cmux newWindow creates a workspace, shell-quotes argv for keystroke typing
   ]);
 });
 
+test('cmux newWindow carries an untypeable argument as environment, not keystrokes', async () => {
+  // `--command` is typed into the workspace's shell, so a newline in it submits
+  // half a command and the remainder runs as its own command. Quoting cannot
+  // prevent that — the value has to travel out of band.
+  const spawner = fakeSpawner((_file, args) => {
+    if (args.includes('create')) return JSON.stringify({ surface_ref: 'surface:9' });
+    return '';
+  });
+  const mux = createCmux({ spawner, env: {} });
+  const message = 'Continue where you left off.\n\nFocus on the failing test first.';
+
+  await mux.newWindow('revival', '/tmp', {
+    file: 'node', args: ['_run', 'codex', 'resume', '01J', message], env: { LEASE: 'xyz' },
+  });
+
+  const args = spawner.calls[0].args;
+  const command = args[args.indexOf('--command') + 1];
+  assert.doesNotMatch(command, /\n/, 'nothing with a newline in it may be typed');
+  assert.equal(command, `'node' '_run' 'codex' 'resume' '01J' "$UNSNOOZE_ARGV_5"`);
+  assert.ok(args.includes(`UNSNOOZE_ARGV_5=${message}`),
+    'the message rides in the workspace environment, where cmux passes it as real argv');
+  assert.ok(args.includes('LEASE=xyz'), 'and the caller\'s own environment still goes through');
+});
+
 test('cmux newWindow throws when workspace create returns no surface reference', async () => {
   const spawner = fakeSpawner(() => JSON.stringify({ workspace_ref: 'workspace:3' }));
   const mux = createCmux({ spawner, env: {} });

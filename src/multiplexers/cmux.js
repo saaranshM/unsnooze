@@ -2,6 +2,7 @@ import { execFile as execFileCb, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { SessionCreateError } from './session-name.js';
+import { shellCommand } from './shell-quote.js';
 
 const execFileAsync = promisify(execFileCb);
 
@@ -18,17 +19,6 @@ export { SessionCreateError };
 // escape, backspace, delete, up, down, left, right); unsnooze only ever asks
 // for these three capitalized, tmux-style names, so translate them.
 const KEY_NAMES = { Enter: 'enter', Up: 'up', Down: 'down' };
-
-// `--command` is typed into the new workspace's real shell as a literal
-// keystroke line (cmux has no argv-exec launch path like tmux/zellij), so the
-// wrapped file+args must be assembled into valid, single-quoted shell syntax.
-function shQuote(value) {
-  return `'${String(value).replace(/'/g, "'\\''")}'`;
-}
-
-function argvLine(launchSpec) {
-  return [launchSpec.file, ...(launchSpec.args || [])].map(shQuote).join(' ');
-}
 
 function envArgs(env = {}) {
   return Object.entries(env)
@@ -104,9 +94,17 @@ export function createCmux({ spawner = defaultSpawner, env = process.env } = {})
     // command into its default shell. `workspace create --json` echoes the
     // new default surface's ref directly, so no follow-up lookup is needed.
     async newWindow(sessionName, cwd, launchSpec) {
+      // `--command` is typed into the new workspace's real shell as a literal
+      // keystroke line (cmux has no argv-exec launch path like tmux/zellij), so
+      // the quoting is ours to do — and an argument holding a newline or a tab
+      // cannot be typed at all, since the terminal reads those as submit and
+      // complete. shellCommand() hoists any such argument into the workspace
+      // environment and references it from the line, so a multi-paragraph
+      // resumeMessage still reaches the agent as one argument.
+      const { line, env: argEnv } = shellCommand(launchSpec.file, launchSpec.args || []);
       const out = await run('--json', 'workspace', 'create',
-        '--name', sessionName, '--cwd', cwd, '--command', argvLine(launchSpec),
-        ...envArgs(launchSpec.env));
+        '--name', sessionName, '--cwd', cwd, '--command', line,
+        ...envArgs({ ...launchSpec.env, ...argEnv }));
       let parsed;
       try {
         parsed = JSON.parse(out);
