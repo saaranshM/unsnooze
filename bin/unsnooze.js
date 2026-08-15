@@ -48,7 +48,7 @@ function runAgentFallback(agentId, args) {
 
 // Only human-facing commands may print update notices — never the wrapper
 // passthrough, hooks, or daemons (their output lands in agent panes/logs).
-const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'doctor', 'preview', 'usage', 'dashboard', 'hosts', 'fleet', 'prompt', 'help', '-h', '--help', '--help-unsnooze']);
+const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'doctor', 'preview', 'usage', 'dashboard', 'hosts', 'fleet', 'prompt', 'design', 'help', '-h', '--help', '--help-unsnooze']);
 
 // Every named subcommand; anything else (or no args) is an agent launch.
 const NAMED_COMMANDS = new Set([
@@ -141,6 +141,10 @@ async function main() {
     case 'doctor': {
       const { cmdDoctor } = await import('../src/doctor.js');
       return cmdDoctor(rest);
+    }
+    case 'design': {
+      const { cmdDesign } = await import('../src/design.js');
+      return cmdDesign(rest);
     }
     case 'preview': {
       const { cmdPreview } = await import('../src/cli.js');

@@ -9,7 +9,7 @@
 // --settings <path> / --zshrc <path> override targets (used by tests).
 
 import { readFileSync, writeFileSync, renameSync, existsSync, copyFileSync, rmSync, mkdirSync, unlinkSync } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { homedir, userInfo } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
 import { CLAUDE_SETTINGS, STATE_DIR } from './config.js';
@@ -19,6 +19,7 @@ import { installGrokHooks, uninstallGrokHooks } from './agents/grok.js';
 import { findCsgProcesses, findCsgAutostarts } from './doctor.js';
 import { UNSNOOZE_BIN, stopResumer } from './spawn.js';
 import { uninstallStatuslineShim } from './usage.js';
+import { powershellProfilePath } from './powershell.js';
 
 const FENCE_OPEN = '# >>> unsnooze >>>';
 const FENCE_CLOSE = '# <<< unsnooze <<<';
@@ -156,42 +157,6 @@ function ${id} {
 # unsnooze so limit stops are recorded and auto-resumed.
 ${fns}
 ${FENCE_CLOSE}`;
-}
-
-// Where PowerShell will actually look for a profile.
-//
-// Deliberately asked rather than derived: ~/Documents is routinely redirected
-// into OneDrive, and PowerShell 7 (Documents/PowerShell) and Windows
-// PowerShell 5.1 (Documents/WindowsPowerShell) disagree about the folder. A
-// guessed path produces a wrapper that loads for nobody, which looks exactly
-// like unsnooze silently not working. pwsh first (if the user has 7, that is
-// the shell they are in), then the 5.1 that ships with Windows.
-export function powershellProfilePath({
-  platform = process.platform,
-  runner = defaultPowershellRunner,
-} = {}) {
-  if (platform !== 'win32') return null;
-  for (const exe of ['pwsh', 'powershell.exe']) {
-    try {
-      const out = runner(exe, ['-NoProfile', '-NonInteractive', '-Command',
-        '$PROFILE.CurrentUserAllHosts']);
-      const path = String(out ?? '').trim();
-      if (path) return path;
-    } catch (err) {
-      // "PowerShell isn't installed" is the expected failure and moves on. A
-      // ReferenceError/TypeError is a bug in this file, and swallowing it here
-      // would look identical from the outside — an install that quietly never
-      // writes a wrapper — so let it out.
-      if (err instanceof ReferenceError || err instanceof TypeError) throw err;
-    }
-  }
-  return null;
-}
-
-function defaultPowershellRunner(file, args) {
-  const r = spawnSync(file, args, { encoding: 'utf-8' });
-  if (r.error || r.status !== 0) throw r.error || new Error(`${file} exited ${r.status}`);
-  return r.stdout;
 }
 
 // installZshrcBlock's PowerShell twin. Same fence, same replace-don't-append

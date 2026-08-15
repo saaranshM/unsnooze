@@ -13,8 +13,12 @@ import assert from 'node:assert/strict';
 
 import {
   mergeHookIntoSettings, hookCommand, powershellWrapperBlock,
-  powershellProfilePath, installPowershellBlock,
+  installPowershellBlock,
   stripFencedBlock, installDaemonAutostart, uninstallDaemonAutostart, isSupervised,
+} from '../src/install.js';
+import { runDoctor } from '../src/doctor.js';
+import { powershellProfilePath } from '../src/powershell.js';
+import {
 } from '../src/install.js';
 
 // --- StopFailure hook command ---------------------------------------------
@@ -207,4 +211,39 @@ test('a scheduled task is not a supervisor, so the daemon must never exit into i
   // so answering true here would stop Windows watching until the next logon.
   assert.equal(isSupervised({ platform: 'win32', env: {} }), false);
   assert.equal(isSupervised({ platform: 'win32', env: { INVOCATION_ID: 'x' } }), false);
+});
+
+// --- doctor's wrapper check ------------------------------------------------
+
+test('doctor looks for the wrapper where the platform actually puts it', async () => {
+  // Without this, every native-Windows `unsnooze doctor` reports "shell
+  // wrappers are not installed" — a false health failure pointing the user at
+  // an install they already did.
+  const withBlock = installPowershellBlock('', ['claude'], 'C:\\u.js');
+  const report = await runDoctor({
+    platform: 'win32',
+    runner: () => ({ status: 1, stdout: '' }),
+    csgBinPath: null,
+    mux: { available: () => true, name: 'headless' },
+    designRegistered: () => false,
+    hookInstalled: () => true,
+    profileContent: () => withBlock,
+    rcContent: () => '',
+  });
+  assert.ok(!report.findings.some(f => f.id === 'wrappers-missing'),
+    'a PowerShell profile carrying the block counts as installed');
+});
+
+test('doctor still reports a genuinely missing windows wrapper', async () => {
+  const report = await runDoctor({
+    platform: 'win32',
+    runner: () => ({ status: 1, stdout: '' }),
+    csgBinPath: null,
+    mux: { available: () => true, name: 'headless' },
+    designRegistered: () => false,
+    hookInstalled: () => true,
+    profileContent: () => '',
+    rcContent: () => '',
+  });
+  assert.ok(report.findings.some(f => f.id === 'wrappers-missing'));
 });
