@@ -639,6 +639,28 @@ the release binary from herdr.dev or GitHub rather than `brew install herdr`.
 In `auto` mode unsnooze uses the multiplexer you are currently inside; choose one
 explicitly with `unsnooze config set multiplexer tmux`, `zellij`, or `herdr`.
 
+#### herdr specifics
+
+herdr differs from tmux and Zellij in three ways that are visible in use:
+
+- **unsnooze never restarts a stopped herdr session.** herdr restores saved
+  agent panes when a session restarts (`resume_agents_on_restore` is on by
+  default), so restarting one can bring your agent back by itself — and a
+  revival on top of that would resume the same conversation twice. Reviving
+  into a stopped session therefore creates `unsnooze-2` (and so on) rather than
+  reusing the name. If you restart a stopped session yourself and herdr brings
+  the agent back, unsnooze may still open a fresh pane for it; that case is not
+  yet detected.
+- **A resume message cannot contain a newline or a tab.** herdr starts a pane
+  command by typing it into the pane's shell, and those characters are
+  keystrokes there (submit, and completion) rather than text. unsnooze refuses
+  the launch instead of running half a command; keep `resumeMessage` on one
+  line.
+- **A custom `HERDR_SOCKET_PATH` that does not match the session being
+  addressed disables watching for that pane.** herdr pane ids are per-server,
+  so acting on one from the wrong server could type into an unrelated terminal.
+  The agent still runs; unsnooze says why it is not watching.
+
 Everything works as on Linux, including desktop notifications: inside WSL,
 unsnooze raises **native Windows toasts** through `powershell.exe` (no
 `notify-send` or X server needed). Native Windows (PowerShell/cmd, no WSL) is
