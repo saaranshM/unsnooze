@@ -24,7 +24,7 @@ const { reap } = await import('../src/reap.js');
 const { recordOwnedSession, ownsSession, forgetSession } = await import('../src/mux-sessions.js');
 const { readState, updateState, upsertSession } = await import('../src/state.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 beforeEach(() => {
   updateState(state => { state.sessions = {}; return state; });

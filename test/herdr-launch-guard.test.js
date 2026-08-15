@@ -22,7 +22,7 @@ const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-herdr-guard-'));
 const SHIMS = join(DIR, 'shims');
 mkdirSync(SHIMS);
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 // A herdr that exists, is new enough, and reports one session whose socket is
 // NOT the socket we are ambiently pointed at.

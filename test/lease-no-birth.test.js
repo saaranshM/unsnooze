@@ -21,13 +21,20 @@ process.env.UNSNOOZE_STATE_DIR = DIR;
 
 const { writeLease, leaseMatches, paneOwnedByRecord } = await import('../src/lease.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 const alivePane = { paneAlive: async () => true };
 
+// The lease id becomes part of the lease FILENAME, and real ids are UUIDs.
+// Deriving one from a herdr pane id put a colon in it, which is legal on unix
+// and rejected outright by Windows — so these tests failed there for a reason
+// that had nothing to do with what they cover. Pane ids stay realistic
+// (`w1:p1`); only the id is kept filename-safe, exactly as production is.
+let seq = 0;
 function seed({ pane, pidBirth }) {
+  seq += 1;
   const lease = {
-    leaseId: `lease-${pane}`, mux: 'herdr', paneOwner: 'sess', pane,
+    leaseId: `lease-${seq}`, mux: 'herdr', paneOwner: 'sess', pane,
     agent: 'claude', pid: process.pid, pidBirth,
   };
   writeLease(lease);

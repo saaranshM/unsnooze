@@ -27,7 +27,7 @@ const SHIMS = join(DIR, 'shims');
 mkdirSync(SHIMS);
 const RUNS = join(DIR, 'agent-runs');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 // Records every invocation, so "how many agents did one launch produce" is a
 // line count rather than an inference.
