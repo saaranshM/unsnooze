@@ -11,7 +11,7 @@ const {
   transcriptPath, approxTokens, lastUsageTokens, claudeRecordEnv,
 } = await import('../src/sessions.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 let n = 0;
 function fixture(lines) {

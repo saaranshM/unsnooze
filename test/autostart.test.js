@@ -18,7 +18,7 @@ const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-autostart-test-'));
 // repointed the running job at a temp dir and broke its log paths).
 process.env.UNSNOOZE_LAUNCH_AGENTS_DIR = join(DIR, 'LaunchAgents-isolated');
 process.env.UNSNOOZE_SYSTEMD_USER_DIR = join(DIR, 'systemd-isolated');
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 test('launchdPlist runs the daemon at load and keeps it alive', () => {
   const xml = launchdPlist({ nodeBin: '/usr/local/bin/node', unsnoozeBin: '/x/unsnooze/bin/unsnooze.js' });

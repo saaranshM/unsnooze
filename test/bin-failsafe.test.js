@@ -34,7 +34,7 @@ copyFileSync(REAL_BIN, BROKEN_BIN);   // bin exists, ../src/ does not
 // tests, alone in the suite, fail on every earlier Node 20.
 writeFileSync(join(DIR, 'package.json'), JSON.stringify({ name: 'unsnooze', type: 'module' }));
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 function run(args, env = {}) {
   return spawnSync(process.execPath, [BROKEN_BIN, ...args], {

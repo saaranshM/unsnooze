@@ -15,7 +15,7 @@ const { getAgent } = await import('../src/agents/index.js');
 const { detectLimit, overloadMatch } = await import('../src/patterns.js');
 const { parseResetTime } = await import('../src/time-parser.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 test('agy is registered and experimental', () => {
   assert.equal(getAgent('agy').id, 'agy');

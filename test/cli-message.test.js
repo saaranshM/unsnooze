@@ -12,7 +12,7 @@ process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 const { cmdMessage, cmdStatus, cmdResumeNow, fmtResetProvenance } = await import('../src/cli.js');
 const { upsertSession, readState } = await import('../src/state.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 function seed(pane, extra = {}) {
   const state = upsertSession({

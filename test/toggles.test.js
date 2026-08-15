@@ -15,7 +15,7 @@ const { dueForDispatch } = await import('../src/resumer.js');
 const { cmdResumeNow } = await import('../src/cli.js');
 const { upsertSession, readState } = await import('../src/state.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 beforeEach(() => {
   delete process.env.UNSNOOZE_AUTO_RESUME;
   delete process.env.UNSNOOZE_MENU_AUTO_ANSWER;

@@ -12,7 +12,7 @@ const { getAgent } = await import('../src/agents/index.js');
 const { detectLimit } = await import('../src/patterns.js');
 const { buildIssueUrl } = await import('../src/report.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 test('grok is registered and experimental', () => {
   assert.equal(getAgent('grok').id, 'grok');

@@ -27,7 +27,7 @@ const { EVENTS_DIR } = await import('../src/config.js');
 const { addressHash, writeLease } = await import('../src/lease.js');
 const { monitorSpawnArgs } = await import('../src/spawn.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 // The launcher's exact spawn shape, mirrored here so a drift in either side
 // fails loudly: src/launcher.js spawns

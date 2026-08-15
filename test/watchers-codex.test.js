@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { parseRolloutLine, rolloutMeta } from '../src/watchers/codex.js';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-codex-watch-test-'));
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 const TS = '2026-05-13T06:37:10.065Z';
 const RESETS_PRIMARY = 1778672230;    // epoch seconds

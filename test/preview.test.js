@@ -20,7 +20,7 @@ const { cmdPreview } = await import('../src/cli.js');
 const { upsertSession, readState } = await import('../src/state.js');
 const { transcriptPath } = await import('../src/sessions.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 let n = 0;
 function seed(overrides = {}) {

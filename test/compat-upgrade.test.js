@@ -17,7 +17,7 @@ const { upsertSession, readState, updateState } = await import('../src/state.js'
 const { getConfig } = await import('../src/settings.js');
 const { fmtResetProvenance } = await import('../src/cli.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 test('TMUX_SESSION_NAME remains a compatible alias of MUX_SESSION_NAME', () => {
   assert.equal(TMUX_SESSION_NAME, MUX_SESSION_NAME);

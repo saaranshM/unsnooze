@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { workspaceFingerprint, workspaceChanged, describeChange } from '../src/workspace.js';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-workspace-test-'));
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 function git(cwd, ...args) {
   execFileSync('git', ['-C', cwd, ...args], { stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });

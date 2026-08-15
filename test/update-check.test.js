@@ -14,7 +14,7 @@ const {
   launchExitNotice,
 } = await import('../src/update-check.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 beforeEach(() => {
   rmSync(join(DIR, 'update-check.json'), { force: true });
   delete process.env.UNSNOOZE_UPDATE_CHECK;

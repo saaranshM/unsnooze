@@ -25,7 +25,7 @@ process.env.UNSNOOZE_STATE_DIR = DIR;
 const { updateState } = await import('../src/state.js');
 const { loadStatusSnapshot } = await import('../src/dashboard/data.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 test('loadStatusSnapshot returns promptQueue from queueList()', () => {
   updateState(state => {
