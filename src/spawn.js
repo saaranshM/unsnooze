@@ -21,7 +21,23 @@ export function spawnDetached(args, env = {}) {
   return child.pid;
 }
 
-function pidAlive(pid) {
+// The one definition of how a per-pane monitor is launched. The launcher uses
+// it to start one; a version-skewed monitor uses it to hand off to its own
+// replacement. Keeping a single builder is what stops the two from drifting —
+// a mismatched respawn would silently watch the wrong pane or, with a null
+// hole in the argv, throw inside child_process and take the watcher with it.
+export function monitorSpawnArgs({ muxName, paneOwner, pane, agentId, leaseId }) {
+  return ['_monitor', muxName, paneOwner || '', pane, agentId, leaseId || ''];
+}
+
+// Signal 0 probes for existence without delivering anything. Shared: the
+// resumer's lock hygiene, the dashboard's liveness column, and the version-skew
+// hand-off all need the same answer.
+export function pidAlive(pid) {
+  // Reject 0 before probing: kill(0, 0) targets our OWN process group and
+  // succeeds, so a garbage lock file holding "0" would read as a live holder
+  // forever. Number.isFinite alone does not catch it.
+  if (!Number.isFinite(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 

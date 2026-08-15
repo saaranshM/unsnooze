@@ -9,7 +9,9 @@
 [![node](https://img.shields.io/badge/node-%E2%89%A5%2020-3fb950)](package.json)
 [![license](https://img.shields.io/badge/license-MIT-8b949e)](LICENSE)
 
-**[unsnooze.combustortech.in](https://unsnooze.combustortech.in)** — docs · changelog · feedback
+**Automatically resume every limit-stopped AI coding session when its usage limit resets.**
+
+[Website](https://unsnooze.dev) · [Documentation](https://unsnooze.dev/docs/) · [Changelog](https://unsnooze.dev/changelog/) · [Feedback](https://unsnooze.dev/feedback/)
 
 **Claude Code · Codex CLI · Grok · Qwen · Kimi · OpenCode · Antigravity** — when they hit the 5-hour or weekly usage limit
 ("You've hit your usage limit"), your session just… stops.<br/>
@@ -145,6 +147,21 @@ risks, and vulnerability reporting: **[SECURITY.md](SECURITY.md)**.
 the CLIs that use it (OpenCode, Qwen Code), and credit exhaustion (402) is
 surfaced as a notification — there's no reset to wait for, only a top-up.
 
+### Proxy launchers such as Headroom
+
+`headroom wrap claude` and `headroom wrap codex` resolve and launch the real
+agent executable directly. That bypasses Unsnooze's shell-function launcher,
+so no same-pane monitor is attached. Claude's installed `StopFailure` hook can
+still record stops, as can the transcript/rollout watcher while the daemon,
+`guiWatch`, and that agent are enabled. For full pane monitoring too, configure
+Headroom's provider-scope persistent routing, then start `claude` / `codex`
+normally so Unsnooze remains the outer launcher. With Headroom v0.34, one
+explicit setup is:
+
+```bash
+headroom install apply --scope provider --providers manual --target claude --target codex
+```
+
 ## GUI surfaces (VS Code extension, desktop apps)
 
 Terminal sessions are watched through the shell wrapper + tmux, Zellij, or herdr. Sessions in
@@ -249,7 +266,7 @@ unsnooze usage — account burn & time-to-limit  (daemon: running · warnings at
 
 | What you get | How |
 |---|---|
-| **Honest labels** | Every figure is tagged `(exact)`, `(calibrated from N stops)`, or `(estimated — calibrating…)`. Never a bare %. |
+| **Honest labels** | Every figure is tagged `(exact)`, `(calibrated from N stops)`, or `(estimated — percentage unavailable)`. Never a bare %. |
 | **Account-wide burn** | Sums all active sessions **and** subagents (the limit is per-account, not per-pane). Idle gaps >5 min are excluded so a quiet hour doesn't hide a fast burn. |
 | **Time-to-wall** | ETA as a band (not a false-precision minute), cross-checked against known reset times. Weekly shown info-only — no unstable weekly ETA. |
 | **Pre-wall warnings** | Daemon notifies at `%` bands (`usageWarnAt`, default `80,95`) **and** time tiers (30 / 10 min). Deduped once per window. |
@@ -257,9 +274,9 @@ unsnooze usage — account burn & time-to-limit  (daemon: running · warnings at
 
 **Provenance ladder** (why this isn't another guessed-quota dashboard):
 
-1. **`(exact)`** — Codex always (local `used_percent` + epoch reset). Claude only with the opt-in statusline shim (server-authoritative `rate_limits` from [Claude Code's statusline JSON](https://code.claude.com/docs/en/statusline)).
-2. **`(calibrated from N stops)`** — Claude token burn vs a ceiling learned from **your** limit-stop ledger (the same stops unsnooze already records for resume). Not plan presets, not circular P90-of-history.
-3. **`(estimated)`** — used tokens + burn shown; ceiling unknown until the first observed stop.
+1. **`(exact)`** — Codex when a recent local rollout contains `token_count.rate_limits` (`used_percent` + epoch reset). Claude only with the opt-in statusline shim (server-authoritative `rate_limits` from [Claude Code's statusline JSON](https://code.claude.com/docs/en/statusline)).
+2. **`(calibrated from N stops)`** — Claude 5-hour token burn vs a ceiling learned from **your matching usable calibration samples**: a stop classified as `5h`, with a nonzero local token sample from the same model pool when known, otherwise an unpooled fallback sample. A stop can still be valid for revival without meeting those calibration requirements. Not plan presets, not circular P90-of-history.
+3. **`(estimated — percentage unavailable)`** — used tokens + burn are shown when available, but there is no exact percentage (and a Claude 5-hour row has no matching usable calibration ceiling yet).
 
 **Honest limits:** Claude transcript sums are a **lower bound** — subscription quotas are account-pooled with claude.ai and the Desktop app. Without the statusline shim, Claude tops out at calibrated/estimated. Exact Claude % needs Pro/Max after the first API response of a session (absent after `/clear` and on API auth).
 

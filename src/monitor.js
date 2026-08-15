@@ -14,7 +14,7 @@ import { getMultiplexer } from './multiplexer.js';
 import {
   SCRAPE_INTERVAL_MS, PANE_SCAN_LINES, CAPTURE_LINES, EVENTS_DIR,
   EVENT_MARKER_TTL_MS, OVERLOAD_BACKOFF_S, OVERLOAD_JITTER,
-  PROBE_INTERVAL_MS, RESET_MARGIN_MS,
+  PROBE_INTERVAL_MS, RESET_MARGIN_MS, LEASE_GRACE_MS,
 } from './config.js';
 import { detectLimit, isBusy, overloadMatch } from './patterns.js';
 import { getAgent } from './agents/index.js';
@@ -24,9 +24,11 @@ import { parseResetTime, resetAtMs, sourceRank } from './time-parser.js';
 import { upsertSession, setStatus, readState, updateState } from './state.js';
 import { prepareCalibrationSample, applyCalibrationToState } from './usage.js';
 import { latestRateLimitFromTranscript } from './watchers/claude.js';
-import { spawnResumerIfNeeded } from './spawn.js';
+import { spawnResumerIfNeeded, spawnDetached, monitorSpawnArgs, UNSNOOZE_BIN } from './spawn.js';
+import { restartOnVersionSkew, hasVersionSkew, PKG_VERSION } from './update-check.js';
 import { makeLogger } from './logger.js';
 import { addressHash, readLease } from './lease.js';
+import { claudeRecordEnv, hasClaudeParentUsageAfter } from './sessions.js';
 
 const log = makeLogger('monitor');
 
@@ -36,6 +38,8 @@ export function createMonitor({
   muxName = 'tmux', paneOwner = null, pane, leaseId = null, cwd,
   agent = getAgent('claude'), mux = getMultiplexer(muxName, { owner: paneOwner }),
   scrapeInterval = SCRAPE_INTERVAL_MS, notifier = notify,
+  spawner = spawnDetached, versionSkewed = hasVersionSkew, handoffBin = UNSNOOZE_BIN,
+  leaseGraceMs = LEASE_GRACE_MS, startedAt = Date.now(),
 }) {
   const notifyCtx = { mux: muxName, pane, paneOwner };
   let trackedKey = null;      // state key of the record we created
@@ -148,7 +152,9 @@ export function createMonitor({
         now: resolved.detectedAt,
       });
     } catch { /* best-effort */ }
-    const state = upsertSession({
+    const recordEnv = agent.id === 'claude' ? claudeRecordEnv() : null;
+    let appliedKey = null;
+    upsertSession({
       sessionId: resolved.sessionId, cwd, pane, mux: muxName, paneOwner, leaseId,
       agent: agent.id, muxSession,
       status: 'stopped', limitType: resolved.limitType, detectedVia,
@@ -156,15 +162,18 @@ export function createMonitor({
       bannerAt: resolved.bannerAt,
       resetAt: at, resetSource: source,
       attempts: 0, lastAttemptAt: null, lastError: null,
+      ...(recordEnv ? { env: recordEnv } : {}),
       ...(source === 'fallback' ? { probeCount: 0 } : {}),
     }, {
-      after: calSample ? (s) => applyCalibrationToState(s, calSample) : null,
+      after: (s, applied) => {
+        appliedKey = applied.key;
+        if (calSample) applyCalibrationToState(s, calSample);
+      },
     });
-    trackedKey = resolved.sessionId
-      || Object.values(state.sessions).find(s => s.mux === muxName
-        && s.paneOwner === paneOwner && s.pane === pane
-        && ['stopped', 'resuming', 'resumed'].includes(s.status))?.key
-      || null;
+    // upsertSession may retain a pane-based key while learning a sessionId.
+    // Capture the exact record applied under the state lock; a lookup by pane
+    // is ambiguous when historical records exist for the same address.
+    trackedKey = appliedKey;
     log(`pane ${pane}: limit recorded (${resolved.limitType}, via ${detectedVia}), resets ${new Date(at).toISOString()} (${source})`);
     notifier(`${agent.name} hit a usage limit`, `${cwd} — auto-resume at ${new Date(at).toLocaleTimeString()}`, { context: notifyCtx });
     spawnResumerIfNeeded();
@@ -230,7 +239,41 @@ export function createMonitor({
         log(`pane ${pane}: lease ${leaseId} gone — agent exited, monitor exiting`);
         running = false;
         return;
+      } else if (Date.now() - startedAt > leaseGraceMs) {
+        // No lease has EVER appeared. The launcher spawns us before it spawns
+        // the agent, so an agent that failed to spawn at all (bad bin, instant
+        // crash) leaves us watching a pane that is just the user's shell, with
+        // no lease-gone edge to ever fire. Without this the monitor scrapes
+        // that pane forever, and they pile up one per failed launch.
+        // Deliberately a deadline rather than a tick count: scrapeInterval is
+        // injected as 0 in tests and tunable in production, so N ticks is not
+        // a duration.
+        log(`pane ${pane}: lease ${leaseId} never appeared within ${leaseGraceMs}ms — agent never launched, monitor exiting`);
+        running = false;
+        return;
       }
+    }
+
+    // A monitor is spawned once per pane and lives as long as the agent, so it
+    // routinely outlives an `npm i -g unsnooze`: the package on disk changes,
+    // this process keeps the modules it loaded at launch, and no supervisor
+    // exists to restart it. That is how 1.14.2's stop-completion fix reached a
+    // user's disk without ever reaching the process that completes stops — a
+    // pane launched five days earlier went on applying the deleted rule.
+    // Hand off to a replacement on fresh code and stand down.
+    //
+    // Ordering matters twice over. It runs AFTER the pane/lease checks, so an
+    // upgrade landing as the agent exits does not respawn a watcher onto the
+    // user's bare shell; and BEFORE consumeMarker(), which unlinks the event
+    // file — handing off after that would swallow the pending overload event.
+    if (await restartOnVersionSkew({
+      args: monitorSpawnArgs({ muxName, paneOwner, pane, agentId: agent.id, leaseId }),
+      env: { UNSNOOZE_CWD: cwd },
+      spawner, skewed: versionSkewed, binPath: handoffBin,
+      log: msg => log(`pane ${pane}: ${msg}`),
+    })) {
+      running = false;
+      return;
     }
 
     const marker = consumeMarker();
@@ -318,18 +361,32 @@ export function createMonitor({
       terminalNotified = false;
     }
 
-    // No banner. If we were tracking a stopped record and claude is active
-    // again, someone resumed it (user or resumer) — mark it.
+    // A banner leaving the 12-line scan is not evidence of a resume: ordinary
+    // output (including background-agent notices) can scroll it away. Claude
+    // is terminal only after its parent transcript records newer non-error
+    // assistant usage. Other adapters retain their legacy behavior until they
+    // expose an equally authoritative progress signal.
     if (trackedKey) {
       const state = readState();
       const rec = state.sessions[trackedKey];
       if (rec && rec.status === 'stopped') {
-        setStatus(trackedKey, 'resumed', { lastAttemptAt: Date.now(), bannerCleared: true });
-        log(`pane ${pane}: banner cleared, ${trackedKey} marked resumed`);
-        trackedKey = null;
+        const cutoff = rec.bannerAt ?? rec.detectedAt;
+        const progressed = agent.id !== 'claude'
+          || hasClaudeParentUsageAfter(rec, cutoff);
+        if (progressed) {
+          const next = setStatus(trackedKey, 'resumed', {
+            lastAttemptAt: Date.now(), bannerCleared: true, lastError: null,
+          }, { expect: ['stopped'], expectCutoff: cutoff });
+          const applied = next.sessions[trackedKey];
+          if (applied?.status === 'resumed'
+            && (applied.bannerAt ?? applied.detectedAt) === cutoff) {
+            log(`pane ${pane}: post-limit progress observed, ${trackedKey} marked resumed`);
+            trackedKey = null;
+          }
+        }
       }
       if (rec && rec.status === 'resumed') {
-        setStatus(trackedKey, 'resumed', { bannerCleared: true });
+        setStatus(trackedKey, 'resumed', { bannerCleared: true }, { expect: ['resumed'] });
         trackedKey = null;
       } else if (rec && rec.status !== 'stopped') trackedKey = null;
     }
@@ -346,7 +403,10 @@ export function createMonitor({
 
   return {
     async run() {
-      log(`monitor started for pane ${pane} (cwd ${cwd})`);
+      // Stamp the build: a monitor can outlive several upgrades, so "which
+      // version is this process actually running" is the first question any
+      // log attachment has to answer.
+      log(`monitor started for pane ${pane} (cwd ${cwd}) — unsnooze ${PKG_VERSION}`);
       while (running) {
         await tick();
         if (!running) break;

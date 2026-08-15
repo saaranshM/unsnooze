@@ -10,8 +10,8 @@
 
 import { readFileSync, writeFileSync, renameSync, existsSync, copyFileSync, rmSync, mkdirSync, unlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { homedir, userInfo } from 'node:os';
+import { join, dirname, delimiter } from 'node:path';
 import { CLAUDE_SETTINGS, STATE_DIR } from './config.js';
 import { getConfig, configFileExists } from './settings.js';
 import { xmlEscape } from './notify.js';
@@ -149,12 +149,105 @@ export function installZshrcBlock(content, agents = ['claude']) {
 
 export const DAEMON_LABEL = 'com.unsnooze.daemon';
 
+// Is this process running under the supervisor we install, rather than from
+// somebody's shell? It decides whether exiting is safe: a supervised daemon
+// that exits on version skew comes straight back on fresh code, while an
+// unsupervised one exits into nothing and GUI watching stops silently.
+//
+// Both markers are injected by the supervisor itself and were read off real
+// processes rather than inferred: launchd sets XPC_SERVICE_NAME to the job
+// label for its jobs (an interactive shell reports the literal '0'), and
+// systemd sets a per-invocation INVOCATION_ID for every unit it starts.
+// Matching the exact label, not merely "some launchd job", keeps an unrelated
+// XPC service from being mistaken for our supervisor.
+export function isSupervised({ platform = process.platform, env = process.env } = {}) {
+  if (platform === 'darwin') return env.XPC_SERVICE_NAME === DAEMON_LABEL;
+  if (platform === 'linux') return typeof env.INVOCATION_ID === 'string' && env.INVOCATION_ID !== '';
+  return false;   // nowhere else do we install a supervisor to be run by
+}
+
 // Env overrides keep tests/e2e away from the real LaunchAgents / systemd dirs.
 function autostartDir(platform) {
   if (platform === 'darwin') {
     return process.env.UNSNOOZE_LAUNCH_AGENTS_DIR || join(homedir(), 'Library', 'LaunchAgents');
   }
   return process.env.UNSNOOZE_SYSTEMD_USER_DIR || join(homedir(), '.config', 'systemd', 'user');
+}
+
+// The one place that knows what our unit file is called on each platform.
+export function autostartUnitPath({ platform = process.platform, dir = null } = {}) {
+  const base = dir || autostartDir(platform);
+  if (platform === 'darwin') return join(base, `${DAEMON_LABEL}.plist`);
+  if (platform === 'linux') return join(base, 'unsnooze.service');
+  return null;
+}
+
+// Can this PATH string actually find `bin`? The daemon reaches tmux through
+// PATH (`execFile('tmux', …)`), so a unit whose baked PATH fails this test
+// cannot revive anything — every call dies with ENOENT. Pure and synchronous
+// on purpose: this decides whether to rewrite-and-reload a unit, and that
+// decision must be deterministic.
+// `sep` defaults to the host's PATH delimiter, not a hardcoded ':'. On Windows
+// that is ';' AND every absolute path contains a colon (C:\...), so splitting
+// on ':' shreds the entries into nonsense. The units we inspect are always
+// POSIX, but this predicate has to give an honest answer wherever it runs.
+export function pathResolves(pathStr, bin, { sep = delimiter } = {}) {
+  if (typeof pathStr !== 'string' || pathStr === '') return false;
+  return pathStr.split(sep).some(d => d && existsSync(join(d, bin)));
+}
+
+function xmlUnescape(s) {
+  return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+}
+
+// The PATH a unit currently bakes in, or null when it bakes none.
+function bakedUnitPath(content, platform) {
+  if (platform === 'darwin') {
+    const m = content.match(/<key>PATH<\/key>\s*<string>([^<]*)<\/string>/);
+    return m ? xmlUnescape(m[1]) : null;
+  }
+  const m = content.match(/^Environment="PATH=(.*)"$/m);
+  return m ? m[1].replace(/%%/g, '%') : null;
+}
+
+function defaultLoginPathRunner(cmd, args, opts) {
+  return execFileSync(cmd, args, opts);
+}
+
+// Ask the user's login shell what PATH it builds. This exists because the only
+// caller of the self-heal is the daemon itself, and a daemon's PATH is the
+// launchd/systemd minimal one — the very thing being repaired. Reading
+// process.env.PATH there just writes the breakage back.
+//
+// PATH is stripped from the child env so the login files construct it fresh
+// rather than appending to the broken value we inherited. Failure returns null:
+// a bad guess is worse than leaving the unit alone.
+export function resolveLoginPath({
+  shell = process.env.SHELL || userInfo().shell,
+  runner = defaultLoginPathRunner,
+  timeoutMs = 3000,
+} = {}) {
+  if (!shell) return null;
+  try {
+    const { PATH, ...env } = process.env;   // eslint-disable-line no-unused-vars
+    const out = runner(shell, ['-lc', 'echo $PATH'], {
+      encoding: 'utf-8', timeout: timeoutMs, env, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const path = String(out || '').trim();
+    return path || null;
+  } catch {
+    return null;   // no shell, slow rc files, non-zero exit — all "no answer"
+  }
+}
+
+// The best PATH we can offer a unit: the caller's own if it already finds the
+// binary (the `unsnooze setup`-from-a-shell case), otherwise whatever the login
+// shell reports. null means we have nothing better to write.
+function bestUnitPath({ currentPath, resolvePath, muxBin }) {
+  if (pathResolves(currentPath, muxBin)) return currentPath;
+  const fresh = resolvePath();
+  return fresh && pathResolves(fresh, muxBin) ? fresh : null;
 }
 
 export function launchdPlist({
@@ -227,22 +320,31 @@ function defaultActivate(cmd, args) {
   }
 }
 
-export function installDaemonAutostart({ platform = process.platform, dir = null, activate = defaultActivate } = {}) {
+export function installDaemonAutostart({
+  platform = process.platform, dir = null, activate = defaultActivate, path = undefined,
+} = {}) {
+  const target = autostartUnitPath({ platform, dir });
+  if (!target) return null;   // native Windows: no supported multiplexer to revive into
+  // Safety interlock. Every unit we generate carries the SAME label, so running
+  // the real launchctl/systemctl against a unit written somewhere else (a test
+  // fixture, a staging copy) does not create a second job — it HIJACKS the
+  // user's live one, leaving it pointed at a directory that may not outlive the
+  // caller. So the real activator only ever runs for the unit path this
+  // platform actually uses; an injected activator is always honored, since a
+  // caller that supplied one has said what it wants to happen.
+  const act = (activate === defaultActivate && target !== autostartUnitPath({ platform }))
+    ? () => true
+    : activate;
   if (platform === 'darwin') {
-    const target = join(dir || autostartDir(platform), `${DAEMON_LABEL}.plist`);
-    atomicWrite(target, launchdPlist());
-    activate('launchctl', ['unload', target]);   // reload cleanly if already loaded
-    activate('launchctl', ['load', '-w', target]);
+    atomicWrite(target, launchdPlist(path ? { path } : {}));
+    act('launchctl', ['unload', target]);   // reload cleanly if already loaded
+    act('launchctl', ['load', '-w', target]);
     return target;
   }
-  if (platform === 'linux') {
-    const target = join(dir || autostartDir(platform), 'unsnooze.service');
-    atomicWrite(target, systemdUnit());
-    activate('systemctl', ['--user', 'daemon-reload']);
-    activate('systemctl', ['--user', 'enable', '--now', 'unsnooze.service']);
-    return target;
-  }
-  return null;   // native Windows: no supported multiplexer to revive into
+  atomicWrite(target, systemdUnit(path ? { path } : {}));
+  act('systemctl', ['--user', 'daemon-reload']);
+  act('systemctl', ['--user', 'enable', '--now', 'unsnooze.service']);
+  return target;
 }
 
 // One-time self-heal for units written before 1.12.0: they carry no PATH, so
@@ -251,20 +353,53 @@ export function installDaemonAutostart({ platform = process.platform, dir = null
 // so the daemon repairs it on startup: regenerate + reload. Reloading kills
 // the calling daemon — by design; the supervisor restarts it under the fixed
 // unit. Returns the healed target, or null when nothing needed healing.
-export function healDaemonAutostart({ platform = process.platform, dir = null, activate = defaultActivate } = {}) {
-  const marker = platform === 'darwin' ? 'EnvironmentVariables' : 'Environment="PATH=';
-  const target = platform === 'darwin'
-    ? join(dir || autostartDir(platform), `${DAEMON_LABEL}.plist`)
-    : platform === 'linux'
-      ? join(dir || autostartDir(platform), 'unsnooze.service')
-      : null;
+// Does an installed unit bake a PATH that cannot reach the multiplexer? This
+// is invisible from a user's shell — `doctor` finds tmux on the rich PATH it
+// inherited and calls the install healthy — so the daemon's OWN baked PATH has
+// to be inspected directly. Returns null when there is nothing to report
+// (no unit, no baked PATH, or a PATH that works).
+export function daemonPathBroken({ platform = process.platform, dir = null, muxBin = 'tmux' } = {}) {
+  const unit = autostartUnitPath({ platform, dir });
+  if (!unit || !existsSync(unit)) return null;   // not a daemon-autostart user
+  let content;
+  try { content = readFileSync(unit, 'utf-8'); } catch { return null; }
+  const baked = bakedUnitPath(content, platform);
+  if (baked == null || pathResolves(baked, muxBin)) return null;
+  return { unit, path: baked, muxBin };
+}
+
+export function healDaemonAutostart({
+  platform = process.platform, dir = null, activate = defaultActivate,
+  resolvePath = resolveLoginPath, muxBin = 'tmux',
+  currentPath = process.env.PATH || '',
+} = {}) {
+  const target = autostartUnitPath({ platform, dir });
   if (!target || !existsSync(target)) return null;   // not a daemon-autostart user
-  try {
-    if (readFileSync(target, 'utf-8').includes(marker)) return null;   // already current
-  } catch {
-    return null;   // unreadable — leave it alone
+  let content;
+  try { content = readFileSync(target, 'utf-8'); } catch { return null; }
+
+  const marker = platform === 'darwin' ? 'EnvironmentVariables' : 'Environment="PATH=';
+  const better = bestUnitPath({ currentPath, resolvePath, muxBin });
+
+  // Pre-1.12 unit: no PATH at all. Always worth healing — but prefer a PATH
+  // that actually works over the caller's, which is minimal when (as always)
+  // the caller is the daemon.
+  if (!content.includes(marker)) {
+    return installDaemonAutostart({ platform, dir, activate, path: better || currentPath });
   }
-  return installDaemonAutostart({ platform, dir, activate });
+
+  // Present but useless. This is the trap the original heal fell into: run
+  // from the daemon, it baked the daemon's own tmux-less PATH back in, and the
+  // marker being present then made it "already current" forever.
+  const baked = bakedUnitPath(content, platform);
+  if (baked == null || pathResolves(baked, muxBin)) return null;   // genuinely fine
+
+  // CRASH-LOOP GUARD. Healing reloads the unit, which kills this daemon; the
+  // supervisor restarts it and we arrive here again. Rewriting without a
+  // strictly better PATH would repeat every 30s forever, which is worse than
+  // the bug. No improvement available → leave it exactly as it is.
+  if (!better || better === baked) return null;
+  return installDaemonAutostart({ platform, dir, activate, path: better });
 }
 
 export function uninstallDaemonAutostart({ platform = process.platform, dir = null, activate = defaultActivate } = {}) {

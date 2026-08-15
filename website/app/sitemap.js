@@ -1,26 +1,28 @@
 import { SITE_URL } from '../lib/site.js';
-import { readChangelog } from '../lib/changelog.js';
+import { lastModifiedFor } from '../lib/lastmod.js';
 
-export default async function sitemap() {
-  const latestRelease = (await readChangelog())[0]?.date;
-  const changelogModified = latestRelease ? new Date(latestRelease) : new Date();
+// `priority` and `changefreq` are deliberately absent: Google ignores both
+// outright, and Bing treats priority as noise. `lastmod` is the one sitemap
+// hint that still influences crawl scheduling, so it is the only one worth
+// emitting — and only when it is genuinely accurate. See lib/lastmod.js for
+// why an unavailable date is omitted rather than guessed.
+const ROUTES = [
+  '/',
+  '/docs/',
+  '/docs/commands/',
+  '/docs/settings/',
+  '/docs/fleet/',
+  '/docs/troubleshooting/',
+  '/changelog/',
+  '/feedback/',
+];
 
-  // Only /changelog/ claims a lastmod, because only /changelog/ has a date that
-  // is derived from its own content and can be checked against the page. Google
-  // honours lastmod only when it is "consistently and verifiably
-  // accurate", and a shared release date stamped across every page is neither —
-  // the docs, for instance, get edited between releases. An absent lastmod is
-  // handled gracefully; a wrong one teaches Google to ignore the whole signal.
-  const docs = ['', 'commands/', 'settings/', 'fleet/', 'troubleshooting/'];
-
-  return [
-    { url: `${SITE_URL}/`, changeFrequency: 'weekly', priority: 1 },
-    ...docs.map((slug) => ({
-      url: `${SITE_URL}/docs/${slug}`,
-      changeFrequency: 'weekly',
-      priority: slug === '' ? 0.9 : 0.8,
-    })),
-    { url: `${SITE_URL}/changelog/`, lastModified: changelogModified, changeFrequency: 'weekly', priority: 0.6 },
-    { url: `${SITE_URL}/feedback/`, changeFrequency: 'weekly', priority: 0.3 },
-  ];
+export default function sitemap() {
+  return ROUTES.map((route) => {
+    const lastModified = lastModifiedFor(route);
+    return {
+      url: `${SITE_URL}${route}`,
+      ...(lastModified ? { lastModified } : {}),
+    };
+  });
 }

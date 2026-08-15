@@ -8,6 +8,7 @@ import { createTmux } from '../src/multiplexers/tmux.js';
 import { createZellij } from '../src/multiplexers/zellij.js';
 import { createMultiplexerFactory } from '../src/multiplexer.js';
 import { DEFAULTS, getConfig, setConfigValue } from '../src/settings.js';
+import { MUX_NAMES } from '../src/config.js';
 
 const originalEnv = { ...process.env };
 
@@ -95,6 +96,11 @@ test('multiplexer setting is registered and enum-validated', () => {
     assert.equal(setConfigValue('multiplexer', 'herdr'), 'herdr');
     assert.equal(getConfig('multiplexer'), 'herdr');
     assert.throws(() => setConfigValue('multiplexer', 'screen'), /one of/i);
+    // The enum tracks MUX_NAMES: a backend registered in config.js is settable
+    // without touching settings.js, which is what keeps backend PRs conflict-free.
+    for (const name of MUX_NAMES) {
+      assert.equal(setConfigValue('multiplexer', name), name, `${name} must be a settable multiplexer`);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

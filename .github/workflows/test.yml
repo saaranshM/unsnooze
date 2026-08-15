@@ -1,0 +1,34 @@
+# The single definition of "what must pass before this ships".
+#
+# Called by CI on every push and pull request, and by Release before it
+# publishes. Keeping one definition is the point: when Release carried its own
+# cut-down test job (ubuntu-latest, Node 22 only), 1.14.3 published to npm while
+# the CI matrix was red on Windows. A release gate that is narrower than the
+# branch gate will eventually let something through, so there is now no second
+# copy to drift.
+
+name: Test
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [20, 22]
+        include:
+          # tmux-independent core (unit tests use a fake tmux) must stay
+          # portable — WSL users run the linux path, but keep win32 honest.
+          - os: windows-latest
+            node: 22
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm test

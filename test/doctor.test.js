@@ -8,9 +8,17 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, delimiter } from 'node:path';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-doctor-'));
+
+// Keep autostart writes off the REAL ~/Library/LaunchAgents and systemd user
+// dir. install.js provides these overrides for exactly this reason: every unit
+// we generate carries one label, so a test that writes or loads the live path
+// hijacks the machine's actual daemon (this happened — a doctor --fix test
+// repointed the running job at a temp dir and broke its log paths).
+process.env.UNSNOOZE_LAUNCH_AGENTS_DIR = join(DIR, 'LaunchAgents-isolated');
+process.env.UNSNOOZE_SYSTEMD_USER_DIR = join(DIR, 'systemd-isolated');
 process.env.UNSNOOZE_STATE_DIR = join(DIR, 'state');
 
 const {
@@ -213,4 +221,100 @@ test('findCsgAutostarts never flags a unit that execs unsnooze — even from a r
   const units = findCsgAutostarts({ dir: la });
   assert.deepEqual(units, [join(la, 'com.old.csg.plist')],
     'csg.js unit flagged; unsnooze.js unit untouchable regardless of its path');
+});
+
+// --- daemon PATH health -----------------------------------------------------
+// Observed live: a launchd daemon baked PATH=/usr/bin:/bin:/usr/sbin:/sbin
+// while tmux sat in /opt/homebrew/bin, so every revival died with ENOENT —
+// and doctor reported the install healthy, because it probes tmux from the
+// USER'S shell (rich PATH), never from the daemon's. This makes the daemon's
+// own PATH the thing under test.
+
+const { installDaemonAutostart, DAEMON_LABEL } = await import('../src/install.js');
+
+function healthyDeps(over = {}) {
+  return {
+    runner: () => ({ status: 0, stdout: '' }),
+    launchAgentsDir: join(DIR, 'nope'),
+    csgStateDir: join(DIR, 'nope'),
+    csgBinPath: null,
+    mux: { name: 'tmux', available: () => true },
+    hookInstalled: () => true,
+    wrappersInstalled: () => true,
+    platform: 'darwin',
+    ...over,
+  };
+}
+
+// See autostart.test.js: real system dirs cannot serve as a "cannot find tmux"
+// fixture, because tmux is in /usr/bin on the Ubuntu CI image.
+const NO_TMUX = (() => {
+  const a = join(DIR, 'empty-bin-doc');
+  mkdirSync(a, { recursive: true });
+  return a;
+})();
+
+
+// The daemon-autostart PATH feature is darwin/linux only — autostartUnitPath
+// returns null on win32, so there is no unit for any of this to act on.
+// Exercising it with Windows temp paths embedded in a launchd plist tests
+// nothing real, so these are skipped there rather than contorted.
+const UNIX_ONLY = process.platform === 'win32'
+  ? 'daemon autostart units exist only on darwin/linux'
+  : false;
+
+function unitWithPath(name, path) {
+  const dir = join(DIR, name);
+  installDaemonAutostart({ platform: 'darwin', dir, activate: () => true, path });
+  return dir;
+}
+
+test('doctor flags a daemon unit whose baked PATH cannot find the multiplexer', { skip: UNIX_ONLY }, async () => {
+  const dir = unitWithPath('dp-bad', NO_TMUX);
+  const report = await runDoctor(healthyDeps({ autostartDir: dir }));
+  const f = report.findings.find(x => x.id === 'daemon-path');
+
+  assert.ok(f, 'the finding exists');
+  assert.equal(f.kind, 'health', 'it is a problem, not an info line');
+  assert.equal(report.healthy, false, 'and the install is not healthy');
+  assert.ok(f.fix, 'it is machine-fixable');
+  assert.match(f.detail + f.title, /tmux/);
+});
+
+test('doctor stays quiet when the daemon PATH can find the multiplexer', { skip: UNIX_ONLY }, async () => {
+  const binDir = join(DIR, 'dp-goodbin');
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(join(binDir, 'tmux'), '#!/bin/sh\n');
+  const dir = unitWithPath('dp-good', `${binDir}${delimiter}/usr/bin`);
+  const report = await runDoctor(healthyDeps({ autostartDir: dir }));
+
+  assert.equal(report.findings.find(x => x.id === 'daemon-path'), undefined);
+  assert.equal(report.healthy, true);
+});
+
+test('doctor says nothing about daemon PATH when no autostart unit is installed', async () => {
+  const report = await runDoctor(healthyDeps({ autostartDir: join(DIR, 'dp-none') }));
+  assert.equal(report.findings.find(x => x.id === 'daemon-path'), undefined,
+    'not a daemon-autostart user — not their problem');
+  assert.equal(report.healthy, true);
+});
+
+test('doctor --fix repairs the daemon PATH when a working one can be found', { skip: UNIX_ONLY }, async () => {
+  const binDir = join(DIR, 'dp-fixbin');
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(join(binDir, 'tmux'), '#!/bin/sh\n');
+  const dir = unitWithPath('dp-fix', NO_TMUX);
+  const report = await runDoctor(healthyDeps({ autostartDir: dir }));
+
+  const actions = await applyFixes(report, {
+    runner: () => ({ status: 0, stdout: '' }),
+    resolvePath: () => `${binDir}${delimiter}/usr/bin`,
+    currentPath: NO_TMUX,
+    // NEVER let a test reach the real launchctl: every unit shares one label,
+    // so loading a fixture would hijack the machine's actual daemon.
+    activate: () => true,
+  });
+  assert.ok(actions.some(a => a.action === 'healed-daemon-path'), 'it reports what it did');
+  const { readFileSync: rf } = await import('node:fs');
+  assert.match(rf(join(dir, `${DAEMON_LABEL}.plist`), 'utf-8'), new RegExp(binDir.replace(/[/]/g, '\\/')));
 });

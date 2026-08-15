@@ -12,6 +12,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-dashboard-queue-test-'));
+
+// Keep autostart writes off the REAL ~/Library/LaunchAgents and systemd user
+// dir. install.js provides these overrides for exactly this reason: every unit
+// we generate carries one label, so a test that writes or loads the live path
+// hijacks the machine's actual daemon (this happened — a doctor --fix test
+// repointed the running job at a temp dir and broke its log paths).
+process.env.UNSNOOZE_LAUNCH_AGENTS_DIR = join(DIR, 'LaunchAgents-isolated');
+process.env.UNSNOOZE_SYSTEMD_USER_DIR = join(DIR, 'systemd-isolated');
 process.env.UNSNOOZE_STATE_DIR = DIR;
 
 const { updateState } = await import('../src/state.js');

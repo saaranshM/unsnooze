@@ -13,6 +13,7 @@ process.env.UNSNOOZE_CLAUDE_DIR = join(DIR, 'claude');   // no transcripts → n
 const { createMonitor } = await import('../src/monitor.js');
 const { readState, upsertSession } = await import('../src/state.js');
 const { dashCwd } = await import('../src/sessions.js');
+const { default: claudeAgent } = await import('../src/agents/claude.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
@@ -153,15 +154,78 @@ test('menu detection uses the VISIBLE screen, not scrollback history', async () 
   assert.equal(recs[0].status, 'stopped');
 });
 
-test('banner cleared + tracked → record flips to resumed', async () => {
+test('scrolled banner stays stopped until the parent transcript proves progress', async () => {
+  const cwd = '/tmp/proj-e';
+  const sessionId = '00000000-0000-4000-8000-000000000054';
   const script = { text: BANNER };
   const tmux = fakeTmux(script);
-  const monitor = createMonitor({ pane: '%54', cwd: '/tmp/proj-e', mux: tmux });
+  const agent = { ...claudeAgent, latestSessionId: () => sessionId };
+  const monitor = createMonitor({ pane: '%54', cwd, mux: tmux, agent });
   await monitor._tick();               // records stop
-  script.text = '⏺ working again… (esc to interrupt)';
-  await monitor._tick();               // sees banner gone
-  const recs = Object.values(readState().sessions).filter(s => s.pane === '%54');
-  assert.equal(recs[0].status, 'resumed');
+  const stopped = Object.values(readState().sessions).find(s => s.pane === '%54');
+  assert.equal(stopped.status, 'stopped');
+
+  // Background output pushes the banner outside PANE_SCAN_LINES. Absence is
+  // not a successful resume, and the monitor must not fabricate one.
+  script.text = [BANNER, ...Array.from({ length: 13 }, (_, i) => `background agent line ${i}`), '❯ '].join('\n');
+  await monitor._tick();
+  assert.equal(readState().sessions[stopped.key].status, 'stopped');
+  assert.equal(tmux.sent.length, 0);
+
+  // A later successful parent turn is durable positive evidence that a user
+  // or provider retry resumed the session.
+  const project = join(process.env.UNSNOOZE_CLAUDE_DIR, 'projects', dashCwd(cwd));
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, `${sessionId}.jsonl`), JSON.stringify({
+    type: 'assistant',
+    timestamp: new Date(stopped.detectedAt + 1000).toISOString(),
+    message: { role: 'assistant', usage: { input_tokens: 1, output_tokens: 1 } },
+  }) + '\n');
+  await monitor._tick();
+  assert.equal(readState().sessions[stopped.key].status, 'resumed');
+});
+
+test('monitor tracks the canonical key retained by a same-pane merge', async () => {
+  const pane = '%57';
+  const cwd = '/tmp/proj-canonical-key';
+  const oldId = '00000000-0000-4000-8000-000000000057';
+  const observedId = '00000000-0000-4000-8000-000000000058';
+  upsertSession({
+    sessionId: oldId, cwd, pane, mux: 'tmux', paneOwner: null,
+    agent: 'claude', status: 'stopped', limitType: '5h', detectedVia: 'hook',
+    detectedAt: Date.now(), resetAt: Date.now() + 3_600_000,
+    resetSource: 'absolute', attempts: 0,
+  });
+  const agent = { ...claudeAgent, latestSessionId: () => observedId };
+  const monitor = createMonitor({ pane, cwd, mux: fakeTmux({ text: BANNER }), agent });
+  await monitor._tick();
+
+  const matches = Object.values(readState().sessions).filter(s => s.pane === pane);
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].key, oldId, 'upsert retains the original map key');
+  assert.equal(matches[0].sessionId, observedId, 'the merged record learns the observed id');
+  assert.equal(monitor.trackedKey, oldId, 'monitor follows the applied key, not the raw id');
+});
+
+test('monitor tracks the newly applied anonymous key when pane history is ambiguous', async () => {
+  const pane = '%59';
+  const cwd = '/tmp/proj-anonymous-key';
+  const oldAt = Date.now() - 10 * 60_000;
+  upsertSession({
+    sessionId: null, cwd, pane, mux: 'tmux', paneOwner: null,
+    agent: 'claude', status: 'stopped', limitType: '5h', detectedVia: 'scrape',
+    detectedAt: oldAt, resetAt: oldAt + 3_600_000,
+    resetSource: 'absolute', attempts: 0,
+  });
+
+  const agent = { ...claudeAgent, latestSessionId: () => null };
+  const monitor = createMonitor({ pane, cwd, mux: fakeTmux({ text: BANNER }), agent });
+  await monitor._tick();
+
+  const matches = Object.values(readState().sessions).filter(s => s.pane === pane);
+  assert.equal(matches.length, 2, 'an older ambiguous record is outside the dedupe window');
+  const newest = matches.sort((a, b) => b.detectedAt - a.detectedAt)[0];
+  assert.equal(monitor.trackedKey, newest.key, 'the monitor must track the exact upsert result');
 });
 
 // --- terminalPatterns: non-resetting errors notify once, never touch the ledger ---

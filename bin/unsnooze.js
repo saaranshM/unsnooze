@@ -256,10 +256,33 @@ async function main() {
       }
       // Version-skew guard: when npm swaps the package underneath us, exit
       // cleanly so launchd/systemd restart the daemon on the fresh code.
+      // Interval stays at 15 minutes on purpose — a tighter loop raises the
+      // odds of restarting INTO a half-installed package, which is the
+      // crash-loop the unit throttles exist to survive.
+      // Exiting is only safe under a supervisor. `unsnooze daemon` run from a
+      // shell has nothing to restart it, so there it warns and keeps watching
+      // rather than ending GUI watching silently.
       const updMod = await safeImport('../src/update-check.js');
+      const notifyMod = await safeImport('../src/notify.js');
       if (updMod?.hasVersionSkew) {
+        let warnedSkew = false;
         setInterval(() => {
-          if (updMod.hasVersionSkew()) controller.abort();
+          const action = updMod.daemonSkewAction({
+            skewed: updMod.hasVersionSkew(),
+            // Unknown means assume supervised: that is how the daemon is
+            // installed for all but a handful of users, and it preserves the
+            // long-standing behavior when install.js could not be loaded.
+            supervised: installMod?.isSupervised ? installMod.isSupervised() : true,
+            alreadyWarned: warnedSkew,
+          });
+          if (action === 'restart') controller.abort();
+          else if (action === 'warn') {
+            warnedSkew = true;
+            const msg = 'package was upgraded on disk but this daemon is not supervised — '
+              + 'still running the old code; restart it to pick up the new version';
+            loggerMod?.log('daemon', msg);
+            notifyMod?.notify('unsnooze needs a restart', msg, { priority: 4 });
+          }
         }, 15 * 60_000).unref();
       }
       // Daily update check from the daemon: GUI-only users never run CLI

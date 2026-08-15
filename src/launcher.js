@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { getMultiplexer } from './multiplexer.js';
 import { getAgent } from './agents/index.js';
 import { getConfig } from './settings.js';
-import { spawnDetached } from './spawn.js';
+import { spawnDetached, monitorSpawnArgs } from './spawn.js';
 import { makeLogger } from './logger.js';
 import { createLeaseId, processBirth, writeLease, removeLease } from './lease.js';
 import { SessionCreateError } from './multiplexers/session-name.js';
@@ -37,7 +37,7 @@ function runUnwatched(agent, args, reason) {
   return r.status ?? 1;
 }
 
-export function runLauncher(args, agentId = 'claude') {
+export function runLauncher(args, agentId = 'claude', { processBirthFn = processBirth } = {}) {
   const agent = getAgent(agentId);
 
   // Recursion / nested-launch guard: inside an unsnooze-managed session, a
@@ -88,7 +88,8 @@ export function runLauncher(args, agentId = 'claude') {
     if (typeof mux.stampPaneOwner === 'function') {
       mux.stampPaneOwner(pane, leaseId).catch(() => { /* legacy tmux */ });
     }
-    spawnDetached(['_monitor', mux.name, paneOwner || '', pane, agent.id, leaseId],
+    spawnDetached(
+      monitorSpawnArgs({ muxName: mux.name, paneOwner, pane, agentId: agent.id, leaseId }),
       { UNSNOOZE_CWD: process.cwd() });
     log(`launching ${agent.id} in ${mux.name} ${paneOwner ?? '-'}:${pane}, monitor spawned`);
   } else {
@@ -106,9 +107,15 @@ export function runLauncher(args, agentId = 'claude') {
   });
   const lease = pane && child.pid ? {
     leaseId, mux: mux.name, paneOwner, pane, agent: agent.id,
-    pid: child.pid, pidBirth: processBirth(child.pid),
+    pid: child.pid, pidBirth: processBirthFn(child.pid),
   } : null;
-  if (lease?.pidBirth) writeLease(lease);
+  // Write it even when the birth timestamp is unavailable. processBirth only
+  // reads /proc on linux and `ps` on darwin, so it is null on Windows and on
+  // any ps failure — and gating the write on it meant a perfectly healthy
+  // agent there got no lease at all. The monitor reads presence to know its
+  // agent is alive; ownership checks stay exactly as strict, because
+  // leaseMatches() still refuses to match a lease with a null birth.
+  if (lease) writeLease(lease);
   const cleanup = () => { if (lease) removeLease(lease, leaseId); };
   return new Promise(resolve => {
     child.on('exit', code => { cleanup(); resolve(code ?? 1); });

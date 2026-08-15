@@ -1,14 +1,85 @@
 // Explicit process/session cleanup (`unsnooze sessions` / `unsnooze reap`).
 // Never auto-kills a live agent pane unless the user opts in via reapResumed.
 
-import { MUX_SESSION_NAME, RESUME_SESSION_NAME } from './config.js';
+import { MUX_NAMES, MUX_SESSION_NAME, RESUME_SESSION_NAME } from './config.js';
 import { getMultiplexer } from './multiplexer.js';
-import { readState, setStatus, updateState } from './state.js';
+import { readState, updateState } from './state.js';
 import { getConfig } from './settings.js';
 import { paneOwnedByRecord } from './lease.js';
 import { makeLogger } from './logger.js';
 
 const log = makeLogger('reap');
+
+function samePaneGeneration(a, b) {
+  return !!(a?.pane && b?.pane && a.leaseId && b.leaseId
+    && a.mux === b.mux && a.paneOwner === b.paneOwner && a.pane === b.pane
+    && a.leaseId === b.leaseId);
+}
+
+function sameRecordEpisode(a, b) {
+  return !!(a && b && a.status === b.status && a.pane === b.pane
+    && a.mux === b.mux && a.paneOwner === b.paneOwner && a.leaseId === b.leaseId
+    && (a.bannerAt ?? a.detectedAt) === (b.bannerAt ?? b.detectedAt)
+    && (a.resumeEpisodeAt ?? null) === (b.resumeEpisodeAt ?? null));
+}
+
+function activePaneAlias(state, rec) {
+  return Object.values(state.sessions).find(other => other.key !== rec.key
+    && ['stopped', 'resuming', 'resumed'].includes(other.status)
+    && samePaneGeneration(rec, other));
+}
+
+// Reserve a close under the state lock immediately before touching the mux.
+// Removing the terminal record is the claim: another reap cannot close it,
+// and a live alias that appeared during an awaited ownership probe wins.
+function claimPaneClose(rec) {
+  let result = { kind: 'stale' };
+  updateState(state => {
+    const current = state.sessions[rec.key];
+    if (!sameRecordEpisode(current, rec)) return state;
+    const alias = activePaneAlias(state, current);
+    delete state.sessions[rec.key];
+    if (alias) {
+      result = { kind: 'alias', alias };
+    } else if ((state.paneClosures || []).some(c => samePaneGeneration(c, current))) {
+      result = { kind: 'closing' };
+    } else {
+      state.paneClosures ||= [];
+      state.paneClosures.push({
+        mux: current.mux,
+        paneOwner: current.paneOwner,
+        pane: current.pane,
+        leaseId: current.leaseId,
+        claimedAt: Date.now(),
+      });
+      result = { kind: 'claimed' };
+    }
+    return state;
+  });
+  return result;
+}
+
+function dropIfUnchanged(rec) {
+  let dropped = false;
+  updateState(state => {
+    if (sameRecordEpisode(state.sessions[rec.key], rec)) {
+      delete state.sessions[rec.key];
+      dropped = true;
+    }
+    return state;
+  });
+  return dropped;
+}
+
+function restoreFailedClaim(rec) {
+  updateState(state => {
+    state.paneClosures = (state.paneClosures || []).filter(c => !samePaneGeneration(c, rec));
+    if (!state.sessions[rec.key] && !activePaneAlias(state, rec)) {
+      state.sessions[rec.key] = rec;
+    }
+    return state;
+  });
+}
 
 // How a user reaches a revived session. Shared by status, toast, and `sessions`.
 export function attachHint(muxName, sessionName) {
@@ -31,7 +102,7 @@ export function isUnsnoozeSessionName(name, base = MUX_SESSION_NAME) {
 }
 
 export async function listOwnedSessions({ muxName = null } = {}) {
-  const names = muxName ? [muxName] : ['tmux', 'zellij', 'herdr'];
+  const names = muxName ? [muxName] : MUX_NAMES;
   const out = [];
   for (const name of names) {
     let mux;
@@ -82,8 +153,7 @@ export async function reap({
   // --yes flips dry-run off; plain default stays dry-run.
   if (yes) dryRun = false;
   const actions = [];
-  const state = readState();
-  const terminal = Object.values(state.sessions).filter(s =>
+  const terminal = Object.values(readState().sessions).filter(s =>
     ['resumed', 'failed', 'cancelled'].includes(s.status) && s.pane);
 
   const reapIdleAfter = getConfig('reapIdleAfter');
@@ -108,9 +178,7 @@ export async function reap({
     } catch { alive = false; }
     if (!alive) {
       actions.push({ kind: 'drop-record', key: rec.key, reason: 'pane already dead' });
-      if (!dryRun) {
-        updateState(s => { delete s.sessions[rec.key]; return s; });
-      }
+      if (!dryRun) dropIfUnchanged(rec);
       continue;
     }
     // Pane ids get recycled — closing by bare id could kill someone else's
@@ -120,9 +188,7 @@ export async function reap({
     try { owned = await paneOwnedByRecord(rec, { mux }); } catch { owned = null; }
     if (owned === false) {
       actions.push({ kind: 'drop-record', key: rec.key, reason: 'pane recycled — not ours' });
-      if (!dryRun) {
-        updateState(s => { delete s.sessions[rec.key]; return s; });
-      }
+      if (!dryRun) dropIfUnchanged(rec);
       continue;
     }
     if (owned === null) {
@@ -130,6 +196,33 @@ export async function reap({
       actions.push({ kind: 'skip-unowned', key: rec.key, pane: rec.pane,
         reason: 'ownership unprovable (pre-lease record) — close it manually' });
       continue;
+    }
+    if (dryRun) {
+      const alias = activePaneAlias(readState(), rec);
+      if (alias) {
+        actions.push({ kind: 'drop-record', key: rec.key,
+          reason: `pane is shared with active record ${alias.key} — not closing` });
+        continue;
+      }
+    } else {
+      // paneAlive() and ownership checks await external commands. Re-check and
+      // claim only now so an owner created while they ran cannot be killed.
+      const claim = claimPaneClose(rec);
+      if (claim.kind === 'alias') {
+        actions.push({ kind: 'drop-record', key: rec.key,
+          reason: `pane is shared with active record ${claim.alias.key} — not closing` });
+        continue;
+      }
+      if (claim.kind === 'closing') {
+        actions.push({ kind: 'drop-record', key: rec.key,
+          reason: 'pane generation is already being closed by another reap' });
+        continue;
+      }
+      if (claim.kind !== 'claimed') {
+        actions.push({ kind: 'skip-stale', key: rec.key, pane: rec.pane,
+          reason: 'record changed while checking pane — not closing' });
+        continue;
+      }
     }
     actions.push({
       kind: 'close-pane',
@@ -142,16 +235,15 @@ export async function reap({
     if (!dryRun) {
       try {
         if (typeof mux.closePane === 'function') await mux.closePane(rec.pane);
-        setStatus(rec.key, rec.status, { pane: null });
-        updateState(s => { delete s.sessions[rec.key]; return s; });
       } catch (err) {
+        restoreFailedClaim(rec);
         actions.push({ kind: 'error', key: rec.key, message: err.message });
       }
     }
   }
 
   // Empty / EXITED unsnooze-owned sessions.
-  for (const name of ['tmux', 'zellij', 'herdr']) {
+  for (const name of MUX_NAMES) {
     let mux;
     try { mux = getMultiplexer(name); } catch { continue; }
     if (!mux.available?.() || typeof mux.listSessions !== 'function') continue;
@@ -204,24 +296,30 @@ export async function autoReapIfEnabled({
     try {
       const mux = resolveMux(rec);
       if (!(await mux.paneAlive(rec.pane))) {
-        updateState(s => { delete s.sessions[rec.key]; return s; });
+        dropIfUnchanged(rec);
         continue;
       }
       // Same recycled-pane rule as reap(): positive ownership or no close.
       const owned = await paneOwnedByRecord(rec, { mux });
       if (owned !== true) {
         if (owned === false) {
-          updateState(s => { delete s.sessions[rec.key]; return s; });
+          dropIfUnchanged(rec);
           log(`${rec.key}: auto-reap skipped — pane ${rec.pane} recycled, record dropped`);
         }
         continue;
       }
+      const claim = claimPaneClose(rec);
+      if (claim.kind !== 'claimed') continue;
       if (typeof mux.closePane === 'function') {
-        await mux.closePane(rec.pane);
-        closed += 1;
-        log(`${rec.key}: auto-reaped idle resumed pane ${rec.pane}`);
+        try {
+          await mux.closePane(rec.pane);
+          closed += 1;
+          log(`${rec.key}: auto-reaped idle resumed pane ${rec.pane}`);
+        } catch (err) {
+          restoreFailedClaim(rec);
+          throw err;
+        }
       }
-      updateState(s => { delete s.sessions[rec.key]; return s; });
     } catch (err) {
       log(`${rec.key}: auto-reap failed: ${err.message}`);
     }

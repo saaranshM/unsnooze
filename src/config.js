@@ -15,7 +15,8 @@ export const RESUMER_LOCK = join(STATE_DIR, 'resumer.lock');
 // High-frequency burn accumulator + warn-dedup (daemon single-writer).
 export const USAGE_FILE = join(STATE_DIR, 'usage.json');
 
-export const CLAUDE_DIR = process.env.UNSNOOZE_CLAUDE_DIR || join(homedir(), '.claude');
+export const CLAUDE_DIR = process.env.UNSNOOZE_CLAUDE_DIR
+  || process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 export const CLAUDE_SETTINGS = join(CLAUDE_DIR, 'settings.json');
 export const CODEX_DIR = process.env.UNSNOOZE_CODEX_DIR || join(homedir(), '.codex');
 // Opt-in statusline shim drop dir for exact Claude rate_limits.
@@ -63,6 +64,18 @@ export const BUSY_DEFER_MS = envInt('UNSNOOZE_BUSY_DEFER_MS', 60_000);
 export const READY_TIMEOUT_MS = envInt('UNSNOOZE_READY_TIMEOUT_MS', 60_000);
 export const EVENT_MARKER_TTL_MS = envInt('UNSNOOZE_EVENT_MARKER_TTL_MS', 120_000);
 export const WATCH_FRESHNESS_MS = envInt('UNSNOOZE_WATCH_FRESHNESS_MS', 15 * 60_000);
+
+// How long a monitor waits for its agent's lease to appear before concluding
+// the launch failed and exiting. The launcher writes the lease immediately
+// after spawn(), so this only ever elapses when no agent was started at all.
+export const LEASE_GRACE_MS = envInt('UNSNOOZE_LEASE_GRACE_MS', 60_000);
+
+// Multiplexer backends, in detection order. The single source of truth: the
+// factory, the `multiplexer` setting enum and reap's session sweep all read
+// this list. It lives here, in a module that imports nothing but node builtins,
+// because settings.js and multiplexer.js already import each other — declaring
+// it in either one puts the other in a temporal dead zone at import time.
+export const MUX_NAMES = ['tmux', 'zellij', 'herdr'];
 
 // Pane scanning
 export const PANE_SCAN_LINES = envInt('UNSNOOZE_PANE_SCAN_LINES', 12);

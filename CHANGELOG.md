@@ -1,6 +1,82 @@
 # Changelog
 
-## Unreleased
+## 1.14.4 — 2026-08-08
+
+- **Windows: the daemon PATH check split on the wrong separator.** The check
+  added in 1.14.3 split `PATH` on `:`, which is right on macOS and Linux and
+  wrong on Windows — there the separator is `;` and every absolute path
+  contains a colon (`C:\...`), so entries were shredded into fragments. The
+  predicate now uses the host's own delimiter. No behavior changed on macOS or
+  Linux, and Windows has no autostart unit for the check to reach, so this is a
+  correctness and test-portability fix rather than a user-visible one.
+
+## 1.14.3 — 2026-08-08
+
+- **Upgrades now reach running watchers.** A per-pane monitor lives as long as
+  the agent and a transient resumer lives until the reset; neither has a
+  supervisor, and `npm i -g unsnooze` cannot change code a running process has
+  already loaded. A session started before an upgrade therefore kept applying
+  the old rules indefinitely — which is why 1.14.2's resume-lifecycle fix could
+  be installed and still change nothing on a long-lived pane. Both processes now
+  notice that the package changed underneath them, hand off to a replacement on
+  the fresh code, and stand down. Sessions launched under 1.14.2 or earlier need
+  one restart to pick this up; after that, upgrades propagate on their own.
+- **Hand-offs are verified, never assumed.** `spawn` resolves the node binary,
+  which exists regardless of the package, so a tree caught mid-swap returns a
+  healthy-looking pid for a child that is already dead. The hand-off now checks
+  that the entry point exists before starting anything, and that the replacement
+  survived startup before standing down. Either check failing keeps the old
+  process watching — a stale watcher beats no watcher.
+- **A manually run daemon no longer dies on upgrade.** `unsnooze daemon` started
+  from a shell has nothing to restart it, so exiting on version skew ended GUI
+  watching silently. It now detects whether launchd/systemd is actually
+  supervising it: supervised, it exits and returns on fresh code; unsupervised,
+  it warns once and keeps watching. The 15-minute detection interval is
+  unchanged — a tighter loop raises the odds of restarting into a half-installed
+  package.
+- **The daemon PATH self-heal actually heals.** The 1.12 repair regenerated the
+  autostart unit from the PATH of whichever process called it, and the only
+  caller is the daemon itself — whose PATH is the minimal one launchd and
+  systemd provide. It wrote the broken PATH straight back, then, because the
+  check only asked whether a PATH block was *present*, treated the job as done
+  forever. Observed live: a daemon running with `PATH=/usr/bin:/bin:/usr/sbin:/sbin`
+  while tmux sat in `/opt/homebrew/bin`, so every GUI revival failed with ENOENT.
+  The heal now asks the login shell for a usable PATH and rewrites the unit only
+  when the result can actually find the multiplexer *and* differs from what is
+  already there — rewriting reloads the unit, which kills the calling daemon, so
+  a heal that cannot improve anything must do nothing.
+- **`unsnooze doctor` reports a daemon that cannot reach its multiplexer**, and
+  `--fix` repairs it. This was previously invisible, because doctor probes tmux
+  from your shell's PATH rather than the daemon's.
+- **Version stamps in the log.** The monitor and resumer record which build they
+  are running as they start, so a pasted log answers "is this process even on
+  the new code" without further diagnosis.
+- Internal: one shared `pidAlive` now backs the resumer's lock hygiene, the
+  dashboard, and the hand-off. It rejects pid 0, which `kill(0, 0)` reports as
+  alive because that signals the caller's own process group — a lock file
+  holding `0` could otherwise be honored forever. Writing an autostart unit
+  outside the live location no longer activates it: every unit carries the same
+  label, so loading a copy hijacks the real job instead of adding a second one.
+
+## 1.14.2 — 2026-08-06
+
+- **Resume lifecycle:** a limit banner scrolling out of the pane no longer
+  marks a Claude session resumed without a wake. Unsnooze now requires a
+  newer non-error parent-assistant usage record, rechecks that evidence
+  immediately before dispatch, ignores subagent `StopFailure` records, follows
+  the canonical key retained by state dedupe, and never treats a persistently
+  busy pane as proof of completion.
+- **Usage diagnostics:** estimated usage now says that its percentage is
+  unavailable, rather than claiming no stop was observed. Proxy
+  launcher documentation explains that `headroom wrap` bypasses Unsnooze's
+  shell launcher and same-pane monitor while hook detection and enabled daemon
+  file watching remain available.
+
+## 1.14.1 — 2026-08-04
+
+- **Package discovery**: refreshed the npm description and README links, and
+  moved the published package homepage from the legacy Combustor Tech hostname
+  to [unsnooze.dev](https://unsnooze.dev). No runtime behavior changed.
 
 ## 1.14.0 — 2026-07-19
 

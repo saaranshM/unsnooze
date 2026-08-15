@@ -20,6 +20,7 @@ import { spawnResumerIfNeeded } from './spawn.js';
 import { makeLogger } from './logger.js';
 import { addressHash } from './lease.js';
 import { prepareCalibrationSample, applyCalibrationToState } from './usage.js';
+import { claudeRecordEnv } from './sessions.js';
 
 const log = makeLogger('hook');
 
@@ -63,6 +64,13 @@ export async function runHook(rest = []) {
     const raw = await readStdin();
     let payload = {};
     try { payload = JSON.parse(raw); } catch { /* tolerate non-JSON */ }
+    // Claude includes agent_id when a hook fires inside a subagent. The parent
+    // transcript owns revival; recording the child would create a second stop
+    // with no independently resumable pane.
+    if (agent.id === 'claude' && payload.agent_id) {
+      log(`StopFailure: ignoring subagent ${payload.agent_id}; parent session owns resume`);
+      return 0;
+    }
 
     const { muxName, pane, paneOwner } = hookContext(process.env, payload);
     const leaseId = process.env.UNSNOOZE_LEASE_ID || null;
@@ -137,6 +145,7 @@ export async function runHook(rest = []) {
       log(`calibration prepare failed: ${err.message}`);
     }
     // Stop record + calibration sample in ONE locked update (plan §6).
+    const recordEnv = agent.id === 'claude' ? claudeRecordEnv() : null;
     upsertSession({
       sessionId: sessionId || null,
       cwd,
@@ -157,6 +166,7 @@ export async function runHook(rest = []) {
       attempts: 0,
       lastAttemptAt: null,
       lastError: null,
+      ...(recordEnv ? { env: recordEnv } : {}),
       ...(source === 'fallback' ? { probeCount: 0 } : {}),
     }, {
       after: calSample

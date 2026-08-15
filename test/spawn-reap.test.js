@@ -8,12 +8,25 @@ import { spawn } from 'node:child_process';
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-spawn-reap-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
 
-const { stopResumer } = await import('../src/spawn.js');
+const { stopResumer, pidAlive } = await import('../src/spawn.js');
 const { RESUMER_LOCK } = await import('../src/config.js');
 const { reap, isUnsnoozeSessionName, attachHint } = await import('../src/reap.js');
 const { upsertSession, readState, setStatus } = await import('../src/state.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true }));
+
+// One shared pidAlive now backs the resumer's lock hygiene, the dashboard's
+// liveness column, and the version-skew hand-off. Pid 0 is the trap: kill(0, 0)
+// signals our OWN process group and succeeds, so a lock file containing "0"
+// would read as a live holder and be honored forever.
+test('pidAlive rejects 0 and non-pids instead of signalling our own process group', () => {
+  assert.equal(pidAlive(process.pid), true, 'a real live pid is alive');
+  assert.equal(pidAlive(0), false, 'pid 0 is the process group, not a live holder');
+  assert.equal(pidAlive(null), false);
+  assert.equal(pidAlive(undefined), false);
+  assert.equal(pidAlive(NaN), false);
+  assert.equal(pidAlive(999999999), false, 'a dead pid is dead');
+});
 
 test('stopResumer cleans a stale lock (dead pid)', () => {
   writeFileSync(RESUMER_LOCK, '999999999');
@@ -93,4 +106,127 @@ test('reap dry-run kills nothing', async () => {
   assert.ok(result.actions.some(a => a.kind === 'close-pane' || a.kind === 'drop-record'
     || a.kind === 'delete-session') || result.actions.length >= 0);
   assert.ok(readState().sessions[key], 'record must survive dry-run');
+});
+
+test('reap drops a superseded alias without closing its active shared pane', async () => {
+  const oldAt = Date.now() - 140_000;
+  upsertSession({
+    sessionId: 'reap-shared-old', cwd: '/tmp/shared', pane: '%shared',
+    mux: 'tmux', paneOwner: null, muxSession: 'unsnooze-resumed',
+    leaseId: 'shared-lease', agent: 'claude', status: 'cancelled',
+    limitType: '5h', detectedVia: 'hook', detectedAt: oldAt, bannerAt: oldAt,
+    resetAt: Date.now(), resetSource: 'absolute', attempts: 0,
+  });
+  upsertSession({
+    sessionId: 'reap-shared-new', cwd: '/tmp/shared', pane: '%shared',
+    mux: 'tmux', paneOwner: null, muxSession: 'unsnooze-resumed',
+    leaseId: 'shared-lease', agent: 'claude', status: 'resuming',
+    limitType: '5h', detectedVia: 'hook', detectedAt: oldAt + 130_000,
+    bannerAt: oldAt + 130_000, resetAt: Date.now(), resetSource: 'absolute',
+    attempts: 0, resumeEpisodeAt: oldAt + 130_000,
+  });
+  const closed = [];
+  const mux = {
+    paneAlive: async () => true,
+    paneOwnerStamp: async () => 'shared-lease',
+    closePane: async pane => closed.push(pane),
+    available: () => false,
+  };
+  const { actions } = await reap({ yes: true, resolveMux: () => mux });
+
+  assert.deepEqual(closed, []);
+  assert.equal(readState().sessions['reap-shared-old'], undefined);
+  assert.equal(readState().sessions['reap-shared-new'].status, 'resuming');
+  assert.match(actions.find(a => a.key === 'reap-shared-old').reason, /shared with active/);
+});
+
+test('reap rechecks for a shared live owner after an awaited pane probe', async () => {
+  const oldAt = Date.now() - 300_000;
+  upsertSession({
+    sessionId: 'reap-race-old', cwd: '/tmp/shared-race', pane: '%shared-race',
+    mux: 'tmux', paneOwner: null, muxSession: 'unsnooze-resumed',
+    leaseId: 'shared-race-lease', agent: 'claude', status: 'cancelled',
+    limitType: '5h', detectedVia: 'hook', detectedAt: oldAt, bannerAt: oldAt,
+    resetAt: Date.now(), resetSource: 'absolute', attempts: 0,
+  });
+
+  let releaseProbe;
+  let probeStarted;
+  const started = new Promise(resolve => { probeStarted = resolve; });
+  const blocked = new Promise(resolve => { releaseProbe = resolve; });
+  const closed = [];
+  const mux = {
+    paneAlive: async () => {
+      probeStarted();
+      await blocked;
+      return true;
+    },
+    paneOwnerStamp: async () => 'shared-race-lease',
+    closePane: async pane => closed.push(pane),
+    available: () => false,
+  };
+
+  const inFlight = reap({ yes: true, resolveMux: () => mux });
+  await started;
+  upsertSession({
+    sessionId: 'reap-race-new', cwd: '/tmp/shared-race', pane: '%shared-race',
+    mux: 'tmux', paneOwner: null, muxSession: 'unsnooze-resumed',
+    leaseId: 'shared-race-lease', agent: 'claude', status: 'resuming',
+    limitType: '5h', detectedVia: 'hook', detectedAt: Date.now(), bannerAt: Date.now(),
+    resetAt: Date.now(), resetSource: 'absolute', attempts: 0,
+    resumeEpisodeAt: Date.now(),
+  });
+  releaseProbe();
+
+  const { actions } = await inFlight;
+  assert.deepEqual(closed, []);
+  assert.equal(readState().sessions['reap-race-old'], undefined);
+  assert.equal(readState().sessions['reap-race-new'].status, 'resuming');
+  assert.match(actions.find(a => a.key === 'reap-race-old').reason, /shared with active/);
+});
+
+test('a detection after close submission cannot retain the closing pane generation', async () => {
+  const oldAt = Date.now() - 300_000;
+  upsertSession({
+    sessionId: 'reap-close-old', cwd: '/tmp/close-race', pane: '%close-race',
+    mux: 'tmux', paneOwner: null, muxSession: 'unsnooze-resumed',
+    leaseId: 'close-race-lease', agent: 'claude', status: 'cancelled',
+    limitType: '5h', detectedVia: 'hook', detectedAt: oldAt, bannerAt: oldAt,
+    resetAt: Date.now(), resetSource: 'absolute', attempts: 0,
+  });
+
+  let releaseClose;
+  let closeStarted;
+  const started = new Promise(resolve => { closeStarted = resolve; });
+  const blocked = new Promise(resolve => { releaseClose = resolve; });
+  const closed = [];
+  const mux = {
+    paneAlive: async () => true,
+    paneOwnerStamp: async () => 'close-race-lease',
+    closePane: async pane => {
+      closeStarted();
+      await blocked;
+      closed.push(pane);
+    },
+    available: () => false,
+  };
+
+  const inFlight = reap({ yes: true, resolveMux: () => mux });
+  await started;
+  upsertSession({
+    sessionId: 'reap-close-new', cwd: '/tmp/close-race', pane: '%close-race',
+    mux: 'tmux', paneOwner: null, muxSession: 'unsnooze-resumed',
+    leaseId: 'close-race-lease', agent: 'claude', status: 'resuming',
+    limitType: '5h', detectedVia: 'hook', detectedAt: Date.now(), bannerAt: Date.now(),
+    resetAt: Date.now(), resetSource: 'absolute', attempts: 0,
+    resumeEpisodeAt: Date.now(),
+  });
+  const raced = readState().sessions['reap-close-new'];
+  assert.equal(raced.status, 'stopped');
+  assert.equal(raced.pane, null);
+  assert.equal(raced.leaseId, null);
+  releaseClose();
+  await inFlight;
+  assert.deepEqual(closed, ['%close-race']);
+  assert.equal(readState().sessions['reap-close-new'].pane, null);
 });

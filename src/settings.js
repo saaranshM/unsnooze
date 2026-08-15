@@ -8,7 +8,7 @@
 
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { STATE_DIR } from './config.js';
+import { MUX_NAMES, STATE_DIR } from './config.js';
 
 export const CONFIG_FILE = () => join(process.env.UNSNOOZE_STATE_DIR || STATE_DIR, 'config.json');
 
@@ -92,7 +92,7 @@ const KNOWN_KEYS = Object.keys(ENV_NAMES);
 
 // String settings restricted to a fixed set of values.
 const ENUMS = {
-  multiplexer: ['auto', 'tmux', 'zellij', 'herdr'],
+  multiplexer: ['auto', ...MUX_NAMES],
   workspaceGuard: ['off', 'inform', 'pause'],
   contextGuard: ['off', 'inform', 'pause'],
   notifyChannel: ['auto', 'native', 'osc', 'bell'],

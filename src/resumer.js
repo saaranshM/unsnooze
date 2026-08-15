@@ -21,12 +21,13 @@ import {
   readState, updateState, setStatus, dueSessions, activeStopped,
   prune, sweepRecords, markStaleAbandoned,
 } from './state.js';
-import { approxTokens } from './sessions.js';
+import { approxTokens, hasClaudeParentUsageAfter } from './sessions.js';
 import { latestRateLimitFromTranscript } from './watchers/claude.js';
 import { getConfig, resolveResumeMessage } from './settings.js';
 import { workspaceFingerprint, workspaceChanged, describeChange } from './workspace.js';
 import { notify } from './notify.js';
-import { UNSNOOZE_BIN } from './spawn.js';
+import { UNSNOOZE_BIN, spawnDetached, pidAlive } from './spawn.js';
+import { restartOnVersionSkew, hasVersionSkew, PKG_VERSION } from './update-check.js';
 import { makeLogger } from './logger.js';
 import { createLeaseId, leaseMatches, paneOwnedByRecord } from './lease.js';
 import { autoReapIfEnabled, attachHint } from './reap.js';
@@ -36,10 +37,6 @@ const log = makeLogger('resumer');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const MAX_VERIFY_RETRIES = 3;
 const ctxOf = rec => ({ mux: rec.mux, pane: rec.pane, paneOwner: rec.paneOwner });
-
-function pidAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
 
 // Is the lock-holder pid actually an unsnooze resumer? Pids get recycled: a
 // lock naming a live-but-unrelated program would otherwise be honored forever
@@ -126,6 +123,125 @@ export function resolveRecordMux(rec) {
   return getMultiplexer(rec.mux, { owner: rec.paneOwner });
 }
 
+const stopEpisodeAt = rec => rec?.bannerAt ?? rec?.detectedAt;
+
+// Newer non-error parent-context Claude usage proves that a user/provider retry
+// already made progress after this stop. Banner absence alone does not.
+function claudeProgressedAfterStop(rec, agent) {
+  const cutoff = stopEpisodeAt(rec);
+  return agent.id === 'claude' && hasClaudeParentUsageAfter(rec, cutoff);
+}
+
+// Compare-and-set for one stop episode, with an applied result for callers
+// that must suppress stale logs, notifications, or follow-up actions.
+function transitionStopEpisode(rec, status, extra = {}, {
+  expect = ['stopped', 'resuming'],
+} = {}) {
+  const cutoff = stopEpisodeAt(rec);
+  let applied = false;
+  updateState(state => {
+    const current = state.sessions[rec.key];
+    if (!current || !expect.includes(current.status)
+      || stopEpisodeAt(current) !== cutoff) return state;
+    Object.assign(current, extra, { status });
+    if (status !== 'resuming') current.resumeEpisodeAt = null;
+    applied = true;
+    return state;
+  });
+  return applied;
+}
+
+// Reconcile durable progress without letting a stale snapshot clear a newer
+// stop episode. A false return means no progress was observed; true means this
+// dispatch must stop, whether the transition applied or the snapshot went stale.
+function finishIfClaudeProgressed(rec, agent) {
+  if (!claudeProgressedAfterStop(rec, agent)) return false;
+  const cutoff = stopEpisodeAt(rec);
+  let applied = false;
+  updateState(state => {
+    const current = state.sessions[rec.key];
+    if (current?.status === 'stopped'
+      && stopEpisodeAt(current) === cutoff) {
+      Object.assign(current, {
+        status: 'resumed', lastAttemptAt: Date.now(), bannerCleared: true,
+        lastError: null, verifyRetries: 0, resumeEpisodeAt: null,
+      });
+      applied = true;
+    }
+    return state;
+  });
+  log(applied
+    ? `${rec.key}: newer non-error parent-context usage recorded — no wake sent`
+    : `${rec.key}: stop episode changed during progress check — stale dispatch skipped`);
+  return true;
+}
+
+function samePaneTarget(a, b) {
+  return !!(a?.pane && b?.pane
+    && a.mux === b.mux && a.paneOwner === b.paneOwner && a.pane === b.pane
+    && a.agent === b.agent && a.cwd === b.cwd
+    // A different non-null lease is a different pane generation. Missing
+    // legacy leases only coalesce with each other; they cannot overrule a
+    // record whose current generation is demonstrable.
+    && (a.leaseId ?? null) === (b.leaseId ?? null));
+}
+
+function newerStop(a, b) {
+  const aCutoff = stopEpisodeAt(a) ?? 0;
+  const bCutoff = stopEpisodeAt(b) ?? 0;
+  if (aCutoff !== bCutoff) return aCutoff > bCutoff ? a : b;
+  if ((a.detectedAt ?? 0) !== (b.detectedAt ?? 0)) {
+    return (a.detectedAt ?? 0) > (b.detectedAt ?? 0) ? a : b;
+  }
+  if (!!a.sessionId !== !!b.sessionId) return a.sessionId ? a : b;
+  return String(a.key).localeCompare(String(b.key)) >= 0 ? a : b;
+}
+
+function paneStopOwner(rec, state = readState()) {
+  if (!rec?.pane) return rec;
+  const contenders = Object.values(state.sessions).filter(s =>
+    ['stopped', 'resuming'].includes(s.status) && samePaneTarget(s, rec));
+  return contenders.reduce((latest, candidate) => newerStop(latest, candidate), rec);
+}
+
+// Atomically own this exact stop before the irreversible pane/window action.
+// One live pane can accept one wake. Legacy/subagent detections outside the
+// short ingest-dedupe window are therefore collapsed here: the newest active
+// stop owns the target and older active records become explicit history.
+function claimStopForResume(rec) {
+  const cutoff = stopEpisodeAt(rec);
+  let claimed = false;
+  updateState(state => {
+    const current = state.sessions[rec.key];
+    if (current?.status !== 'stopped'
+      || stopEpisodeAt(current) !== cutoff) return state;
+
+    const contenders = current.pane
+      ? Object.values(state.sessions).filter(s => ['stopped', 'resuming'].includes(s.status)
+        && samePaneTarget(s, current))
+      : [current];
+    const owner = paneStopOwner(current, state);
+    const now = Date.now();
+    for (const candidate of contenders) {
+      if (candidate.key === owner.key) continue;
+      Object.assign(candidate, {
+        status: 'cancelled', lastAttemptAt: now, verifyRetries: 0,
+        resumeEpisodeAt: null,
+        lastError: `superseded by newer stop ${owner.key} on the same pane`,
+      });
+    }
+    if (owner.key === current.key && current.status === 'stopped') {
+      Object.assign(current, {
+        status: 'resuming', lastAttemptAt: now, lastError: null, verifyRetries: 0,
+        resumeEpisodeAt: cutoff,
+      });
+      claimed = true;
+    }
+    return state;
+  });
+  return claimed;
+}
+
 // Join the session the pane lived in only if it is still alive; otherwise the
 // daemon gets its own session. It must never CREATE the launcher's base name.
 export async function reviveTarget(mux, rec) {
@@ -174,7 +290,9 @@ export async function probeFallback(rec, {
   let bannerAt = rec.bannerAt ?? null;
 
   // Prefer a fresh transcript entry when available (claude).
-  const fromTx = latestRateLimitFromTranscript(rec.cwd, rec.sessionId, { now });
+  const fromTx = latestRateLimitFromTranscript(rec.cwd, rec.sessionId, {
+    now, claudeDir: rec.env?.CLAUDE_CONFIG_DIR,
+  });
   if (fromTx) {
     stillLimited = true;
     resetLine = fromTx.resetLine;
@@ -211,11 +329,12 @@ export async function probeFallback(rec, {
       bannerAt,
     });
     if (source !== 'fallback') {
-      setStatus(key, 'stopped', {
+      const applied = transitionStopEpisode(rec, 'stopped', {
         resetAt: at, resetSource: source, bannerAt,
         lastError: 'limit still active (probe upgraded estimate)',
         probeCount: 0,
-      });
+      }, { expect: ['stopped'] });
+      if (!applied) return 'stale';
       log(`${key}: probe upgraded fallback→${source}, rescheduled to ${new Date(at).toISOString()}`);
       return 'probe';
     }
@@ -232,12 +351,13 @@ function rescheduleProbe(rec, now = Date.now()) {
   // Past the hard ceiling: schedule a final attempt at the ceiling (or now
   // if already past) and stop tagging as endless probes — reopen path runs.
   if (now >= ceiling) {
-    setStatus(key, 'stopped', {
+    const applied = transitionStopEpisode(rec, 'stopped', {
       resetAt: now,
       resetSource: 'fallback',
       lastError: 'probe ceiling reached — attempting resume',
       probeCount: probeCount + 1,
-    });
+    }, { expect: ['stopped'] });
+    if (!applied) return 'stale';
     log(`${key}: probe ceiling reached — attempting resume`);
     return null;   // proceed with dispatch
   }
@@ -246,12 +366,13 @@ function rescheduleProbe(rec, now = Date.now()) {
   });
   let nextAt = now + delay + RESET_MARGIN_MS;
   if (nextAt > ceiling) nextAt = ceiling;
-  setStatus(key, 'stopped', {
+  const applied = transitionStopEpisode(rec, 'stopped', {
     resetAt: nextAt,
     resetSource: 'fallback',
     lastError: 'limit still active — probing',
     probeCount: probeCount + 1,
-  });
+  }, { expect: ['stopped'] });
+  if (!applied) return 'stale';
   log(`${key}: probe #${probeCount + 1} rescheduled to ${new Date(nextAt).toISOString()}`);
   return 'probe';
 }
@@ -339,6 +460,15 @@ export async function planFor(rec, {
       return { ...base, action: 'verifying' };
     }
     gates.push(`status ${rec.status} — nothing to dispatch`);
+    return { ...base, action: 'none' };
+  }
+  if (claudeProgressedAfterStop(rec, agent)) {
+    gates.push('newer non-error parent-context usage shows that the session already resumed');
+    return { ...base, action: 'none' };
+  }
+  const paneOwner = paneStopOwner(rec);
+  if (paneOwner?.key !== rec.key) {
+    gates.push(`newer active stop ${paneOwner.key} owns this live pane target`);
     return { ...base, action: 'none' };
   }
   // Gate order mirrors runResumer exactly: give-up only ever happens to
@@ -429,7 +559,8 @@ export async function planFor(rec, {
   };
 }
 
-// Ordered safety decision. Returns: busy | retry | progress | held | injected | reopen | probe.
+// Ordered safety decision. Returns: already-resumed | busy | retry | progress |
+// held | injected | reopen | probe.
 export async function dispatchOne(rec, {
   mux = resolveRecordMux(rec), resolveMux = null,
   resumeMessage, selfCmd = selfCommand(), fingerprint = workspaceFingerprint,
@@ -438,6 +569,9 @@ export async function dispatchOne(rec, {
   resolveMux ||= () => mux;
   const key = rec.key;
   const agent = getAgent(rec.agent);
+  // Cheap early reconciliation; this is repeated after asynchronous pane or
+  // multiplexer inspection, immediately before any keystroke/window launch.
+  if (finishIfClaudeProgressed(rec, agent)) return 'already-resumed';
   // Wake-message precedence: per-session (`unsnooze message <id> "..."`) →
   // explicit option → per-agent (`resumeMessages.<id>`) → global. Applies to
   // both the live-pane sendText and the argv reopen path.
@@ -445,11 +579,17 @@ export async function dispatchOne(rec, {
 
   // §4: fallback records probe cheaply before a real resume attempt.
   if (rec.resetSource === 'fallback' && !rec.manual) {
+    const episode = stopEpisodeAt(rec);
     const probed = await probeFallback(rec, { mux });
-    if (probed === 'probe') return 'probe';
+    if (probed != null) return probed;
     // null → banner gone or ceiling hit — fall through to normal dispatch.
-    // Re-read record in case probeFallback mutated it.
-    rec = readState().sessions[key] || rec;
+    // Re-read only this episode in case the ceiling probe updated its fields.
+    // A newer stop may not inherit the old episode's due decision.
+    const current = readState().sessions[key];
+    if (!current || current.status !== 'stopped' || stopEpisodeAt(current) !== episode) {
+      return 'stale';
+    }
+    rec = current;
   }
 
   // Stale-workspace guard: another session (or a human) may have moved the
@@ -458,7 +598,9 @@ export async function dispatchOne(rec, {
   // dispatch owns the side effects.
   const ws = evaluateWorkspaceGuard(rec, resumeMessage, { fingerprint });
   if (ws.hold) {
-    setStatus(key, 'stopped', { workspaceHold: true, holdReason: ws.hold.reason });
+    if (!transitionStopEpisode(rec, 'stopped', {
+      workspaceHold: true, holdReason: ws.hold.reason,
+    }, { expect: ['stopped'] })) return 'stale';
     notifier('unsnooze: session held', `${rec.cwd}: workspace changed while stopped (${ws.hold.desc}) — run: unsnooze resume-now`, { context: ctxOf(rec) });
     log(`${key}: workspace changed (${ws.hold.desc}) — held (workspaceGuard=pause)`);
     return 'held';
@@ -473,7 +615,9 @@ export async function dispatchOne(rec, {
   // tick. Manual resumes proceed.
   const ctx = evaluateContextGuard(rec, agent, { contextTokens });
   if (ctx.hold) {
-    setStatus(key, 'stopped', { workspaceHold: true, holdReason: ctx.hold.reason });
+    if (!transitionStopEpisode(rec, 'stopped', {
+      workspaceHold: true, holdReason: ctx.hold.reason,
+    }, { expect: ['stopped'] })) return 'stale';
     notifier('unsnooze: session held', `${rec.cwd}: waking would re-read ${ctx.hold.size} tokens of context at full (uncached) price — run: unsnooze resume-now`, { context: ctxOf(rec) });
     log(`${key}: context ${ctx.hold.size} tokens ≥ threshold — held (contextGuard=pause)`);
     return 'held';
@@ -491,23 +635,37 @@ export async function dispatchOne(rec, {
   const a = await assessPane(rec, agent, { mux, matchesLease });
   if (a.alive) {
     if (a.captureError) {
-      setStatus(key, 'stopped', { lastError: `capture: ${a.captureError}` });
+      if (!transitionStopEpisode(rec, 'stopped', {
+        lastError: `capture: ${a.captureError}`,
+      }, { expect: ['stopped'] })) return 'stale';
       return 'retry';
     }
     if (a.busy) return 'busy';
     if (a.menu) {
+      if (finishIfClaudeProgressed(rec, agent)) return 'already-resumed';
       if (!a.authorized) return reopenGuarded();
       if (!getConfig('menuAutoAnswer')) return 'held';
+      // Menu navigation is an irreversible pane action too. Claim the exact
+      // stop after assessment so a refreshed episode cannot receive stale
+      // Down/Enter keystrokes.
+      if (!claimStopForResume(rec)) return 'stale';
       try {
         if (await driveMenu(mux, rec.pane, agent, a.text)) return 'progress';
-        setStatus(key, 'stopped', { lastError: 'menu drive: wait option unavailable' });
+        transitionStopEpisode(rec, 'stopped', {
+          lastError: 'menu drive: wait option unavailable',
+        }, { expect: ['resuming'] });
       } catch (err) {
-        setStatus(key, 'stopped', { lastError: `menu drive: ${err.message}` });
+        transitionStopEpisode(rec, 'stopped', {
+          lastError: `menu drive: ${err.message}`,
+        }, { expect: ['resuming'] });
       }
       return 'retry';
     }
     if (a.authorized) {
-      setStatus(key, 'resuming', { lastAttemptAt: Date.now(), lastError: null, verifyRetries: 0 });
+      // assessPane is asynchronous. Close the final human/provider-resume race
+      // after assessment and immediately before the keystroke.
+      if (finishIfClaudeProgressed(rec, agent)) return 'already-resumed';
+      if (!claimStopForResume(rec)) return 'stale';
       await mux.sendText(rec.pane, resumeMessage);
       log(`${key}: sent continue via ${rec.mux} ${rec.paneOwner ?? '-'}:${rec.pane}`);
       notifyContext();
@@ -523,6 +681,7 @@ export async function dispatchOne(rec, {
 // (argv or typed) — not on ready-timeouts or a still-active limit banner.
 async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onDelivered = () => {} }) {
   const key = rec.key;
+  const cutoff = rec.bannerAt ?? rec.detectedAt;
   const resume = agent.resumeArgs(rec.sessionId, resumeMessage);
   const leaseId = createLeaseId();
   const target = await reviveTarget(mux, rec);
@@ -530,7 +689,10 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
     file: selfCmd[0], args: [...selfCmd.slice(1), '_run', agent.id, ...resume.args],
     env: reopenEnv(rec, leaseId, target),
   };
-  setStatus(key, 'resuming', { lastAttemptAt: Date.now(), verifyRetries: 0 });
+  // reviveTarget can await a multiplexer query. Recheck after it and claim the
+  // exact episode immediately before opening a new pane.
+  if (finishIfClaudeProgressed(rec, agent)) return 'already-resumed';
+  if (!claimStopForResume(rec)) return 'stale';
   let address;
   try {
     address = await mux.newWindow(target, rec.cwd || homedir(), launchSpec);
@@ -542,8 +704,8 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
     setStatus(key, 'stopped', {
       attempts: (rec.attempts || 0) + 1,
       lastError: `new-window: ${err.message}`,
-      verifyRetries: 0,
-    });
+      verifyRetries: 0, resumeEpisodeAt: null,
+    }, { expect: ['resuming'], expectCutoff: cutoff });
     return 'retry';
   }
   // Stamp the fresh pane as ours (best-effort; tmux only) so later close /
@@ -555,7 +717,10 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
   // name the session the pane actually lives in.
   updateState(state => {
     const s = state.sessions[key];
-    if (s) Object.assign(s, address, { leaseId, muxSession: target });
+    if (s?.status === 'resuming' && (s.bannerAt ?? s.detectedAt) === cutoff) {
+      Object.assign(s, address, { leaseId, muxSession: target });
+    }
+    return state;
   });
   const rebound = { ...rec, ...address, leaseId, muxSession: target };
   mux = resolveMux(rebound);
@@ -579,8 +744,8 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
   setStatus(key, 'stopped', {
     attempts: (rec.attempts || 0) + 1,
     lastError: 'ready timeout',
-    verifyRetries: 0,
-  });
+    verifyRetries: 0, resumeEpisodeAt: null,
+  }, { expect: ['resuming'], expectCutoff: cutoff });
   return 'retry';
 }
 
@@ -611,25 +776,42 @@ export async function awaitReadyAndSend(mux, pane, agent, message, {
 
 function recordVerifyRetry(rec, lastError) {
   const verifyRetries = (rec.verifyRetries || 0) + 1;
+  let applied;
   if (verifyRetries >= MAX_VERIFY_RETRIES) {
     const attempts = (rec.attempts || 0) + 1;
-    setStatus(rec.key, 'stopped', {
+    applied = transitionStopEpisode(rec, 'stopped', {
       attempts,
       // Same backoff (and same manual exemption) as routed retries.
       resetAt: rec.manual ? Date.now() : Date.now() + retryBackoffMs(attempts),
       lastError,
-      verifyRetries: 0,
-    });
+      verifyRetries: 0, resumeEpisodeAt: null,
+    }, { expect: ['resuming'] });
   } else {
-    setStatus(rec.key, 'resuming', { lastError, verifyRetries });
+    applied = transitionStopEpisode(rec, 'resuming', { lastError, verifyRetries },
+      { expect: ['resuming'] });
   }
-  return 'retry';
+  if (!applied) releaseSupersededResume(rec.key);
+  return applied ? 'retry' : 'stale';
+}
+
+function releaseSupersededResume(key) {
+  const current = readState().sessions[key];
+  if (!current || current.status !== 'resuming' || current.resumeEpisodeAt == null
+    || stopEpisodeAt(current) === current.resumeEpisodeAt) return false;
+  return transitionStopEpisode(current, 'stopped', {
+    lastError: 'newer limit detected during resume', verifyRetries: 0,
+    resumeEpisodeAt: null,
+  }, { expect: ['resuming'] });
 }
 
 // Post-dispatch verification: did the limit banner come back?
 export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
   const rec = readState().sessions[key];
   if (!rec || rec.status !== 'resuming') return;
+  // A detection that lands after the action claim deliberately preserves the
+  // in-flight status, but it advances bannerAt/detectedAt. Do not verify that
+  // newer episode using an older pane action.
+  if (releaseSupersededResume(key)) return 'stale';
   const agent = getAgent(rec.agent);
   if (!rec.pane) {
     return recordVerifyRetry(rec, 'verify: pane unavailable');
@@ -647,7 +829,9 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
     // offsets anchor to the banner's own time.
     let resetLine = d.hit ? d.resetLine : null;
     let bannerAt = null;
-    const fromTx = latestRateLimitFromTranscript(rec.cwd, rec.sessionId);
+    const fromTx = latestRateLimitFromTranscript(rec.cwd, rec.sessionId, {
+      claudeDir: rec.env?.CLAUDE_CONFIG_DIR,
+    });
     if (fromTx) {
       resetLine = fromTx.resetLine ?? resetLine;
       bannerAt = fromTx.timestampMs;
@@ -657,16 +841,27 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
       fallbackMs: PROBE_INTERVAL_MS,
       bannerAt,
     });
-    setStatus(key, 'stopped', {
+    const applied = transitionStopEpisode(rec, 'stopped', {
       attempts: (rec.attempts || 0) + 1, resetAt: at, resetSource: source,
       bannerAt: bannerAt ?? rec.bannerAt ?? null,
       lastError: 'limit still active at resume time', verifyRetries: 0,
+      resumeEpisodeAt: null,
       ...(source === 'fallback' ? { probeCount: (rec.probeCount || 0) + 1 } : { probeCount: 0 }),
-    });
+    }, { expect: ['resuming'] });
+    if (!applied) {
+      releaseSupersededResume(key);
+      return 'stale';
+    }
     log(`${key}: limit still active, rescheduled to ${new Date(at).toISOString()} (${source})`);
     return;
   }
-  setStatus(key, 'resumed', { lastError: null, verifyRetries: 0 });
+  if (!transitionStopEpisode(rec, 'resumed', {
+    lastError: null, verifyRetries: 0, resumeEpisodeAt: null,
+    bannerCleared: true,
+  }, { expect: ['resuming'] })) {
+    releaseSupersededResume(key);
+    return 'stale';
+  }
   const session = rec.muxSession || RESUME_SESSION_NAME;
   const hint = attachHint(rec.mux, session);
   log(`${key}: verified resumed in ${session}${hint ? ` — ${hint}` : ''}`);
@@ -681,30 +876,50 @@ export function routeDispatchOutcome(result, rec, deferCounts, { maxBusyDefers =
     const n = (deferCounts.get(rec.key) || 0) + 1;
     deferCounts.set(rec.key, n);
     if (n > maxBusyDefers) {
-      setStatus(rec.key, 'resumed', { lastError: null, verifyRetries: 0 });
+      // Busy is evidence that typing would be unsafe, not evidence that the
+      // stopped episode completed. Drop the hot-loop delay after the cap but
+      // leave the record stopped for the next normal poll.
       return { verify: false, waitBusy: false };
     }
     return { verify: false, waitBusy: true };
   }
+  deferCounts.delete(rec.key);
   if (result === 'retry') {
     const attempts = (rec.attempts || 0) + 1;
-    setStatus(rec.key, 'stopped', {
-      attempts,
-      // Back off before the next attempt — a due record retried on every poll
-      // tick exhausts MAX_RESUME_ATTEMPTS in minutes. Manual records are
-      // exempt: `resume-now` promised an immediate wake, so a transient error
-      // must not silently defer it.
-      resetAt: rec.manual ? now : now + retryBackoffMs(attempts),
-      lastError: readState().sessions[rec.key]?.lastError,
-      verifyRetries: 0,
+    const episode = stopEpisodeAt(rec);
+    updateState(state => {
+      const current = state.sessions[rec.key];
+      if (!current || !['stopped', 'resuming'].includes(current.status)) return state;
+      if (stopEpisodeAt(current) !== episode) {
+        // A fresh detection superseded this failed attempt. If ingest kept the
+        // action marked in-flight, release it without charging the new stop.
+        if (current.status === 'resuming') {
+          Object.assign(current, { status: 'stopped', resumeEpisodeAt: null, verifyRetries: 0 });
+        }
+        return state;
+      }
+      Object.assign(current, {
+        status: 'stopped', attempts,
+        // Back off before the next attempt — a due record retried on every poll
+        // tick exhausts MAX_RESUME_ATTEMPTS in minutes. Manual records are
+        // exempt: `resume-now` promised an immediate wake, so a transient error
+        // must not silently defer it.
+        resetAt: rec.manual ? now : now + retryBackoffMs(attempts),
+        lastError: current.lastError, verifyRetries: 0, resumeEpisodeAt: null,
+      });
+      return state;
     });
     return { verify: false, waitBusy: false };
   }
   if (result === 'progress') {
-    setStatus(rec.key, 'stopped', { lastError: null, verifyRetries: 0 });
+    setStatus(rec.key, 'stopped', {
+      lastError: null, verifyRetries: 0, resumeEpisodeAt: null,
+    }, { expect: ['resuming'] });
     return { verify: false, waitBusy: false };
   }
-  if (result === 'held' || result === 'probe') return { verify: false, waitBusy: false };
+  if (result === 'already-resumed' || result === 'stale' || result === 'held' || result === 'probe') {
+    return { verify: false, waitBusy: false };
+  }
   return { verify: result === 'injected' || result === 'reopen', waitBusy: false };
 }
 
@@ -714,6 +929,7 @@ export function routeDispatchOutcome(result, rec, deferCounts, { maxBusyDefers =
 export async function runResumer({
   resolveMux = resolveRecordMux, pollInterval = POLL_INTERVAL_MS,
   persistent = false, watcher = null, signal = null, queueMux = null,
+  spawner = spawnDetached, versionSkewed = hasVersionSkew, handoffBin = UNSNOOZE_BIN,
 } = {}) {
   // A transient hook-spawned resumer may hold the lock right now; a daemon
   // outlives it, so wait for the lock instead of dying. The watcher MUST keep
@@ -733,12 +949,43 @@ export async function runResumer({
     await sleep(pollInterval);
   }
   updateState(state => { state.resumerPid = process.pid; });
-  log(`resumer started (pid ${process.pid}${persistent ? ', persistent' : ''})`);
+  // Stamp the build — a transient resumer waits out the whole reset and can
+  // easily be older than the package on disk. See the monitor's start line.
+  log(`resumer started (pid ${process.pid}${persistent ? ', persistent' : ''}, unsnooze ${PKG_VERSION})`);
   const deferCounts = new Map();
 
   try {
     for (;;) {
       if (signal?.aborted) { log('shutdown requested — resumer exiting'); return 0; }
+
+      // Version-skew hand-off. A transient resumer is spawned at the stop and
+      // waits out the whole reset — hours — so an `npm i -g` landing mid-wait
+      // leaves the process that SENDS THE WAKE running deleted code. Nothing
+      // supervises it, so it replaces itself. The daemon is exempt: launchd/
+      // systemd own its restart and bin/unsnooze.js already aborts it on skew;
+      // forking a rival from under a supervisor would just fight the unit.
+      //
+      // Release the singleton BEFORE the replacement starts. acquireSingleton
+      // honors a live holder, so a child that starts while we still hold the
+      // lock exits on sight and we would end up with no resumer at all.
+      if (!persistent && versionSkewed()) {
+        const handed = await restartOnVersionSkew({
+          args: ['_resumer'], spawner, skewed: () => true, log, binPath: handoffBin,
+          // Released only once the hand-off is actually going ahead — never
+          // for one the pre-flight already ruled out.
+          beforeSpawn: () => {
+            releaseSingleton();
+            updateState(state => { if (state.resumerPid === process.pid) state.resumerPid = null; });
+          },
+        });
+        if (handed) return 0;
+        // Hand-off refused or failed: take the lock back rather than keep
+        // resuming unlocked, where a second resumer could dispatch the same
+        // record. Idempotent when beforeSpawn never ran — we still hold it.
+        acquireSingleton();
+        updateState(state => { state.resumerPid = process.pid; });
+      }
+
       await tickWatcher();
 
       // Pre-wall usage warnings (1.13) — after watcher so samples are fresh.
@@ -758,6 +1005,12 @@ export async function runResumer({
         log(`cleanup tick failed: ${err.message}`);
       }
 
+      // Reconcile manual/provider retries before waiting/attempt-cap decisions.
+      // dispatchOne repeats this immediately before acting to close the race.
+      for (const rec of activeStopped()) {
+        finishIfClaudeProgressed(rec, getAgent(rec.agent));
+      }
+
       const stopped = activeStopped();
       const resuming = Object.values(readState().sessions).filter(s => s.status === 'resuming');
       // Additive: a pending/launching prompt-queue entry keeps a transient
@@ -774,7 +1027,11 @@ export async function runResumer({
       // Anything over the attempts cap is dead — mark failed so we can exit.
       for (const s of dueForDispatch()) {
         if ((s.attempts || 0) >= MAX_RESUME_ATTEMPTS) {
-          setStatus(s.key, 'failed', { lastError: 'max resume attempts exceeded', verifyRetries: 0 });
+          const applied = transitionStopEpisode(s, 'failed', {
+            lastError: 'max resume attempts exceeded', verifyRetries: 0,
+            resumeEpisodeAt: null,
+          }, { expect: ['stopped'] });
+          if (!applied) continue;
           log(`${s.key}: giving up after ${s.attempts} attempts`);
           notify('unsnooze gave up ⚠️', `${s.cwd}: ${s.attempts} resume attempts failed — check \`unsnooze status\``, { context: ctxOf(s), priority: 4 });
         }

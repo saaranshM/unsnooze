@@ -200,13 +200,13 @@ export function ladderUsage({ exactPct = null, used = null, ceiling = null, stop
 }
 
 export function fmtUsageProvenance(ladder) {
-  if (!ladder) return '(estimated — calibrating, needs one observed limit stop)';
+  if (!ladder) return '(estimated — percentage unavailable)';
   if (ladder.tier === 'exact') return '(exact)';
   if (ladder.tier === 'calibrated') {
     const n = ladder.stopCount || 0;
     return `(calibrated from ${n} stop${n === 1 ? '' : 's'})`;
   }
-  return '(estimated — calibrating, needs one observed limit stop)';
+  return '(estimated — percentage unavailable)';
 }
 
 export function parseUsageWarnAt(raw) {
