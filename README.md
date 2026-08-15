@@ -162,6 +162,45 @@ explicit setup is:
 headroom install apply --scope provider --providers manual --target claude --target codex
 ```
 
+## Claude Design
+
+Claude Design shares your usual 5-hour and weekly limits with chat, Cowork and
+Claude Code — so a long design run stops the same way everything else does, and
+unsnooze resumes it the same way. What it needs first is a terminal to run in.
+
+Claude Design has three surfaces. The canvas at `claude.ai/design` and the
+Claude Desktop sidebar are web apps. The third is an official MCP server that
+Claude Code drives from your terminal, and that is the one unsnooze supports:
+
+```sh
+unsnooze design setup     # registers the claude-design MCP server
+# then, inside Claude Code:
+/design-login
+unsnooze design           # confirms it is registered and signed in
+```
+
+For long design runs, give the session room to compact rather than stall:
+
+```sh
+unsnooze config set launchExtraArgs.claude "--autocompact 400000"
+```
+
+**unsnooze does not automate the web canvas, and will not.** Anthropic's
+Consumer Terms bar accessing Claude "through automated or non-human means,
+whether through a bot, script, or otherwise", and accounts have been terminated
+for it. Claude Code is the documented exemption — which is exactly what
+unsnooze drives. A browser-driving "Design adapter" is not a missing feature
+here; it is one this project declines.
+
+Two things worth knowing:
+
+- A signed-out `/design-login` is **not** a usage limit. Waiting will never
+  clear it, so unsnooze reports it separately instead of letting it look like a
+  stop that will resolve itself.
+- Design used to have its own weekly allowance. It does not now — everything
+  draws from one shared pool, which is why `unsnooze usage` already accounts
+  for design work without knowing it is design work.
+
 ## GUI surfaces (VS Code extension, desktop apps)
 
 Terminal sessions are watched through the shell wrapper + tmux, Zellij, or herdr. Sessions in
@@ -509,7 +548,7 @@ password hosts on Windows; a plain `ssh <host>` prompt works with native
 
 | key | default | meaning |
 |---|---|---|
-| `multiplexer` | `auto` | Backend to use: `auto`, `tmux`, `zellij`, `herdr`, or `cmux`. `auto` prefers the current multiplexer (tmux/zellij ambient env, then `CMUX_SOCKET_PATH`); with no ambient env it falls back to whichever of tmux/zellij is installed, tmux as the tie-breaker — cmux is only selected via its ambient env or an explicit setting, never by this installed-backend fallback, since it has no attach-from-outside path to wrap into. cmux support covers resume-in-place (detect, capture, send); it has no joinable named-session model, so idle-session reaping (`unsnooze reap`) does not cover cmux panes, and no attach hint is shown for cmux sessions. |
+| `multiplexer` | `auto` | Backend to use: `auto`, `tmux`, `zellij`, `herdr`, `cmux`, or `headless`. `auto` prefers the current multiplexer (tmux/zellij ambient env, then `CMUX_SOCKET_PATH`); with no ambient env it falls back to whichever of tmux/zellij is installed, tmux as the tie-breaker — cmux is only selected via its ambient env or an explicit setting, never by this installed-backend fallback, since it has no attach-from-outside path to wrap into. cmux support covers resume-in-place (detect, capture, send); it has no joinable named-session model, so idle-session reaping (`unsnooze reap`) does not cover cmux panes, and no attach hint is shown for cmux sessions. `headless` is the no-multiplexer mode (see [Watching without a multiplexer](#watching-without-a-multiplexer)) — `auto` falls back to it only when no multiplexer is installed at all, never ahead of one. |
 | `autoResume` | `true` | Master switch. Off = stops are still tracked, but nothing is resumed until you run `unsnooze resume-now` or turn it back on. |
 | `menuAutoAnswer` | `true` | May unsnooze answer Claude's limit menu (send keys in your pane)? Off = watch-only. |
 | `notifications` | `true` | Master switch for all notifications (limit detected / session resumed / gave up). Off = silence every channel. |
@@ -518,6 +557,7 @@ password hosts on Windows; a plain `ssh <host>` prompt works with native
 | `resumeMessage` | *"Continue where you left off…"* | The message sent to wake a session. Override it for a single session with `unsnooze message <id> "…"` — visible in `unsnooze status`. |
 | `resumeMessages.claude` / `.codex` / `.grok` / `.qwen` / `.kimi` / `.opencode` / `.agy` | `""` | Per-agent override of `resumeMessage`. Empty = use the global message; clear one with `unsnooze config set resumeMessages.claude ""`. |
 | `resumeExtraArgs.claude` / `.codex` / `.grok` / `.qwen` / `.kimi` / `.opencode` / `.agy` | `""` | Extra flags for launches unsnooze performs itself. A revival spawns the agent binary directly, so flags you normally get from a shell alias or wrapper (`--dangerously-skip-permissions`, `--model …`) do not apply unless you put them here. Quoting is respected: `--append-system-prompt "stay in this repo"` is two arguments, not five. `config.json` may also hold an array (`["--append-system-prompt", "stay in this repo"]`), which skips parsing entirely. |
+| `launchExtraArgs.claude` / `.codex` / `.grok` / `.qwen` / `.kimi` / `.opencode` / `.agy` | `""` | Extra flags for the sessions **you** start through the shell wrapper — the launch-side twin of `resumeExtraArgs`. Use it for flags that have to hold for the whole session: `unsnooze config set launchExtraArgs.claude "--autocompact 400000"` keeps a long, context-heavy run compacting instead of stalling. Flags are placed before your own arguments, since `claude "do the thing"` puts a positional prompt there. Revivals inherit them too, so a flag survives the wake. |
 | `agents.claude` / `agents.codex` | `true` | Which CLIs are guarded. |
 | `agents.grok` / `agents.qwen` / `agents.kimi` / `agents.opencode` / `agents.agy` | `false` | Experimental adapters — off by default; enable in `unsnooze setup` or `unsnooze config set agents.qwen on`. |
 | `workspaceGuard` | `inform` | Repo changed while a session slept? `inform` wakes it with a heads-up in the message; `pause` holds it (desktop notification, diff shown on `resume-now`); `off` disables. |
@@ -615,15 +655,50 @@ watcher stops (no pane context) always use native.
 
 ## Requirements
 
-- Node ≥ 20.12 and tmux ≥ 3.2, Zellij, **or** herdr ≥ 0.8.0
-- macOS, Linux, or **Windows via WSL** (see below)
-- zsh or bash (the wrappers are installed into `~/.zshrc` / `~/.bashrc`)
+- Node ≥ 20.12
+- macOS, Linux, or Windows — natively on all three (see
+  [Watching without a multiplexer](#watching-without-a-multiplexer))
+- tmux ≥ 3.2, Zellij, **or** herdr ≥ 0.8.0 for pane-level watching. Optional:
+  without one, unsnooze runs `headless` and still catches and resumes stops.
+- zsh or bash (wrappers go into `~/.zshrc` / `~/.bashrc`), or PowerShell
+  (wrappers go into `$PROFILE.CurrentUserAllHosts`)
 
-### Windows / WSL
+### Watching without a multiplexer
 
-tmux, Zellij, and herdr are Unix tools, so on Windows unsnooze runs inside
-[WSL](https://learn.microsoft.com/windows/wsl/install) — which is where the
-agent CLIs live on Windows anyway:
+A terminal pane is only one of unsnooze's three detection channels. The Claude
+Code **StopFailure hook** and the **session transcript watcher** need no pane at
+all — which is what makes native Windows, bare servers and CI work.
+
+When no multiplexer is installed, `multiplexer: auto` resolves to `headless`:
+
+| | with tmux/Zellij/herdr | `headless` |
+|---|---|---|
+| detects limit stops | pane scrape + hook + transcript | hook + transcript |
+| resumes at reset | yes | yes |
+| answers Claude's limit menu | yes | no |
+| waits out a busy pane | yes | no |
+| revived session | live pane you can attach to | detached process, output in `~/.unsnooze/headless/` |
+
+`headless` is never chosen ahead of a real multiplexer — only when none is
+installed, or when you ask for it with
+`unsnooze config set multiplexer headless`. If you want the full behaviour on
+Windows, WSL is still the better home.
+
+### Windows
+
+Native Windows works: PowerShell wrappers, a cmd-safe StopFailure hook, and a
+logon-triggered Scheduled Task for the daemon. Install as usual and run
+`unsnooze doctor` to confirm.
+
+Two honest caveats. The daemon is started at logon but not restarted if it
+dies — Task Scheduler is not a supervisor the way launchd and systemd are — so
+after upgrading unsnooze, log out and back in (or run `unsnooze daemon`
+yourself). And stored-password fleet hosts still need Git-for-Windows or WSL
+`ssh`; native `ssh.exe` requires an `.exe` askpass helper unsnooze does not yet
+ship.
+
+WSL remains the richer option, because that is where the Unix multiplexers live
+— and where the agent CLIs often already are:
 
 ```sh
 # inside your WSL distro (Ubuntu etc.)
@@ -665,9 +740,7 @@ herdr differs from tmux and Zellij in three ways that are visible in use:
 
 Everything works as on Linux, including desktop notifications: inside WSL,
 unsnooze raises **native Windows toasts** through `powershell.exe` (no
-`notify-send` or X server needed). Native Windows (PowerShell/cmd, no WSL) is
-not supported — without tmux or Zellij there is no terminal pane to watch; unsnooze will tell you
-so and run your CLI unwatched instead of breaking it.
+`notify-send` or X server needed).
 
 ## FAQ
 

@@ -31,8 +31,12 @@ function run(extraEnv = {}, args = ['_run', 'claude', 'hey']) {
     encoding: 'utf-8',
     env: {
       ...process.env,
-      // No tmux/zellij/herdr anywhere on PATH — the native-Windows situation.
-      PATH: `${EMPTY_PATH}:/usr/bin:/bin`,
+      // No tmux/zellij/herdr findable at all — the native-Windows situation.
+      // PATH is the empty shim dir ALONE, deliberately: GitHub's Ubuntu
+      // runners ship tmux in /usr/bin, so including it made auto-detection
+      // legitimately pick tmux and the headless assertions went red on CI.
+      // Everything this harness runs is invoked by absolute path.
+      PATH: EMPTY_PATH,
       UNSNOOZE_STATE_DIR: join(DIR, 'state'),
       UNSNOOZE_CLAUDE_BIN: '/bin/echo',
       TMUX: '', ZELLIJ: '', HERDR_ENV: '', CMUX_SOCKET_PATH: '', UNSNOOZE_ACTIVE: '',

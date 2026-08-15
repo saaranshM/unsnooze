@@ -160,10 +160,16 @@ test('a profile block can be removed cleanly, leaving the user content', () => {
 
 test('the default runner is wired up, not just the injected one', () => {
   // Guards the seam every other test bypasses: with no runner injected this
-  // spawns a real PowerShell. On a machine without one it must come back null,
-  // NOT throw — and must not silently swallow a bug in the lookup itself.
-  assert.equal(powershellProfilePath({ platform: 'win32' }),
-    process.platform === 'win32' ? powershellProfilePath({ platform: 'win32' }) : null);
+  // spawns a real PowerShell, which surfaces a missing import as the
+  // ReferenceError the lookup deliberately rethrows.
+  //
+  // The RESULT cannot be asserted, only its shape: GitHub's macOS and Ubuntu
+  // runners ship pwsh, so this returns a genuine profile path there and null on
+  // a developer machine without PowerShell. An earlier version of this test
+  // asserted null off win32 and went red on CI for that reason.
+  const result = powershellProfilePath({ platform: 'win32' });
+  assert.ok(result === null || (typeof result === 'string' && result.length > 0),
+    `expected null or a non-empty path, got ${JSON.stringify(result)}`);
 });
 
 // --- Windows daemon autostart (Scheduled Tasks) ----------------------------

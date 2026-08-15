@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+- **Claude Design, and native Windows along the way.** ([#13](https://github.com/saaranshM/unsnooze/issues/13))
+  Claude Design shares your 5-hour and weekly limits with everything else, so a
+  long design run stops exactly like any other session — the obstacle was never
+  the stop, it was that Design's canvas is a web app with no pane to watch, and
+  that the reporter was on Windows, where unsnooze watched nothing at all.
+  `unsnooze design setup` wires up the official `claude-design` MCP server so
+  the work runs inside Claude Code, where it is watched like anything else;
+  `unsnooze design` reports whether it is registered and signed in, keeping
+  those two apart because an expired `/design-login` is *not* a usage limit and
+  waiting will never clear it. unsnooze does not automate the web canvas and
+  will not: Anthropic's Consumer Terms bar automated access to claude.ai, and
+  accounts have been terminated over it.
+
+- **Watching without a multiplexer (`headless`).** A pane was only one of three
+  detection channels — the StopFailure hook and the transcript watcher never
+  needed one. What was missing was somewhere to put a revived agent, so there
+  is now a backend where a "pane" is a pid and a revive is a detached process
+  logging to `~/.unsnooze/headless/`. That makes native Windows, bare servers
+  and CI work. It is picked only when no multiplexer is installed, never ahead
+  of one, and it is honestly weaker: no limit-menu answering, no busy
+  detection, no live pane to attach to.
+
+- **Native Windows is supported.** Previously unsnooze printed *"native Windows
+  is not supported; run inside WSL"* and ran your CLI unwatched. Two things
+  were broken beneath that: the StopFailure hook command was POSIX
+  (`test -f …`), which cmd.exe has no `test` for, so the hook failed on every
+  turn; and the shell wrapper only ever reached `~/.zshrc` and `~/.bashrc`,
+  files a PowerShell user does not have — so nothing routed through unsnooze in
+  the first place. Both are fixed, the daemon autostarts from a logon-triggered
+  Scheduled Task, and `unsnooze doctor` stops reporting wrappers as missing
+  when they are installed. WSL remains the richer option.
+
+- **`launchExtraArgs.<agent>`.** The launch-side twin of `resumeExtraArgs`, for
+  flags that must hold for a whole session rather than just a revival —
+  `unsnooze config set launchExtraArgs.claude "--autocompact 400000"` keeps a
+  context-heavy run compacting instead of stalling. Revivals inherit them, so
+  the flag survives the wake.
+
 ## 1.15.0 — 2026-08-15
 
 - **Two new multiplexer backends: herdr and cmux.** unsnooze now watches and
