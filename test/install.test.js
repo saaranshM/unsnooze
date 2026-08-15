@@ -144,9 +144,20 @@ test('wrapper falls back to the real CLI when the unsnooze entry point is gone',
 });
 
 test('settings hook command is guarded so a missing entry point exits 0', () => {
-  const out = JSON.parse(mergeHookIntoSettings('{}'));
-  const cmd = out.hooks.StopFailure[0].hooks[0].command;
-  assert.match(cmd, /test -f .*unsnooze\.js.*&&/, 'hook must no-op (exit 0) when the entry point is gone');
+  // The guarantee is platform-independent; the syntax is not. Claude Code runs
+  // hooks through cmd.exe on native Windows, where `test` does not exist — so
+  // this asserted the POSIX form and went red on windows-latest once the
+  // command became platform-aware. Both forms are checked explicitly rather
+  // than letting the host platform decide which half gets covered.
+  const posix = JSON.parse(mergeHookIntoSettings('{}', { platform: 'darwin' }))
+    .hooks.StopFailure[0].hooks[0].command;
+  assert.match(posix, /test -f .*unsnooze\.js.*&&/,
+    'hook must no-op (exit 0) when the entry point is gone');
+
+  const win = JSON.parse(mergeHookIntoSettings('{}', { platform: 'win32' }))
+    .hooks.StopFailure[0].hooks[0].command;
+  assert.match(win, /if exist .*unsnooze\.js/i);
+  assert.match(win, /exit 0/);
 });
 
 test('wrapper block contains one function per enabled agent, routed via _run', () => {
