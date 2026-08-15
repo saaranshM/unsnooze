@@ -94,6 +94,11 @@ export async function cmdStatus(args = []) {
         mux: s.mux ?? null, pane: s.pane ?? null, muxSession: s.muxSession ?? null,
         attempts: s.attempts ?? 0, lastError: s.lastError ?? null,
         workspaceHold: !!s.workspaceHold,
+        // 'unsnooze' | 'native' | null. Since 2026-08-14 Claude Code can resume
+        // a five_hour stop by itself, so "resumed" alone no longer says who did
+        // it — and standing aside for the provider is a deliberate outcome, not
+        // a missing one.
+        resumedBy: s.resumedBy ?? null,
       })),
       promptQueue: queueList(),
     }, null, 2));
@@ -175,8 +180,13 @@ export async function cmdStatus(args = []) {
     let attach = '';
     const hint = await attachHintFor(s);
     if (hint) attach = ` · attach: ${hint}`;
+    // Claude Code can now resume a five_hour stop itself. When it did, say so:
+    // otherwise standing aside (the correct outcome, and the reason nothing was
+    // double-resumed) is indistinguishable from unsnooze having done the work.
+    const by = s.status === 'resumed' && s.resumedBy === 'native'
+      ? ' · resumed itself (unsnooze stood aside)' : '';
     console.log(`  [${s.status.toUpperCase().padEnd(9)}] ${id}  ${(s.agent || 'claude').padEnd(6)} ${s.limitType?.padEnd(7) ?? 'unknown'} ${s.cwd}`);
-    console.log(`              mux ${s.mux ?? '-'} · pane ${pane} · session ${s.muxSession ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}${msg}${ctx}${hold}${attach}`);
+    console.log(`              mux ${s.mux ?? '-'} · pane ${pane} · session ${s.muxSession ?? '-'} · via ${origin} · resets ${reset} · attempts ${s.attempts ?? 0}/${MAX_RESUME_ATTEMPTS}${s.lastError ? ` · last error: ${s.lastError}` : ''}${msg}${ctx}${hold}${attach}${by}`);
   }
   printPromptQueueSection(pendingPromptEntries());
   return 0;

@@ -165,6 +165,13 @@ function finishIfClaudeProgressed(rec, agent) {
       Object.assign(current, {
         status: 'resumed', lastAttemptAt: Date.now(), bannerCleared: true,
         lastError: null, verifyRetries: 0, resumeEpisodeAt: null,
+        // Something other than unsnooze got this session moving: the user, or
+        // (since 2026-08-14) Claude's own auto-continue, which resumes a
+        // five_hour stop in-process when the window resets. Recording who did
+        // it keeps `unsnooze status` honest — a session that woke itself
+        // otherwise looks exactly like one unsnooze woke, and the difference is
+        // the whole reason unsnooze is not double-resuming anything.
+        resumedBy: 'native',
       });
       applied = true;
     }
@@ -234,6 +241,10 @@ function claimStopForResume(rec) {
       Object.assign(current, {
         status: 'resuming', lastAttemptAt: now, lastError: null, verifyRetries: 0,
         resumeEpisodeAt: cutoff,
+        // The counterpart to finishIfClaudeProgressed's 'native': this is the
+        // single point where unsnooze takes ownership of a stop, whether the
+        // wake is typed, driven through the menu, or reopened.
+        resumedBy: 'unsnooze',
       });
       claimed = true;
     }
