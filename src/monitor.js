@@ -14,7 +14,7 @@ import { getMultiplexer } from './multiplexer.js';
 import {
   SCRAPE_INTERVAL_MS, PANE_SCAN_LINES, CAPTURE_LINES, EVENTS_DIR,
   EVENT_MARKER_TTL_MS, OVERLOAD_BACKOFF_S, OVERLOAD_JITTER,
-  PROBE_INTERVAL_MS, RESET_MARGIN_MS,
+  PROBE_INTERVAL_MS, RESET_MARGIN_MS, LEASE_GRACE_MS,
 } from './config.js';
 import { detectLimit, isBusy, overloadMatch } from './patterns.js';
 import { getAgent } from './agents/index.js';
@@ -39,6 +39,7 @@ export function createMonitor({
   agent = getAgent('claude'), mux = getMultiplexer(muxName, { owner: paneOwner }),
   scrapeInterval = SCRAPE_INTERVAL_MS, notifier = notify,
   spawner = spawnDetached, versionSkewed = hasVersionSkew, handoffBin = UNSNOOZE_BIN,
+  leaseGraceMs = LEASE_GRACE_MS, startedAt = Date.now(),
 }) {
   const notifyCtx = { mux: muxName, pane, paneOwner };
   let trackedKey = null;      // state key of the record we created
@@ -236,6 +237,18 @@ export function createMonitor({
       if (lease) leaseSeen = true;
       else if (leaseSeen) {
         log(`pane ${pane}: lease ${leaseId} gone — agent exited, monitor exiting`);
+        running = false;
+        return;
+      } else if (Date.now() - startedAt > leaseGraceMs) {
+        // No lease has EVER appeared. The launcher spawns us before it spawns
+        // the agent, so an agent that failed to spawn at all (bad bin, instant
+        // crash) leaves us watching a pane that is just the user's shell, with
+        // no lease-gone edge to ever fire. Without this the monitor scrapes
+        // that pane forever, and they pile up one per failed launch.
+        // Deliberately a deadline rather than a tick count: scrapeInterval is
+        // injected as 0 in tests and tunable in production, so N ticks is not
+        // a duration.
+        log(`pane ${pane}: lease ${leaseId} never appeared within ${leaseGraceMs}ms — agent never launched, monitor exiting`);
         running = false;
         return;
       }

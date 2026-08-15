@@ -25,7 +25,7 @@ function runUnwatched(agent, args, reason) {
   return r.status ?? 1;
 }
 
-export function runLauncher(args, agentId = 'claude') {
+export function runLauncher(args, agentId = 'claude', { processBirthFn = processBirth } = {}) {
   const agent = getAgent(agentId);
 
   // Recursion / nested-launch guard: inside an unsnooze-managed session, a
@@ -98,9 +98,15 @@ export function runLauncher(args, agentId = 'claude') {
   });
   const lease = pane && child.pid ? {
     leaseId, mux: mux.name, paneOwner, pane, agent: agent.id,
-    pid: child.pid, pidBirth: processBirth(child.pid),
+    pid: child.pid, pidBirth: processBirthFn(child.pid),
   } : null;
-  if (lease?.pidBirth) writeLease(lease);
+  // Write it even when the birth timestamp is unavailable. processBirth only
+  // reads /proc on linux and `ps` on darwin, so it is null on Windows and on
+  // any ps failure — and gating the write on it meant a perfectly healthy
+  // agent there got no lease at all. The monitor reads presence to know its
+  // agent is alive; ownership checks stay exactly as strict, because
+  // leaseMatches() still refuses to match a lease with a null birth.
+  if (lease) writeLease(lease);
   const cleanup = () => { if (lease) removeLease(lease, leaseId); };
   return new Promise(resolve => {
     child.on('exit', code => { cleanup(); resolve(code ?? 1); });

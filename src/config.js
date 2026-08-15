@@ -65,6 +65,11 @@ export const READY_TIMEOUT_MS = envInt('UNSNOOZE_READY_TIMEOUT_MS', 60_000);
 export const EVENT_MARKER_TTL_MS = envInt('UNSNOOZE_EVENT_MARKER_TTL_MS', 120_000);
 export const WATCH_FRESHNESS_MS = envInt('UNSNOOZE_WATCH_FRESHNESS_MS', 15 * 60_000);
 
+// How long a monitor waits for its agent's lease to appear before concluding
+// the launch failed and exiting. The launcher writes the lease immediately
+// after spawn(), so this only ever elapses when no agent was started at all.
+export const LEASE_GRACE_MS = envInt('UNSNOOZE_LEASE_GRACE_MS', 60_000);
+
 // Multiplexer backends, in detection order. The single source of truth: the
 // factory, the `multiplexer` setting enum and reap's session sweep all read
 // this list. It lives here, in a module that imports nothing but node builtins,
