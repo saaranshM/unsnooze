@@ -65,6 +65,13 @@ export const READY_TIMEOUT_MS = envInt('UNSNOOZE_READY_TIMEOUT_MS', 60_000);
 export const EVENT_MARKER_TTL_MS = envInt('UNSNOOZE_EVENT_MARKER_TTL_MS', 120_000);
 export const WATCH_FRESHNESS_MS = envInt('UNSNOOZE_WATCH_FRESHNESS_MS', 15 * 60_000);
 
+// Multiplexer backends, in detection order. The single source of truth: the
+// factory, the `multiplexer` setting enum and reap's session sweep all read
+// this list. It lives here, in a module that imports nothing but node builtins,
+// because settings.js and multiplexer.js already import each other — declaring
+// it in either one puts the other in a temporal dead zone at import time.
+export const MUX_NAMES = ['tmux', 'zellij'];
+
 // Pane scanning
 export const PANE_SCAN_LINES = envInt('UNSNOOZE_PANE_SCAN_LINES', 12);
 export const CAPTURE_LINES = envInt('UNSNOOZE_CAPTURE_LINES', 200);

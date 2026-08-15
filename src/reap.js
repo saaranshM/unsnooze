@@ -1,7 +1,7 @@
 // Explicit process/session cleanup (`unsnooze sessions` / `unsnooze reap`).
 // Never auto-kills a live agent pane unless the user opts in via reapResumed.
 
-import { MUX_SESSION_NAME, RESUME_SESSION_NAME } from './config.js';
+import { MUX_NAMES, MUX_SESSION_NAME, RESUME_SESSION_NAME } from './config.js';
 import { getMultiplexer } from './multiplexer.js';
 import { readState, updateState } from './state.js';
 import { getConfig } from './settings.js';
@@ -101,7 +101,7 @@ export function isUnsnoozeSessionName(name, base = MUX_SESSION_NAME) {
 }
 
 export async function listOwnedSessions({ muxName = null } = {}) {
-  const names = muxName ? [muxName] : ['tmux', 'zellij'];
+  const names = muxName ? [muxName] : MUX_NAMES;
   const out = [];
   for (const name of names) {
     let mux;
@@ -242,7 +242,7 @@ export async function reap({
   }
 
   // Empty / EXITED unsnooze-owned sessions.
-  for (const name of ['tmux', 'zellij']) {
+  for (const name of MUX_NAMES) {
     let mux;
     try { mux = getMultiplexer(name); } catch { continue; }
     if (!mux.available?.() || typeof mux.listSessions !== 'function') continue;

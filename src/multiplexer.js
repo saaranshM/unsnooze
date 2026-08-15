@@ -1,8 +1,7 @@
 import tmux from './multiplexers/tmux.js';
 import zellij from './multiplexers/zellij.js';
 import { getConfig } from './settings.js';
-
-const NAMES = ['tmux', 'zellij'];
+import { MUX_NAMES as NAMES } from './config.js';
 
 export function createMultiplexerFactory({
   backends = { tmux, zellij },
