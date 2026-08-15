@@ -171,10 +171,46 @@ export function resolveResumeMessage(agentId) {
 
 // Extra argv for agent launches unsnooze performs itself. Space-separated
 // string in config → array. Unknown agents and blank values yield [].
+// Split a command-line string the way a shell would: quotes group words, a
+// backslash escapes the next character. Splitting on whitespace instead turns
+// `--append-system-prompt "Stay in this repo"` into five arguments, and a path
+// like "/tmp/My Project" into two — silently, at revival time.
+export function splitArgString(text) {
+  const out = [];
+  let current = '';
+  let quote = null;
+  let open = false;      // distinguishes a deliberate empty argument ('') from a gap
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) { quote = null; continue; }
+      // Only double quotes honour escapes, as in sh.
+      if (quote === '"' && ch === '\\' && i + 1 < text.length) { current += text[i += 1]; continue; }
+      current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; open = true; continue; }
+    if (ch === '\\' && i + 1 < text.length) { current += text[i += 1]; open = true; continue; }
+    if (/\s/.test(ch)) {
+      if (open || current) { out.push(current); current = ''; open = false; }
+      continue;
+    }
+    current += ch;
+    open = true;
+  }
+  if (open || current) out.push(current);
+  return out;
+}
+
+// Extra argv for launches unsnooze performs itself. Accepts either the array
+// form in config.json — the honest one, no parsing involved — or a string,
+// which is all an environment variable can carry.
 export function resolveResumeExtraArgs(agentId) {
   const key = `resumeExtraArgs.${agentId}`;
-  const v = agentId && KNOWN_KEYS.includes(key) ? getConfig(key) : '';
-  return typeof v === 'string' && v.trim() ? v.trim().split(/\s+/) : [];
+  if (!agentId || !KNOWN_KEYS.includes(key)) return [];
+  const value = getConfig(key);
+  if (Array.isArray(value)) return value.filter(arg => typeof arg === 'string' && arg !== '');
+  return typeof value === 'string' && value.trim() ? splitArgString(value) : [];
 }
 
 export function setConfigValue(key, rawValue) {

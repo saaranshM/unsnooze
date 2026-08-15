@@ -189,7 +189,17 @@ export function upsertSession(record, { after = null } = {}) {
       // pull the wake earlier, never push it later. Without this, a banner left
       // on screen after its reset passed re-records "now + margin" on every
       // scrape tick, so the resumer never sees the session become due.
+      // ...but only while the existing record is still a live stop. monitor.js
+      // scopes the same rule structurally — §7 upgrades only the record that
+      // monitor is currently tracking — and the merge path has no such context,
+      // so it uses the staleness horizon the rest of the codebase already
+      // recognises. A record older than that has been abandoned; a stop
+      // arriving now is a new one, and its schedule must win rather than be
+      // held back by a week-old banner.
+      const existingAge = Date.now() - (existing.bannerAt ?? existing.detectedAt ?? 0);
+      const stillLive = existingAge < STALE_AFTER_MS;
       const keepReset = existing.status === 'stopped' && record.status === 'stopped'
+        && stillLive
         && typeof existing.resetAt === 'number' && typeof record.resetAt === 'number'
         && sourceRank(record.resetSource) <= sourceRank(existing.resetSource)
         && record.resetAt > existing.resetAt;

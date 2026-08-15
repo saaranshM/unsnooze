@@ -243,6 +243,27 @@ test('upsert fingerprints git workspaces; dedupe merge keeps the original', asyn
   assert.equal(rec3.workspace, null);
 });
 
+test('a new stop is not held back by the abandoned record it replaces', () => {
+  // The guard above stops a stale banner re-parse from delaying a live wake.
+  // It must not also stop a genuinely NEW stop from scheduling itself: a
+  // record left behind days ago has no authority over the stop that just
+  // happened, and markStaleAbandoned races exactly this window.
+  const now = Date.now();
+  const ancient = now - 8 * 86_400_000;
+  const first = upsertSession(record({
+    sessionId: 'abandoned-then-new', pane: '%98',
+    detectedAt: ancient, bannerAt: ancient, resetAt: ancient + 60_000,
+  }));
+  const key = Object.keys(first.sessions).find(k => first.sessions[k].pane === '%98');
+  // Same record, updated in place — the shape markStaleAbandoned races with.
+  const s = upsertSession({
+    ...first.sessions[key], detectedAt: now, bannerAt: now, resetAt: now + 3_600_000,
+  });
+  const r = s.sessions[key];
+  assert.equal(r.resetAt, now + 3_600_000, 'the new stop schedules itself');
+  assert.equal(r.bannerAt, now, 'and dates itself');
+});
+
 test('duplicate merge may never push resetAt later for a same-or-worse source', () => {
   const now = Date.now();
   // Correct absolute reset that just became due...

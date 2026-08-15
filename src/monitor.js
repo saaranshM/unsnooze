@@ -34,6 +34,38 @@ const log = makeLogger('monitor');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// When to wake, from a banner's reset line.
+//
+// Exported because the stale-banner clamp below is a policy decision with a
+// boundary, and a boundary that cannot be tested directly gets tested by
+// accident. Pure: everything it depends on is an argument.
+export function resolveResetAt({
+  resetLine, bannerAt, detectedAt, limitType,
+  marginMs = RESET_MARGIN_MS, fallbackMs = PROBE_INTERVAL_MS,
+} = {}) {
+  let { at, source } = resetAtMs(parseResetTime(resetLine), {
+    marginMs,
+    fallbackMs,
+    now: new Date(detectedAt),
+    bannerAt,
+  });
+  // A 5h rolling window can never reset more than ~5h out. A parse far beyond
+  // that means the banner text is stale — e.g. scraped from pane history after
+  // midnight, where an undated clock time resolves to tomorrow. The announced
+  // reset already passed; wake now instead.
+  //
+  // Judge the announced reset itself, not the scheduled wake: resetAtMs adds
+  // the margin to an absolute parse, and counting that margin as part of the
+  // distance condemns legitimate resets near the edge of the window. With a
+  // 60-minute margin a real midnight reset seen at 19:00 is 5h away, but its
+  // wake is 6h away — stale by that test, and wrongly dragged back to 20:00.
+  if (limitType === '5h' && source === 'absolute'
+    && (at - marginMs) > detectedAt + 5.5 * 3_600_000) {
+    at = detectedAt + marginMs;
+  }
+  return { at, source };
+}
+
 export function createMonitor({
   muxName = 'tmux', paneOwner = null, pane, leaseId = null, cwd,
   agent = getAgent('claude'), mux = getMultiplexer(muxName, { owner: paneOwner }),
@@ -90,21 +122,7 @@ export function createMonitor({
   }
 
   function computeReset(resetLine, bannerAt, detectedAt, limitType) {
-    let { at, source } = resetAtMs(parseResetTime(resetLine), {
-      marginMs: RESET_MARGIN_MS,
-      fallbackMs: PROBE_INTERVAL_MS,
-      now: new Date(detectedAt),
-      bannerAt,
-    });
-    // A 5h rolling window can never reset more than ~5h out. A parse far
-    // beyond that means the banner text is stale — e.g. scraped from pane
-    // history after midnight, where an undated clock time resolves to
-    // tomorrow. The announced reset already passed; wake now instead.
-    if (limitType === '5h' && source === 'absolute'
-      && at > detectedAt + 5.5 * 3_600_000) {
-      at = detectedAt + RESET_MARGIN_MS;
-    }
-    return { at, source };
+    return resolveResetAt({ resetLine, bannerAt, detectedAt, limitType });
   }
 
   // §6 first-tick corroboration: only record if a fresh transcript backs it,
