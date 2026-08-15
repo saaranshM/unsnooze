@@ -593,7 +593,33 @@ test('newWindow quotes every argument, whatever the resume message contains', as
     + "'Continue where you left off; $(id) & `id` | tee /tmp/x' ''");
 });
 
-test('newWindow refuses to type a message containing a keystroke character', async () => {
+test('newWindow carries a multi-line message as environment instead of typing it', async () => {
+  const spawner = fakeSpawner((_file, args, options) => {
+    if (args.join(' ') === 'session list --json') return runningNamedSession;
+    if (args.includes('workspace')) return workspaceCreated;
+    if (options.detach) return { pid: 1234, unref() {} };
+    return '';
+  });
+  const mux = createHerdr({ spawner, env: {} });
+  const message = 'line one\nline two\tindented';
+  await mux.newWindow('revival', '/tmp', {
+    file: 'node', args: ['_run', 'codex', 'resume', '01J', message], env: {},
+  });
+
+  // The value never appears in the typed line — a newline there would submit
+  // half a command, and a tab would be a completion request.
+  const run = spawner.calls.find(call => call.args.includes('run'));
+  assert.equal(run.args[5], `'node' '_run' 'codex' 'resume' '01J' "$UNSNOOZE_ARGV_5"`);
+  assert.equal(run.args.some(arg => arg.includes('\n')), false);
+
+  // It rides on the workspace instead, where herdr passes it as real argv.
+  const workspace = spawner.calls.find(call => call.args.includes('workspace'));
+  const index = workspace.args.indexOf('--env');
+  assert.ok(workspace.args.includes(`UNSNOOZE_ARGV_5=${message}`),
+    `the message travels in the environment: ${JSON.stringify(workspace.args.slice(index))}`);
+});
+
+test('a null byte still cannot be delivered at all', async () => {
   const spawner = fakeSpawner((_file, args, options) => {
     if (args.join(' ') === 'session list --json') return runningNamedSession;
     if (args.includes('workspace')) return workspaceCreated;
@@ -602,8 +628,8 @@ test('newWindow refuses to type a message containing a keystroke character', asy
   });
   const mux = createHerdr({ spawner, env: {} });
   await assert.rejects(
-    () => mux.newWindow('revival', '/tmp', { file: 'node', args: ['-p', 'line one\nline two'], env: {} }),
-    err => err.name === 'UnquotableArgError' && /newline/.test(err.message),
+    () => mux.newWindow('revival', '/tmp', { file: 'node', args: ['-e', 'a\u0000b'], env: {} }),
+    err => err.name === 'UnquotableArgError' && /null byte/.test(err.message),
   );
   assert.equal(spawner.calls.some(call => call.args.includes('run')), false,
     'nothing was dispatched into the pane');
@@ -770,11 +796,11 @@ test('a failure BEFORE dispatch stays a SessionCreateError, so the agent can sti
   );
 });
 
-test('an untypeable resume message fails before dispatch, not after', () => {
+test('an undeliverable argument fails before dispatch, not after', () => {
   const spawner = syncLaunchSpawner({ sessions: () => runningNamedSession });
   const mux = createHerdr({ spawner, env: { UNSNOOZE_SESSION_NAME: 'revival' } });
   assert.throws(
-    () => mux.launchWrapped({ file: 'node', args: ['-e', 'a\nb'], env: {} }),
+    () => mux.launchWrapped({ file: 'node', args: ['-e', 'a\u0000b'], env: {} }),
     err => err.name === 'SessionCreateError',
   );
   assert.equal(spawner.calls.some(call => call.args.includes('run')), false,

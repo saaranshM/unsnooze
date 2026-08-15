@@ -103,6 +103,22 @@ async function main() {
   NASTY.forEach((want, i) => check(got[i] === want,
     `argument ${i} survives quoting: ${JSON.stringify(want)}`, `got ${JSON.stringify(got[i])}`));
 
+  section('a message that cannot be typed still reaches the agent');
+  // Newlines and tabs are keystrokes to a terminal, so this argument is carried
+  // in the workspace environment and referenced by the typed line instead.
+  const MULTILINE = 'first line\nsecond line\tafter a tab\nthird line';
+  const hoisted = await sess.newWindow(SESSION, '/tmp', {
+    file: process.execPath,
+    args: ['-e', `console.log("MSG:" + JSON.stringify(process.argv[1])); console.log("${DONE}")`, MULTILINE],
+    env: {},
+  });
+  const hoistedOut = await waitForDone(hoisted.pane);
+  const msgLine = (hoistedOut || '').split('\n').find(l => l.startsWith('MSG:'));
+  let delivered = null;
+  try { delivered = JSON.parse((msgLine || '').slice(4)); } catch { /* reported below */ }
+  check(delivered === MULTILINE, 'a multi-line, tab-bearing argument arrives byte for byte',
+    `got ${JSON.stringify(delivered)}`);
+
   section('one submission, not two');
   // The command line is echoed once and its output printed once. A second
   // Enter (the bug this backend shipped with) shows up as a repeated run.

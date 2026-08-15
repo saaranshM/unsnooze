@@ -651,11 +651,12 @@ herdr differs from tmux and Zellij in three ways that are visible in use:
   reusing the name. If you restart a stopped session yourself and herdr brings
   the agent back, unsnooze may still open a fresh pane for it; that case is not
   yet detected.
-- **A resume message cannot contain a newline or a tab.** herdr starts a pane
-  command by typing it into the pane's shell, and those characters are
-  keystrokes there (submit, and completion) rather than text. unsnooze refuses
-  the launch instead of running half a command; keep `resumeMessage` on one
-  line.
+- **Multi-line resume messages are carried, not typed.** herdr starts a pane
+  command by typing it into the pane's shell, where a newline would submit half
+  a command and a tab would be a completion request. Any such argument is passed
+  through the workspace environment instead and referenced by the typed line, so
+  a multi-paragraph `resumeMessage` reaches the agent as one argument, byte for
+  byte. (A NUL byte is still refused — an environment value cannot hold one.)
 - **A custom `HERDR_SOCKET_PATH` that does not match the session being
   addressed disables watching for that pane.** herdr pane ids are per-server,
   so acting on one from the wrong server could type into an unrelated terminal.

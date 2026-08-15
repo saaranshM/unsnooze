@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 
 import { resolveSessionName, AgentDispatchedError, SessionCreateError } from './session-name.js';
 import { recordOwnedSession } from '../mux-sessions.js';
-import { shellLine, UnquotableArgError } from './shell-quote.js';
+import { shellCommand, UnquotableArgError } from './shell-quote.js';
 
 const execFileAsync = promisify(execFileCb);
 const MIN_VERSION = [0, 8, 0];
@@ -485,9 +485,13 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
           await ensureSessionRunning(target);
           recordOwnedSession({ mux: 'herdr', name: target });
         }
+        // Build the command first: an argument that cannot be typed (a
+        // multi-line resume message) travels as environment instead, and that
+        // environment has to be on the workspace before the pane exists.
+        const { line, env: argEnv } = shellCommand(launchSpec.file, launchSpec.args || []);
         const workspace = parseResult(await inSession(
           target, 'workspace', 'create', '--cwd', cwd, '--label', 'unsnooze',
-          ...envFlags(launchSpec?.env),
+          ...envFlags({ ...launchSpec?.env, ...argEnv }),
         ));
         const pane = workspace?.root_pane?.pane_id;
         if (!pane) throw new Error('unsnooze: unexpected herdr workspace shape: no root_pane');
@@ -496,8 +500,7 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
         // ours. It also submits the line itself (PaneSendInput carries
         // keys: ["Enter"]) — a second Enter here would land in the stdin of
         // whatever just started.
-        await inSession(target, 'pane', 'run', String(pane),
-          shellLine(launchSpec.file, launchSpec.args || []));
+        await inSession(target, 'pane', 'run', String(pane), line);
         // `session` tells the caller which session this actually landed in —
         // only herdr can differ from what was asked for. tmux and zellij return
         // { pane, paneOwner } exactly as before.
@@ -515,11 +518,12 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
         let command;
         let pane;
         try {
-          command = shellLine(launchSpec.file, launchSpec.args || []);
+          const built = shellCommand(launchSpec.file, launchSpec.args || []);
+          command = built.line;
           ensureSessionRunningSync(name, existing);
           const workspace = parseResult(syncCall([
             '--session', name, 'workspace', 'create', '--cwd', process.cwd(), '--label', 'unsnooze',
-            ...envFlags(launchSpec?.env),
+            ...envFlags({ ...launchSpec?.env, ...built.env }),
           ], name, 'create workspace'));
           pane = workspace?.root_pane?.pane_id;
           if (!pane) throw new Error('unsnooze: unexpected herdr workspace shape: no root_pane');
