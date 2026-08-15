@@ -713,7 +713,10 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
   // A backend may revive into a different session than we asked for — herdr
   // refuses to restart a stopped one and picks a free name instead. `session`
   // is that answer; it is not part of the pane address and must not reach state.
-  const { session: usedSession = target, ...address2 } = address;
+  // `?? {}` because every use of the address below this point was written
+  // defensively (`address?.pane`) and a backend returning nothing must keep
+  // degrading rather than throwing here.
+  const { session: usedSession = target, ...address2 } = address ?? {};
   address = address2;
   const stamper = typeof mux.bind === 'function' ? mux.bind(address.paneOwner ?? usedSession) : mux;
   if (address?.pane && typeof stamper.stampPaneOwner === 'function') {
