@@ -72,9 +72,16 @@ export async function runHook(rest = []) {
       return 0;
     }
 
-    const { muxName, pane, paneOwner } = hookContext(process.env, payload);
+    const { muxName, pane: rawPane, paneOwner } = hookContext(process.env, payload);
     const leaseId = process.env.UNSNOOZE_LEASE_ID || null;
     const mux = getMultiplexer(muxName, { owner: paneOwner });
+    // Same guard as the launcher: a pane we cannot prove we are addressing on
+    // the right server is worse than no pane, because every later action —
+    // capture, inject, close — would be aimed at whatever occupies that id
+    // elsewhere. Record the stop without a pane instead.
+    const pane = (typeof mux.paneAddressable !== 'function' || mux.paneAddressable())
+      ? rawPane : null;
+    if (rawPane && !pane) log(`StopFailure: ignoring pane ${rawPane} — not safely addressable`);
     const kind = classify(payload, raw);
     log(`StopFailure: kind=${kind} pane=${pane} session=${payload.session_id || '?'}`);
 

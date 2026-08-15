@@ -618,3 +618,63 @@ test('a monitor decision never asks for a line count herdr would answer by scrol
     'detection is viewport-bounded; passing --lines would imply a tall read');
   assert.equal(spawner.calls[0].args.includes('recent'), false);
 });
+
+test('the env scrub removes routing variables and keeps the user settings', async () => {
+  const spawner = fakeSpawner(() => 'text');
+  const env = {
+    PATH: '/bin', KEEP: 'yes',
+    // routing: these decide which server and pane a command reaches
+    HERDR_ENV: '1', HERDR_PANE_ID: 'w9:p9', HERDR_SESSION: 'wrong',
+    HERDR_SOCKET_PATH: '/tmp/other.sock', HERDR_CLIENT_SOCKET_PATH: '/tmp/other-client.sock',
+    HERDR_TAB_ID: 'w9:t9', HERDR_WORKSPACE_ID: 'w9',
+    // settings: the user chose these on purpose and a prefix scrub ate them
+    HERDR_CONFIG_PATH: '/home/me/herdr.toml', HERDR_LOG: 'debug',
+    HERDR_DISABLE_SOUND: '1', HERDR_PROCESS_DETECTION: 'off', HERDR_BIN_PATH: '/opt/herdr',
+  };
+  await createHerdr({ spawner, env }).bind('OWNER').capturePane('w1:p1');
+  const passed = spawner.calls[0].options.env;
+  assert.deepEqual(passed, {
+    PATH: '/bin', KEEP: 'yes',
+    HERDR_CONFIG_PATH: '/home/me/herdr.toml', HERDR_LOG: 'debug',
+    HERDR_DISABLE_SOUND: '1', HERDR_PROCESS_DETECTION: 'off', HERDR_BIN_PATH: '/opt/herdr',
+  });
+});
+
+test('paneAddressable compares the ambient socket against the session it would address', () => {
+  const sessions = JSON.stringify({ sessions: [
+    { name: 'default', running: true, socket_path: '/home/me/.config/herdr/herdr.sock' },
+    { name: 'work', running: true, socket_path: '/tmp/work/herdr.sock' },
+  ] });
+  const listing = () => ({ status: 0, stdout: sessions });
+
+  // No custom socket: default resolution, nothing to disagree with.
+  assert.equal(createHerdr({ spawner: fakeSpawner(listing), env: {} }).paneAddressable(), true);
+
+  // Custom socket that IS the session we address: same server, safe.
+  assert.equal(createHerdr({ spawner: fakeSpawner(listing), env: {
+    HERDR_SOCKET_PATH: '/tmp/work/herdr.sock', HERDR_PANE_ID: 'w1:p1',
+  } }).bind('work').paneAddressable(), true);
+
+  // Custom socket belonging to a DIFFERENT server than the session we address:
+  // pane ids are per-server, so this is the wrong-terminal case.
+  assert.equal(createHerdr({ spawner: fakeSpawner(listing), env: {
+    HERDR_SOCKET_PATH: '/tmp/work/herdr.sock', HERDR_PANE_ID: 'w1:p1',
+  } }).bind('default').paneAddressable(), false);
+
+  // Session not in the listing, or herdr unreachable: fail closed.
+  assert.equal(createHerdr({ spawner: fakeSpawner(listing), env: {
+    HERDR_SOCKET_PATH: '/tmp/work/herdr.sock',
+  } }).bind('ghost').paneAddressable(), false);
+  assert.equal(createHerdr({ spawner: fakeSpawner(() => { throw new Error('down'); }), env: {
+    HERDR_SOCKET_PATH: '/tmp/work/herdr.sock',
+  } }).bind('work').paneAddressable(), false);
+});
+
+test('the refusal explains itself in terms the user can act on', () => {
+  const mux = createHerdr({
+    spawner: fakeSpawner(() => ({ status: 0, stdout: JSON.stringify({ sessions: [] }) })),
+    env: { HERDR_SOCKET_PATH: '/tmp/work/herdr.sock' },
+  }).bind('work');
+  assert.match(mux.addressabilityReason(), /HERDR_SOCKET_PATH=\/tmp\/work\/herdr\.sock/);
+  assert.match(mux.addressabilityReason(), /work/);
+});

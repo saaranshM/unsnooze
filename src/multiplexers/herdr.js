@@ -33,8 +33,17 @@ function defaultSpawner(file, args, { sync = false, detach = false, ...options }
   return execFileAsync(file, args, options).then(({ stdout }) => stdout);
 }
 
+// Only the variables that decide WHICH server and WHICH pane a herdr command
+// talks to. Everything else the user exported — HERDR_CONFIG_PATH, HERDR_LOG,
+// HERDR_DISABLE_SOUND, HERDR_PROCESS_DETECTION, HERDR_BIN_PATH — is a setting
+// they chose, and a prefix match threw all of it away along with the routing.
+const HERDR_ROUTING_VARS = new Set([
+  'HERDR_SOCKET_PATH', 'HERDR_CLIENT_SOCKET_PATH', 'HERDR_SESSION', 'HERDR_ENV',
+  'HERDR_PANE_ID', 'HERDR_TAB_ID', 'HERDR_WORKSPACE_ID',
+]);
+
 function scrubHerdrEnv(env) {
-  return Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('HERDR')));
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !HERDR_ROUTING_VARS.has(key)));
 }
 
 function envFlags(env = {}) {
@@ -253,6 +262,42 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
 
       inside() {
         return !!(env.HERDR_ENV || env.HERDR_PANE_ID);
+      },
+
+      // Can we safely address this pane at all?
+      //
+      // herdr resolves an explicit `--session <name>` BEFORE it honours
+      // HERDR_SOCKET_PATH (upstream src/server/socket_paths.rs), and every call
+      // this driver makes passes --session. So inside a pane belonging to a
+      // server on a non-default socket, our commands would be answered by a
+      // DIFFERENT server — and pane ids are server-local, so `w1:p1` exists on
+      // both. That is not a failed capture, it is a resume prompt typed into
+      // someone else's terminal.
+      //
+      // herdr reports each session's socket_path in `session list --json`, so
+      // this compares rather than blanket-refusing: same socket, same server,
+      // safe to proceed. Anything we cannot positively confirm fails closed.
+      paneAddressable() {
+        const socket = env.HERDR_SOCKET_PATH;
+        if (!socket) return true;              // default resolution, nothing to disagree with
+        const target = owner || env.HERDR_SESSION || 'default';
+        try {
+          const result = spawner('herdr', ['session', 'list', '--json'], {
+            sync: true, encoding: 'utf8', env: childEnv(),
+          });
+          const row = parseSessionList(syncOutput(result)).find(entry => entry?.name === target);
+          return !!row && row.socket_path === socket;
+        } catch {
+          return false;
+        }
+      },
+
+      // The message the user needs when the above says no.
+      addressabilityReason() {
+        const target = owner || env.HERDR_SESSION || 'default';
+        return `herdr is running on a custom socket (HERDR_SOCKET_PATH=${env.HERDR_SOCKET_PATH})`
+          + ` that does not match session "${target}"; pane ids are per-server, so unsnooze would`
+          + ' risk addressing a pane on the wrong server';
       },
 
       currentPaneId() {

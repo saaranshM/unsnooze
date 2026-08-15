@@ -79,8 +79,22 @@ export function runLauncher(args, agentId = 'claude', { processBirthFn = process
     }
   }
 
-  const pane = mux.currentPaneId();
+  const rawPane = mux.currentPaneId();
   const paneOwner = resolvePaneOwner(mux.name, process.env);
+  // A backend may know it cannot safely address the pane it is sitting in —
+  // herdr's pane ids are per-server, and an ambient custom socket can point our
+  // commands at a different server's identically-numbered pane. Watching
+  // nothing beats typing into someone else's terminal, so drop to the same
+  // no-pane path a missing pane id already takes: the agent runs normally,
+  // just unwatched, and the user is told why.
+  const addressable = typeof mux.paneAddressable !== 'function' || mux.paneAddressable();
+  if (rawPane && !addressable) {
+    const why = typeof mux.addressabilityReason === 'function'
+      ? mux.addressabilityReason() : `${mux.name} pane ${rawPane} is not safely addressable`;
+    process.stderr.write(`unsnooze: ${why} — running ${agent.id} without limit-watch.\n`);
+    log(`pane ${rawPane} not addressable: ${why}`);
+  }
+  const pane = addressable ? rawPane : null;
   const leaseId = process.env.UNSNOOZE_LEASE_ID || createLeaseId();
   if (pane) {
     // Stamp our own pane (best-effort, tmux only): the identity every later
