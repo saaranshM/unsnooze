@@ -273,6 +273,7 @@ test('attachHintRemote wraps the local hint in ssh -t', async () => {
   const { attachHintRemote } = await import('../src/fleet.js');
   assert.equal(attachHintRemote('gpu', 'tmux', 'unsnooze'), `ssh -t gpu 'tmux new -A -s unsnooze'`);
   assert.equal(attachHintRemote('gpu', 'zellij', 'unsnooze'), `ssh -t gpu 'zellij attach unsnooze'`);
+  assert.equal(attachHintRemote('gpu', 'herdr', 'unsnooze'), `ssh -t gpu 'herdr session attach unsnooze'`);
 });
 
 test('attachHintRemote: hostile muxSession (shell metachars) yields no hint at all', async () => {

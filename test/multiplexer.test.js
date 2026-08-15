@@ -41,28 +41,47 @@ function fakeBackend(name, { installed = true } = {}) {
 test('factory resolution order is explicit, setting, environment, only installed, tmux-first', () => {
   const tmux = fakeBackend('tmux');
   const zellij = fakeBackend('zellij');
+  const herdr = fakeBackend('herdr');
 
   let setting = 'zellij';
-  let env = { ZELLIJ: '0', TMUX: '/tmp/tmux' };
-  let factory = createMultiplexerFactory({ backends: { tmux, zellij }, getSetting: () => setting, env });
+  let env = { HERDR_ENV: '1', ZELLIJ: '0', TMUX: '/tmp/tmux' };
+  let factory = createMultiplexerFactory({ backends: { tmux, zellij, herdr }, getSetting: () => setting, env });
   assert.equal(factory.getMultiplexer('tmux').name, 'tmux');
+  assert.equal(factory.getMultiplexer('herdr').name, 'herdr');
   assert.equal(factory.getMultiplexer().name, 'zellij');
 
   setting = 'auto';
-  assert.equal(factory.getMultiplexer().name, 'zellij');
+  assert.equal(factory.getMultiplexer().name, 'herdr');
   env = { TMUX: '/tmp/tmux' };
-  factory = createMultiplexerFactory({ backends: { tmux, zellij }, getSetting: () => setting, env });
+  factory = createMultiplexerFactory({ backends: { tmux, zellij, herdr }, getSetting: () => setting, env });
   assert.equal(factory.getMultiplexer().name, 'tmux');
 
   env = {};
   factory = createMultiplexerFactory({
-    backends: { tmux: fakeBackend('tmux', { installed: false }), zellij },
+    backends: {
+      tmux: fakeBackend('tmux', { installed: false }),
+      zellij: fakeBackend('zellij', { installed: false }),
+      herdr,
+    },
+    getSetting: () => 'auto',
+    env,
+  });
+  assert.equal(factory.getMultiplexer().name, 'herdr');
+
+  factory = createMultiplexerFactory({
+    backends: {
+      tmux: fakeBackend('tmux', { installed: false }),
+      zellij,
+      herdr: fakeBackend('herdr', { installed: false }),
+    },
     getSetting: () => 'auto',
     env,
   });
   assert.equal(factory.getMultiplexer().name, 'zellij');
 
-  factory = createMultiplexerFactory({ backends: { tmux, zellij }, getSetting: () => 'auto', env });
+  factory = createMultiplexerFactory({
+    backends: { tmux, zellij, herdr }, getSetting: () => 'auto', env,
+  });
   assert.equal(factory.getMultiplexer().name, 'tmux');
 });
 
@@ -74,6 +93,8 @@ test('multiplexer setting is registered and enum-validated', () => {
     assert.equal(getConfig('multiplexer'), 'auto');
     assert.equal(setConfigValue('multiplexer', 'zellij'), 'zellij');
     assert.equal(getConfig('multiplexer'), 'zellij');
+    assert.equal(setConfigValue('multiplexer', 'herdr'), 'herdr');
+    assert.equal(getConfig('multiplexer'), 'herdr');
     assert.throws(() => setConfigValue('multiplexer', 'screen'), /one of/i);
     // The enum tracks MUX_NAMES: a backend registered in config.js is settable
     // without touching settings.js, which is what keeps backend PRs conflict-free.

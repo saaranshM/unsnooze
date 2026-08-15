@@ -1,10 +1,11 @@
 import tmux from './multiplexers/tmux.js';
 import zellij from './multiplexers/zellij.js';
+import herdr from './multiplexers/herdr.js';
 import { getConfig } from './settings.js';
 import { MUX_NAMES as NAMES } from './config.js';
 
 export function createMultiplexerFactory({
-  backends = { tmux, zellij },
+  backends = { tmux, zellij, herdr },
   getSetting = () => getConfig('multiplexer'),
   env = process.env,
 } = {}) {
@@ -29,12 +30,17 @@ export function createMultiplexerFactory({
     try { configured = getSetting() || 'auto'; } catch { /* pre-setting compatibility */ }
     if (configured !== 'auto') return configured;
 
+    if (env.HERDR_ENV) return 'herdr';
     if (env.ZELLIJ) return 'zellij';
     if (env.TMUX) return 'tmux';
 
     const tmuxInstalled = isAvailable('tmux');
     const zellijInstalled = isAvailable('zellij');
-    if (tmuxInstalled !== zellijInstalled) return tmuxInstalled ? 'tmux' : 'zellij';
+    const herdrInstalled = isAvailable('herdr');
+    const installed = [
+      ['tmux', tmuxInstalled], ['zellij', zellijInstalled], ['herdr', herdrInstalled],
+    ].filter(([, present]) => present).map(([name]) => name);
+    if (installed.length === 1) return installed[0];
     return 'tmux';
   };
 

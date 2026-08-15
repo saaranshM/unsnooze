@@ -1,7 +1,7 @@
 {
   "name": "unsnooze",
   "version": "1.14.4",
-  "description": "Automatically resume Claude Code, Codex CLI, Grok, Qwen Code, Kimi CLI, OpenCode, and Antigravity sessions when 5-hour or weekly usage limits reset—across tmux, Zellij, VS Code, and desktop apps.",
+  "description": "Automatically resume Claude Code, Codex CLI, Grok, Qwen Code, Kimi CLI, OpenCode, and Antigravity sessions when 5-hour or weekly usage limits reset—across tmux, Zellij, herdr, VS Code, and desktop apps.",
   "keywords": [
     "claude",
     "claude-code",
@@ -35,6 +35,7 @@
     "retry",
     "tmux",
     "zellij",
+    "herdr",
     "ai-agents",
     "agentic-coding",
     "cli",

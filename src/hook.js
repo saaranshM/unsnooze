@@ -41,6 +41,21 @@ function classify(payload, raw) {
   return 'unknown';
 }
 
+export function hookContext(env = process.env, payload = {}) {
+  const managedMux = env.UNSNOOZE_MUX;
+  const muxName = managedMux || (env.HERDR_PANE_ID ? 'herdr' : env.ZELLIJ_PANE_ID ? 'zellij' : 'tmux');
+  const pane = managedMux
+    ? (env.UNSNOOZE_PANE || null)
+    : (muxName === 'herdr' ? env.HERDR_PANE_ID
+      : muxName === 'zellij' ? env.ZELLIJ_PANE_ID : env.TMUX_PANE || payload.tmux_pane) || null;
+  const paneOwner = muxName === 'herdr'
+    ? (managedMux ? env.UNSNOOZE_PANE_OWNER : (env.HERDR_SESSION || 'default'))
+    : muxName === 'zellij'
+      ? (managedMux ? env.UNSNOOZE_PANE_OWNER : env.ZELLIJ_SESSION_NAME) || null
+      : null;
+  return { muxName, pane, paneOwner };
+}
+
 export async function runHook(rest = []) {
   try {
     const agentIdx = rest.indexOf('--agent');
@@ -57,16 +72,16 @@ export async function runHook(rest = []) {
       return 0;
     }
 
-    const managedMux = process.env.UNSNOOZE_MUX;
-    const muxName = managedMux || (process.env.ZELLIJ_PANE_ID ? 'zellij' : 'tmux');
-    const pane = managedMux
-      ? (process.env.UNSNOOZE_PANE || null)
-      : (muxName === 'zellij' ? process.env.ZELLIJ_PANE_ID : process.env.TMUX_PANE || payload.tmux_pane) || null;
-    const paneOwner = muxName === 'zellij'
-      ? (managedMux ? process.env.UNSNOOZE_PANE_OWNER : process.env.ZELLIJ_SESSION_NAME) || null
-      : null;
+    const { muxName, pane: rawPane, paneOwner } = hookContext(process.env, payload);
     const leaseId = process.env.UNSNOOZE_LEASE_ID || null;
     const mux = getMultiplexer(muxName, { owner: paneOwner });
+    // Same guard as the launcher: a pane we cannot prove we are addressing on
+    // the right server is worse than no pane, because every later action —
+    // capture, inject, close — would be aimed at whatever occupies that id
+    // elsewhere. Record the stop without a pane instead.
+    const pane = (typeof mux.paneAddressable !== 'function' || mux.paneAddressable())
+      ? rawPane : null;
+    if (rawPane && !pane) log(`StopFailure: ignoring pane ${rawPane} — not safely addressable`);
     const kind = classify(payload, raw);
     log(`StopFailure: kind=${kind} pane=${pane} session=${payload.session_id || '?'}`);
 
