@@ -37,9 +37,14 @@ let n = 0;
 function seed(overrides = {}) {
   const rec = {
     sessionId: `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`,
+    // A synthetic POSIX cwd, never a real one: it is only a key, and it gets
+    // encoded into the transcript filename. A real Windows path (C:\Users\...)
+    // encodes to something the transcript lookup and this test disagree about,
+    // which is why these two tests passed everywhere except windows-latest.
+    //
     // Distinct pane per record: the ledger keys on it, so a shared '%1' makes
     // each test reuse the previous test's record and go 'stale'.
-    cwd: join(DIR, 'proj'), pane: `%${n}`, mux: 'tmux', paneOwner: null,
+    cwd: '/tmp/native-ac-proj', pane: `%${n}`, mux: 'tmux', paneOwner: null,
     muxSession: 'unsnooze-test', agent: 'claude',
     status: 'stopped', limitType: '5h', detectedVia: 'hook',
     detectedAt: Date.now() - 3_600_000, bannerAt: Date.now() - 3_600_000,
