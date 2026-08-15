@@ -1,5 +1,64 @@
 # Changelog
 
+## 1.15.0 — 2026-08-15
+
+- **Two new multiplexer backends: herdr and cmux.** unsnooze now watches and
+  revives sessions in [herdr](https://herdr.dev) and [cmux](https://cmux.dev)
+  alongside tmux and Zellij, chosen automatically from the multiplexer you are
+  already inside or explicitly with `unsnooze config set multiplexer herdr`.
+  Both are terminals built for running coding agents, and both start a command
+  by *typing* it into a pane rather than exec'ing it, which is a materially
+  different contract from tmux and Zellij — a revival's arguments are now
+  shell-quoted for them, and an argument that cannot be typed at all (a
+  multi-line resume message, say) travels through the pane's environment
+  instead of being mangled or refused. herdr needs 0.8.0 or newer; Homebrew
+  still ships 0.7.3, so install the release binary. Original herdr backend by
+  Wave Consulting (@walt-verweij) with follow-up work by @gaoflow; cmux backend
+  by @echarrod.
+
+- **Per-model limits are no longer invisible.** Claude Code can stop with
+  *"You've reached your Fable 5 limit. Run /usage-credits to continue or switch
+  models with /model"* — a banner with no reset time, which the previous
+  detection (a limit phrase paired with a time) could never match, and which
+  fires no StopFailure hook. The session simply stopped, untracked and
+  unannounced. It is now detected and tracked. Because only a human clears it,
+  unsnooze never types at such a pane: it probes until the banner goes, and at
+  the ceiling records a visible failure naming both remedies rather than
+  pretending a wake is coming. Detection is deliberately conservative — an
+  agent *quoting* the banner in its own output is not a stop. (@gaoflow)
+
+- **Four reset-scheduling bugs found in production.** A banner left on screen
+  after its reset passed was re-parsed every few seconds as "now + margin", so
+  the wake slid forward forever and the resumer never fired. An undated
+  "resets 10:30pm" re-read after midnight resolved to *tomorrow*, 22 hours out.
+  Accumulated pane-snapshot records with no session id each revived their own
+  copy of the same conversation — 23 records produced roughly 8 clones in one
+  repo at a weekly reset; at most one now revives per agent and project. And a
+  stop arriving after an old record was abandoned is no longer held back by it.
+  (@gaoflow)
+
+- **New setting: `resumeExtraArgs.<agent>`.** A revival spawns the agent binary
+  directly, so flags that normally come from a shell alias or wrapper do not
+  apply — a user who always runs `claude --dangerously-skip-permissions` got a
+  permission-prompting revival, which is about as useful as none. Set them per
+  agent and they are appended to launches unsnooze performs itself. Quoting is
+  respected (`--append-system-prompt "stay in this repo"` is two arguments, not
+  five), and `config.json` accepts an array if you would rather not think about
+  quoting at all.
+
+- **A failed launch no longer leaves a monitor scraping forever.** The monitor
+  starts before the agent does, and when the agent failed to start at all there
+  was no lease to notice its absence — so the monitor watched an ordinary shell
+  prompt indefinitely, one more process per failed launch. It now writes the
+  lease unconditionally (it was previously skipped wherever process start times
+  are unavailable, including Windows) and gives up if none appears. Reported by
+  @echarrod.
+
+- **Node 20.12 is now the minimum.** `engines` promised `>=20` while a
+  dependency needed `styleText` from `node:util`, which arrived in 20.12 — so
+  installs on 20.0–20.11 succeeded and then crashed on startup. The floor is
+  honest now, and CI tests that exact version so it cannot drift again.
+
 ## 1.14.4 — 2026-08-08
 
 - **Windows: the daemon PATH check split on the wrong separator.** The check
