@@ -64,3 +64,38 @@ test('the headless notice names a concrete way to get pane-level watching', () =
   assert.match(r.stderr, /tmux|WSL/,
     'a degraded mode must say how to upgrade out of it');
 });
+
+test('launchExtraArgs reach the agent the user starts, ahead of their own args', () => {
+  const r = run({
+    UNSNOOZE_MULTIPLEXER: 'headless',
+    UNSNOOZE_LAUNCH_EXTRA_ARGS_CLAUDE: '--autocompact 400000',
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, '--autocompact 400000 hey\n',
+    'flags go before the positional prompt, where claude expects them');
+});
+
+test('a nested launch does not stack launchExtraArgs a second time', () => {
+  // Inside an unsnooze-managed session the wrapper still shadows `claude`; the
+  // pass-through must not re-apply flags the outer launch already added.
+  const r = run({
+    UNSNOOZE_MULTIPLEXER: 'headless',
+    UNSNOOZE_LAUNCH_EXTRA_ARGS_CLAUDE: '--autocompact 400000',
+    UNSNOOZE_ACTIVE: '1',
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'hey\n');
+});
+
+test('a revive inherits launchExtraArgs, so --autocompact survives the wake', () => {
+  // The resumer reopens through `_run <agent> --resume <id> "<msg>"`, and that
+  // re-enters the launcher with UNSNOOZE_ACTIVE scrubbed. A session-lifetime
+  // flag would be pointless if it were dropped by the very restart that a
+  // context-heavy overnight run depends on.
+  const r = run(
+    { UNSNOOZE_MULTIPLEXER: 'headless', UNSNOOZE_LAUNCH_EXTRA_ARGS_CLAUDE: '--autocompact 400000' },
+    ['_run', 'claude', '--resume', 'abc-123', 'carry on'],
+  );
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, '--autocompact 400000 --resume abc-123 carry on\n');
+});

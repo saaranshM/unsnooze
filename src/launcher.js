@@ -7,7 +7,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { getMultiplexer } from './multiplexer.js';
 import { getAgent } from './agents/index.js';
-import { getConfig } from './settings.js';
+import { getConfig, resolveLaunchExtraArgs } from './settings.js';
 import { spawnDetached, monitorSpawnArgs } from './spawn.js';
 import { makeLogger } from './logger.js';
 import { createLeaseId, processBirth, writeLease, removeLease } from './lease.js';
@@ -48,6 +48,14 @@ export function runLauncher(args, agentId = 'claude', { processBirthFn = process
     const r = spawnSync(agent.bin, args, { stdio: 'inherit', env: { ...process.env, UNSNOOZE_ACTIVE: '1' } });
     return r.status ?? 1;
   }
+
+  // Flags the user wants on every session they start (claude's --autocompact
+  // is the motivating one — see settings.launchExtraArgs). Ahead of the user's
+  // own args because a bare `claude "do the thing"` puts a positional prompt
+  // there, and options have to come before it. Deliberately not applied on the
+  // pass-through above: that branch is a nested call inside an already-wrapped
+  // session, where the outer launch has applied them once already.
+  args = [...resolveLaunchExtraArgs(agent.id), ...args];
 
   const mux = getMultiplexer();
   if (!mux.inside()) {

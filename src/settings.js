@@ -51,6 +51,12 @@ export const DEFAULTS = {
   // user's normal launch mode — shell aliases don't apply to direct spawns
   // (e.g. claude users who always launch with --dangerously-skip-permissions).
   resumeExtraArgs: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '' },
+  // Extra argv for launches the USER performs through the shell wrapper — the
+  // launch-side twin of resumeExtraArgs. A flag that has to hold for the whole
+  // session (claude's --autocompact, which decides when the context window is
+  // compacted) is useless if it only applies to revives, because the session
+  // that runs out of context is the one the user started.
+  launchExtraArgs: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '' },
   agents: { claude: true, codex: true, grok: false, qwen: false, kimi: false, opencode: false, agy: false },   // experimental agents default off
 };
 
@@ -91,6 +97,13 @@ const ENV_NAMES = {
   'resumeExtraArgs.kimi': 'UNSNOOZE_RESUME_EXTRA_ARGS_KIMI',
   'resumeExtraArgs.opencode': 'UNSNOOZE_RESUME_EXTRA_ARGS_OPENCODE',
   'resumeExtraArgs.agy': 'UNSNOOZE_RESUME_EXTRA_ARGS_AGY',
+  'launchExtraArgs.claude': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_CLAUDE',
+  'launchExtraArgs.codex': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_CODEX',
+  'launchExtraArgs.grok': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_GROK',
+  'launchExtraArgs.qwen': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_QWEN',
+  'launchExtraArgs.kimi': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_KIMI',
+  'launchExtraArgs.opencode': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_OPENCODE',
+  'launchExtraArgs.agy': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_AGY',
   'agents.claude': 'UNSNOOZE_AGENT_CLAUDE',
   'agents.codex': 'UNSNOOZE_AGENT_CODEX',
   'agents.grok': 'UNSNOOZE_AGENT_GROK',
@@ -206,7 +219,16 @@ export function splitArgString(text) {
 // form in config.json — the honest one, no parsing involved — or a string,
 // which is all an environment variable can carry.
 export function resolveResumeExtraArgs(agentId) {
-  const key = `resumeExtraArgs.${agentId}`;
+  return resolveExtraArgs('resumeExtraArgs', agentId);
+}
+
+// The user's own launches, via the shell wrapper.
+export function resolveLaunchExtraArgs(agentId) {
+  return resolveExtraArgs('launchExtraArgs', agentId);
+}
+
+function resolveExtraArgs(setting, agentId) {
+  const key = `${setting}.${agentId}`;
   if (!agentId || !KNOWN_KEYS.includes(key)) return [];
   const value = getConfig(key);
   if (Array.isArray(value)) return value.filter(arg => typeof arg === 'string' && arg !== '');
