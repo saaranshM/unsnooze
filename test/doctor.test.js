@@ -25,7 +25,7 @@ const {
   findCsgProcesses, findCsgAutostarts, defaultCsgPackagePath, runDoctor, applyFixes, cmdDoctor,
 } = await import('../src/doctor.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 // --- detection -----------------------------------------------------------------
 

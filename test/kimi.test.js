@@ -15,7 +15,7 @@ const { default: kimi, latestSessionId } = await import('../src/agents/kimi.js')
 const { getAgent } = await import('../src/agents/index.js');
 const { detectLimit, isBusy, overloadMatch } = await import('../src/patterns.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 const RED_429 = `LLM provider error: Error code: 429 - {'error': {'message': "We're receiving too many requests at the moment. Please wait a moment and try again.", 'type': 'rate_limit_reached_error'}}`;
 

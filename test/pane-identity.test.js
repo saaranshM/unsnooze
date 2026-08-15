@@ -23,7 +23,7 @@ const { dispatchOne } = await import('../src/resumer.js');
 const { createMonitor } = await import('../src/monitor.js');
 const { upsertSession, readState, setStatus } = await import('../src/state.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 function fakeSpawner(respond = () => '') {
   const calls = [];

@@ -24,7 +24,7 @@ const { runResumer, acquireSingleton, releaseSingleton } = await import('../src/
 const { upsertSession, readState, updateState } = await import('../src/state.js');
 const { RESUMER_LOCK } = await import('../src/config.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 function reset() {
   releaseSingleton();

@@ -9,7 +9,7 @@ process.env.UNSNOOZE_STATE_DIR = DIR;
 
 const { getConfig, setConfigValue, listConfig, resolveResumeMessage, readFileConfig, DEFAULTS } = await import('../src/settings.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 test('defaults apply when no config file exists', () => {
   assert.equal(getConfig('autoResume'), true);

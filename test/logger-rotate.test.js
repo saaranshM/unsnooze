@@ -13,7 +13,7 @@ process.env.UNSNOOZE_STATE_DIR = DIR;
 const { rotateIfLarge, copyTruncateIfLarge, log } = await import('../src/logger.js');
 const { LOG_FILE } = await import('../src/config.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 test('rotateIfLarge leaves small files alone', () => {
   const p = join(DIR, 'small.log');

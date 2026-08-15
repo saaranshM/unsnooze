@@ -52,7 +52,7 @@ if (process.platform !== 'win32') {
 const { createMonitor } = await import('../src/monitor.js');
 const { writeLease, readLease } = await import('../src/lease.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 function fakeMux(script = {}) {
   return {

@@ -14,7 +14,7 @@ process.env.UNSNOOZE_STATE_DIR = join(DIR, 'state');
 
 const { hasVersionSkew, restartOnVersionSkew, daemonSkewAction, PKG_VERSION } = await import('../src/update-check.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 function writePkg(version) {
   writeFileSync(join(DIR, 'package.json'), JSON.stringify({ name: 'unsnooze', version }));

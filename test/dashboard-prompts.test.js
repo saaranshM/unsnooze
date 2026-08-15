@@ -19,7 +19,7 @@ const { PromptsTab, formReduce, initFormState, WHEN_OPTIONS, submitFinal, remove
 const { renderToString } = await import('ink');
 const React = (await import('react')).default;
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 // Full ink Key shape with everything false, overridable per test.
 function K(overrides = {}) {

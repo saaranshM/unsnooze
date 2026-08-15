@@ -9,10 +9,20 @@ import { fileURLToPath } from 'node:url';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-cli-test-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
+// The detached registry checker outlives the command that triggered it and
+// writes update-check.json into the state dir — landing after the suite has
+// started removing it, which fails the after hook with ENOTEMPTY. Same reason
+// test/bin-failsafe.test.js disables it.
+process.env.UNSNOOZE_UPDATE_CHECK = 'off';
 
 const { cmdConfig } = await import('../src/cli.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+// maxRetries: importing src/cli.js starts work that can still be writing into
+// the state dir when the suite ends (the update-check cache, a log line), and a
+// recursive rm that meets a file appearing mid-walk fails with ENOTEMPTY rather
+// than retrying. Seen on ubuntu + Node 20.12 while macOS and 20/22 passed, which
+// is the signature of a race rather than a platform rule.
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 test('config set accepts an empty value to clear a per-agent message', () => {
   assert.equal(cmdConfig(['set', 'resumeMessages.claude', 'be brief']), 0);

@@ -15,7 +15,7 @@ process.env.UNSNOOZE_STATE_DIR = DIR;
 const { updateState, readState, upsertSession, setStatus, activeStopped, dueSessions } =
   await import('../src/state.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 function record(overrides = {}) {
   return {

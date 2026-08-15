@@ -13,7 +13,7 @@ process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 const { runResumer } = await import('../src/resumer.js');
 const { readState } = await import('../src/state.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 

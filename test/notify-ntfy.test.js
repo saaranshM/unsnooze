@@ -16,7 +16,7 @@ const { sendNtfy, generateNtfyTopic } = await import('../src/notify-ntfy.js');
 const { notify } = await import('../src/notify.js');
 const { DEFAULTS } = await import('../src/settings.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 beforeEach(() => {
   rmSync(join(DIR, 'config.json'), { force: true });
   for (const k of ['UNSNOOZE_NTFY_TOPIC', 'UNSNOOZE_NTFY_SERVER', 'UNSNOOZE_NTFY_TOKEN', 'UNSNOOZE_NTFY_PRIVACY', 'UNSNOOZE_NOTIFICATIONS']) {

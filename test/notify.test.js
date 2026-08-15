@@ -9,7 +9,7 @@ process.env.UNSNOOZE_STATE_DIR = DIR;
 
 const { notify } = await import('../src/notify.js');
 
-after(() => rmSync(DIR, { recursive: true, force: true }));
+after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 /** Drain microtasks + one macrotask so detached OSC/BEL tails settle. */
 const tick = () => new Promise(r => setImmediate(r));
