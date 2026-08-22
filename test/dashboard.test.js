@@ -200,3 +200,110 @@ test('FleetTab: host with non-terminal envelope.queue entries shows "· N queued
   }));
   assert.doesNotMatch(emptyQueue, /queued/);
 });
+
+// ---------------------------------------------------------------------------
+// #16: a dashboard left open overnight died on "JavaScript heap out of memory".
+// React's development build files a performance.measure() for every render,
+// commit and setState, Node buffers user timing forever, and the status tab
+// repaints ~3×/second. Nothing else in unsnooze records user timing, so the
+// dashboard drains that buffer for as long as it is mounted.
+// ---------------------------------------------------------------------------
+
+function fakePerf() {
+  const calls = [];
+  return {
+    calls,
+    clearMeasures: () => calls.push('measures'),
+    clearMarks: () => calls.push('marks'),
+  };
+}
+
+test('sweepReactTiming drains both user-timing buffers', async () => {
+  const { sweepReactTiming } = await import('../src/dashboard/run.js');
+  const perf = fakePerf();
+  sweepReactTiming(perf);
+  assert.deepEqual(perf.calls, ['measures', 'marks']);
+});
+
+test('sweepReactTiming survives a runtime without user timing', async () => {
+  const { sweepReactTiming } = await import('../src/dashboard/run.js');
+  // No throw, no crash of the dashboard it runs inside.
+  sweepReactTiming(undefined);
+  sweepReactTiming({});
+  sweepReactTiming({ clearMeasures: () => { throw new Error('nope'); } });
+});
+
+test('startTimingSweep drains immediately, on every tick, and once more on stop', async () => {
+  const { startTimingSweep } = await import('../src/dashboard/run.js');
+  const perf = fakePerf();
+  const stop = startTimingSweep({ intervalMs: 10, perf });
+  assert.deepEqual(perf.calls, ['measures', 'marks'], 'drains up front, not one interval late');
+  await new Promise(resolve => setTimeout(resolve, 60));
+  const ticked = perf.calls.length;
+  assert.ok(ticked > 2, `the interval fires (saw ${ticked} calls)`);
+  stop();
+  const atStop = perf.calls.length;
+  assert.ok(atStop > ticked, 'stop drains what the last interval left behind');
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(perf.calls.length, atStop, 'and the interval is gone');
+});
+
+test('the sweep timer never holds the process open', async () => {
+  const { startTimingSweep } = await import('../src/dashboard/run.js');
+  const perf = fakePerf();
+  let unrefd = false;
+  const realSetInterval = globalThis.setInterval;
+  globalThis.setInterval = (...args) => {
+    const timer = realSetInterval(...args);
+    const realUnref = timer.unref?.bind(timer);
+    timer.unref = () => { unrefd = true; return realUnref?.(); };
+    return timer;
+  };
+  try {
+    startTimingSweep({ intervalMs: 10_000, perf })();
+  } finally {
+    globalThis.setInterval = realSetInterval;
+  }
+  assert.equal(unrefd, true);
+});
+
+test('a live dashboard render fills the user-timing buffer, and the sweep empties it', async () => {
+  const { Writable } = await import('node:stream');
+  const { EventEmitter } = await import('node:events');
+  const React = (await import('react')).default;
+  const { render } = await import('ink');
+  const { App } = await import('../src/dashboard/App.js');
+  const { sweepReactTiming } = await import('../src/dashboard/run.js');
+
+  class FakeOut extends Writable {
+    constructor() { super(); this.isTTY = true; this.columns = 120; this.rows = 40; }
+    _write(_chunk, _enc, cb) { cb(); }
+  }
+  class FakeIn extends EventEmitter {
+    constructor() {
+      super();
+      this.isTTY = true;
+      this.setRawMode = () => {}; this.ref = () => {}; this.unref = () => {};
+      this.read = () => null; this.setEncoding = () => {}; this.resume = () => {}; this.pause = () => {};
+    }
+  }
+
+  sweepReactTiming();
+  const instance = render(
+    React.createElement(App, { initialTab: 'status', mouseEnabled: false }),
+    { stdout: new FakeOut(), stdin: new FakeIn(), exitOnCtrlC: false, patchConsole: false },
+  );
+  // The logo animates every 450ms, so this is several repaints, not one.
+  await new Promise(resolve => setTimeout(resolve, 1200));
+
+  const filled = performance.getEntriesByType('measure').length;
+  sweepReactTiming();
+  const drained = performance.getEntriesByType('measure').length;
+  instance.unmount();
+
+  // If React ever stops recording these, `filled` is 0 and there is nothing to
+  // leak — that is a pass, not a failure. What must never hold is a buffer that
+  // fills and cannot be emptied.
+  assert.ok(drained <= filled, 'sweeping never adds entries');
+  if (filled > 0) assert.equal(drained, 0, `the sweep emptied ${filled} buffered entries`);
+});

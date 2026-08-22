@@ -62,6 +62,41 @@ export function installMouseCleanup(stdout = process.stdout) {
   };
 }
 
+// React's development build records a `performance.measure()` entry for every
+// render, commit and setState — the React Performance Track it publishes for
+// devtools. Node buffers user-timing entries and nothing ever drains that
+// buffer, so on a long-lived dashboard it IS the leak: the status tab repaints
+// roughly three times a second (a 1s data tick plus the 450ms logo animation),
+// each repaint leaves ~40 entries behind, and an overnight `unsnooze status`
+// walked into Node's 2GB heap ceiling and aborted (#16). Measured at ~12 kB
+// retained per render, surviving a forced GC.
+//
+// The entries cannot be capped (Node caps resource timing, not user timing) and
+// switching React to its production build would mean setting NODE_ENV for the
+// whole CLI before anything imports React. Draining is the narrow fix: nothing
+// in unsnooze reads user timing, and the sweep lives exactly as long as the
+// render does.
+export const TIMING_SWEEP_MS = 5_000;
+
+export function sweepReactTiming(perf = globalThis.performance) {
+  try {
+    perf?.clearMeasures?.();
+    perf?.clearMarks?.();
+  } catch { /* a runtime with no user timing has nothing to leak */ }
+}
+
+// Returns the stop function. The timer is unref'd: draining a buffer is never
+// a reason to hold the process open.
+export function startTimingSweep({ intervalMs = TIMING_SWEEP_MS, perf } = {}) {
+  sweepReactTiming(perf);
+  const timer = setInterval(() => sweepReactTiming(perf), intervalMs);
+  timer.unref?.();
+  return () => {
+    clearInterval(timer);
+    sweepReactTiming(perf);
+  };
+}
+
 export function shouldUseDashboard({
   force = null,
   json = false,
@@ -87,13 +122,18 @@ export async function runDashboard({ tab = 'status' } = {}) {
   }
 
   installMouseCleanup(process.stdout);
-  const instance = render(h(App, { initialTab: tab, mouseEnabled: getConfig('mouse') !== false }), {
-    exitOnCtrlC: true,
-    // Full-screen: separate buffer like vim / htop / less — original scrollback restored on quit
-    alternateScreen: true,
-  });
+  const stopTimingSweep = startTimingSweep();
+  try {
+    const instance = render(h(App, { initialTab: tab, mouseEnabled: getConfig('mouse') !== false }), {
+      exitOnCtrlC: true,
+      // Full-screen: separate buffer like vim / htop / less — original scrollback restored on quit
+      alternateScreen: true,
+    });
 
-  await instance.waitUntilExit();
+    await instance.waitUntilExit();
+  } finally {
+    stopTimingSweep();
+  }
   // Belt and braces: normal quit also clears modes (provider already did).
   process.stdout.write(MOUSE_DISABLE_ALL);
   return 0;
