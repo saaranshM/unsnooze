@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.16.3 — 2026-08-22
+
+- **A dashboard left open overnight no longer runs the machine out of memory.**
+  ([#16](https://github.com/saaranshM/unsnooze/issues/16)) `unsnooze status` in
+  a spare pane is exactly what it is for, and after nine or ten hours it was
+  dying on *"FATAL ERROR: Ineffective mark-compacts near heap limit — JavaScript
+  heap out of memory"*. The dashboard itself was innocent: React's development
+  build files a `performance.measure()` entry for every render, commit and
+  `setState` — the performance track it publishes for devtools — and Node
+  buffers user-timing entries forever with nothing to drain them. The status tab
+  repaints about three times a second (a one-second data tick plus the
+  450ms logo animation), each repaint left roughly 40 entries behind, and a
+  night of that walks into Node's 2GB heap ceiling. Measured at ~12kB retained
+  per render, surviving a forced garbage collection. The dashboard now drains
+  that buffer while it is mounted; heap use went from climbing without limit to
+  flat. Nothing else in unsnooze records user timing, and no other command
+  renders long enough to have been affected.
+
+- **Every release now creates its GitHub release automatically.** They were
+  written by hand afterwards, so 1.16.2 shipped to npm and to the website while
+  the repository's Releases tab still showed 1.16.1. The publish workflow now
+  creates the release from that version's CHANGELOG section, and waits for the
+  npm registry to actually serve the new version before rebuilding the website —
+  `npm publish` returns before the registry does, which is why 1.16.2's own
+  changelog entry was briefly invisible on unsnooze.dev.
+
 ## 1.16.2 — 2026-08-22
 
 - **A herdr revival now opens a tab in your project's workspace, not a new
