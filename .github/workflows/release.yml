@@ -53,6 +53,28 @@ jobs:
       # docs claim it is implied under trusted publishing, but real-world
       # publishes still needed the flag as of 2026.
       - run: npm publish --provenance --access public
+      # `npm publish` returns before the version is readable: it answers "your
+      # package is being processed and may take a few minutes to become
+      # available". The website's changelog asks the registry which version is
+      # latest and hides anything newer, so firing the rebuild straight after
+      # the publish rebuilt the site against the PREVIOUS latest and froze the
+      # new release out of it — that is exactly what happened on 1.16.2. Wait
+      # for the registry to actually serve it first.
+      - name: Wait for the registry to serve the published version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          for attempt in $(seq 1 40); do
+            latest="$(curl -sf -H 'Accept: application/vnd.npm.install-v1+json' \
+              https://registry.npmjs.org/unsnooze | node -p \
+              "JSON.parse(require('fs').readFileSync(0,'utf8'))['dist-tags'].latest" || true)"
+            if [ "$latest" = "$version" ]; then
+              echo "registry serves $version after ${attempt} check(s)"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "registry still reports '$latest' after 10 minutes, not '$version'" >&2
+          exit 1
       # The static changelog only exposes versions that npm confirms as shipped.
       # Rebuild after publish so Vercel cannot win the race and freeze the old latest.
       - name: Rebuild website changelog
