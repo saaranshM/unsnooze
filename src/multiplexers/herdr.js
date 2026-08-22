@@ -2,7 +2,7 @@
 // remains alive with its shell prompt. The resumer must therefore verify
 // agent ownership before injecting, and revival can reuse a surviving pane
 // only when Task 3 wires that path deliberately.
-// Launch env is delivered via workspace create --env. Keep this narrow because
+// Launch env is delivered via tab/workspace create --env. Keep this narrow because
 // pane run types argv into the pane shell, but preserve the two Claude config
 // roots: desktop/isolated Claude sessions cannot be resumed without them.
 
@@ -276,6 +276,66 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
       return syncOutput(result);
     };
 
+    const listPaneRows = async session => {
+      const result = parseResult(await inSession(session, 'pane', 'list'));
+      return Array.isArray(result?.panes) ? result.panes : [];
+    };
+
+    const samePath = (a, b) => {
+      if (typeof a !== 'string' || typeof b !== 'string' || !a || !b) return false;
+      const trim = value => (value.length > 1 ? value.replace(/\/+$/, '') : value);
+      return trim(a) === trim(b);
+    };
+
+    // The workspace herdr already has open on this project, if any.
+    //
+    // A herdr workspace is the project, not the window: it is where a repo
+    // lives, the way a tmux SESSION is, and creating one per revival left a
+    // user with N top-level workspaces for one repo (#15). herdr reports no cwd
+    // on a workspace, so the project is read off its panes instead — `pane
+    // list` walks workspaces in order, so the first match is the oldest
+    // workspace on this path, which is the user's own rather than one of ours.
+    const workspaceOnProject = async (session, cwd) => {
+      try {
+        const match = (await listPaneRows(session)).find(pane =>
+          samePath(pane?.cwd, cwd) || samePath(pane?.foreground_cwd, cwd));
+        return match?.workspace_id ? String(match.workspace_id) : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const rootPaneId = (created, what) => {
+      const pane = created?.root_pane?.pane_id;
+      if (!pane) throw new Error(`unsnooze: unexpected herdr ${what} shape: no root_pane`);
+      return String(pane);
+    };
+
+    // One more full-size terminal for `cwd`, in the workspace that project
+    // already occupies. A TAB, not a pane split: `newWindow` means the same
+    // thing on every backend — a tmux window, a zellij tab — and a revived
+    // agent draws a full-screen TUI, so halving the pane the user is looking at
+    // would leave two terminals too narrow to use. Only when herdr has no
+    // workspace on this project (a session we just started has none at all)
+    // does a new workspace get created.
+    const openTerminal = async (session, cwd, envArgs) => {
+      const workspace = await workspaceOnProject(session, cwd);
+      if (workspace) {
+        try {
+          return rootPaneId(parseResult(await inSession(
+            session, 'tab', 'create', '--workspace', workspace,
+            '--cwd', cwd, '--label', 'unsnooze', ...envArgs,
+          )), 'tab');
+        } catch {
+          // The workspace can close between the listing and the create. A
+          // revival into a fresh workspace still revives; failing does not.
+        }
+      }
+      return rootPaneId(parseResult(await inSession(
+        session, 'workspace', 'create', '--cwd', cwd, '--label', 'unsnooze', ...envArgs,
+      )), 'workspace');
+    };
+
     const backend = {
       name: 'herdr',
       owner,
@@ -477,9 +537,8 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
 
       async listSessionPanes(sessionName) {
         try {
-          const result = parseResult(await inSession(sessionName, 'pane', 'list'));
-          const panes = Array.isArray(result?.panes) ? result.panes : [];
-          return panes.map(entry => String(entry.pane_id)).filter(Boolean);
+          return (await listPaneRows(sessionName))
+            .map(entry => String(entry.pane_id)).filter(Boolean);
         } catch {
           return [];
         }
@@ -515,14 +574,11 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
         }
         // Build the command first: an argument that cannot be typed (a
         // multi-line resume message) travels as environment instead, and that
-        // environment has to be on the workspace before the pane exists.
+        // environment has to be on the tab before its pane exists.
         const { line, env: argEnv } = shellCommand(launchSpec.file, launchSpec.args || []);
-        const workspace = parseResult(await inSession(
-          target, 'workspace', 'create', '--cwd', cwd, '--label', 'unsnooze',
-          ...envFlags({ ...launchSpec?.env, ...argEnv }),
-        ));
-        const pane = workspace?.root_pane?.pane_id;
-        if (!pane) throw new Error('unsnooze: unexpected herdr workspace shape: no root_pane');
+        const pane = await openTerminal(
+          target, cwd, envFlags({ ...launchSpec?.env, ...argEnv }),
+        );
         // One argument, already quoted: `pane run` joins its operands with
         // spaces and types them into the pane's shell, so the quoting has to be
         // ours. It also submits the line itself (PaneSendInput carries

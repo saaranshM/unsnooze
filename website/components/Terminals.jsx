@@ -23,9 +23,10 @@ const TERMINALS = [
     name: 'herdr',
     req: '≥ 0.8.0',
     href: 'https://herdr.dev',
-    body: <>Built for running coding agents, and it restores saved agent panes by itself — so
-      unsnooze never restarts a stopped herdr session, and revives into a fresh name instead.
-      Restarting one could resume the same conversation twice.</>,
+    body: <>Built for running coding agents. A workspace there is the project, so a revival
+      opens a tab in the one already on that directory. And since herdr restores saved agent
+      panes by itself, unsnooze never restarts a stopped session — that could resume the same
+      conversation twice — and revives into a fresh name instead.</>,
   },
   {
     name: 'cmux',

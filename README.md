@@ -751,7 +751,7 @@ explicitly with `unsnooze config set multiplexer tmux`, `zellij`, or `herdr`.
 
 #### herdr specifics
 
-herdr differs from tmux and Zellij in three ways that are visible in use:
+herdr differs from tmux and Zellij in four ways that are visible in use:
 
 - **unsnooze never restarts a stopped herdr session.** herdr restores saved
   agent panes when a session restarts (`resume_agents_on_restore` is on by
@@ -761,10 +761,17 @@ herdr differs from tmux and Zellij in three ways that are visible in use:
   reusing the name. If you restart a stopped session yourself and herdr brings
   the agent back, unsnooze may still open a fresh pane for it; that case is not
   yet detected.
+- **A revived session opens a tab, not a workspace.** A herdr workspace is the
+  project — per repo, the way a tmux *session* is — while a tab is what tmux
+  calls a window. So a revival opens a new tab in whichever workspace herdr
+  already has open on that directory, and only creates a workspace when there
+  is none. (A tab rather than a split: a revived agent draws a full-screen TUI,
+  and halving the pane you are looking at would leave two terminals too narrow
+  to use. Neither steals focus.)
 - **Multi-line resume messages are carried, not typed.** herdr starts a pane
   command by typing it into the pane's shell, where a newline would submit half
   a command and a tab would be a completion request. Any such argument is passed
-  through the workspace environment instead and referenced by the typed line, so
+  through the new tab's environment instead and referenced by the typed line, so
   a multi-paragraph `resumeMessage` reaches the agent as one argument, byte for
   byte. (A NUL byte is still refused — an environment value cannot hold one.)
 - **A custom `HERDR_SOCKET_PATH` that does not match the session being

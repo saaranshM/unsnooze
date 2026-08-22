@@ -130,6 +130,24 @@ async function main() {
   check(argLines === NASTY.length, `exactly ${NASTY.length} argument lines, not a doubled run`,
     `saw ${argLines}`);
 
+  section('one workspace per project (#15)');
+  // A herdr workspace is the project, not the window — it is per repo, the way
+  // a tmux SESSION is. Both revivals above ran in /tmp, so the second must have
+  // opened a TAB inside the first one's workspace rather than a second
+  // top-level workspace for the same work. Pane ids are workspace-qualified
+  // (`w2:p7`), so the prefix is the answer.
+  const workspaceOf = pane => String(pane).split(':')[0];
+  check(workspaceOf(hoisted.pane) === workspaceOf(address.pane),
+    'a second revival in the same directory reuses that project workspace',
+    `${hoisted.pane} vs ${address.pane}`);
+  const elsewhere = await sess.newWindow(SESSION, CFG, {
+    file: '/bin/sh', args: ['-c', `echo ${DONE}`], env: {},
+  });
+  await waitForDone(elsewhere.pane);
+  check(workspaceOf(elsewhere.pane) !== workspaceOf(address.pane),
+    'a revival in a directory herdr has nothing open on still gets its own workspace',
+    `${elsewhere.pane} vs ${address.pane}`);
+
   section('capture sources');
   const detection = await sess.capturePane(address.pane, 200);
   check(typeof detection === 'string' && detection.length > 0, 'capturePane (detection) returns the live screen');

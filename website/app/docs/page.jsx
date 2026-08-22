@@ -101,9 +101,11 @@ unsnooze doctor: all clear — install is healthy.
                 </table>
               </div>
               <ol className="doc-notes">
-                <li>Into a fresh session name (<C>unsnooze-2</C>), never by restarting the stopped
-                  one — herdr restores saved agent panes itself, so a revival on top would resume
-                  the same conversation twice.</li>
+                <li>As a new tab in whichever workspace herdr already has open on that
+                  directory — a workspace is the project, not the window — and into a fresh
+                  session name (<C>unsnooze-2</C>), never by restarting the stopped one, since
+                  herdr restores saved agent panes itself and a revival on top would resume the
+                  same conversation twice.</li>
                 <li>Into a fresh workspace; cmux has no joinable named-session model.</li>
                 <li>As a detached process. Its output goes to{' '}
                   <C>~/.unsnooze/headless/&lt;session&gt;.log</C>, since there is no scrollback to

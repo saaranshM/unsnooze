@@ -403,6 +403,9 @@ test('ensureSessionRunning raises SessionCreateError when the server never becom
 test('newWindow puts whitelisted launch env on workspace and types ONE quoted command line', async () => {
   const spawner = fakeSpawner((_file, args, options) => {
     if (args.join(' ') === 'session list --json') return runningNamedSession;
+    // Nothing herdr has open is on /tmp/project, so this revival is the
+    // workspace-creating path.
+    if (args.join(' ').endsWith('pane list')) return paneList;
     if (args.includes('workspace') && args.includes('create')) return workspaceCreated;
     if (args.includes('pane') && args.includes('run')) return '';
     if (args.includes('pane') && args.includes('send-keys')) return '';
@@ -451,17 +454,136 @@ test('newWindow puts whitelisted launch env on workspace and types ONE quoted co
 test('newWindow throws when workspace create has no root pane id', async () => {
   const spawner = fakeSpawner((_file, args) => {
     if (args.join(' ') === 'session list --json') return runningNamedSession;
+    if (args.join(' ').endsWith('pane list')) return paneList;
     if (args.includes('workspace') && args.includes('create')) {
       return JSON.stringify({ id: 'cli:workspace:create', result: { type: 'workspace_created' } });
     }
     throw new Error(`unexpected call: ${args.join(' ')}`);
   });
   await assert.rejects(
-    () => createHerdr({ spawner, env: {} }).newWindow('revival', '/tmp', {
+    () => createHerdr({ spawner, env: {} }).newWindow('revival', '/srv/elsewhere', {
       file: 'node', args: [], env: {},
     }),
     /unexpected herdr workspace shape: no root_pane/,
   );
+});
+
+// A herdr workspace is the project, not the window — it is per repo, the way a
+// tmux SESSION is. Reviving used to `workspace create` every time, so one repo
+// accumulated a new top-level workspace on every reset (#15).
+const projectPaneList = JSON.stringify({
+  id: 'cli:pane:list',
+  result: {
+    panes: [
+      { pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', cwd: '/home/you/other',
+        agent_status: 'unknown' },
+      // Trailing slash on herdr's side, none on ours: the same directory.
+      { pane_id: 'w2:p1', workspace_id: 'w2', tab_id: 'w2:t1', cwd: '/srv/project/',
+        agent: 'claude', agent_status: 'working' },
+      { pane_id: 'w3:p1', workspace_id: 'w3', tab_id: 'w3:t1', cwd: '/tmp',
+        foreground_cwd: '/srv/project', agent_status: 'unknown' },
+    ],
+    type: 'pane_list',
+  },
+});
+
+const tabCreated = JSON.stringify({
+  id: 'cli:tab:create',
+  result: {
+    root_pane: {
+      agent_status: 'unknown', cwd: '/srv/project', focused: false,
+      foreground_cwd: '/srv/project', pane_id: 'w2:p7', revision: 0,
+      tab_id: 'w2:t3', terminal_id: 'term_revive', workspace_id: 'w2',
+    },
+    tab: { agent_status: 'unknown', focused: false, label: 'unsnooze', number: 3,
+      pane_count: 1, tab_id: 'w2:t3', workspace_id: 'w2' },
+    type: 'tab_created',
+  },
+});
+
+test('newWindow opens a tab in the workspace already on this project, not a new workspace', async () => {
+  const spawner = fakeSpawner((_file, args, options) => {
+    if (args.join(' ') === 'session list --json') return runningNamedSession;
+    if (args.join(' ').endsWith('pane list')) return projectPaneList;
+    if (args.includes('tab') && args.includes('create')) return tabCreated;
+    if (args.includes('pane') && args.includes('run')) return '';
+    if (options.detach) return { pid: 1234, unref() {} };
+    throw new Error(`unexpected call: ${args.join(' ')}`);
+  });
+  const mux = createHerdr({ spawner, env: {} });
+
+  assert.deepEqual(await mux.newWindow('revival', '/srv/project', {
+    file: '/usr/bin/node', args: ['agent.js'],
+    env: { UNSNOOZE_MUX: 'herdr', CLAUDE_CONFIG_DIR: '/tmp/claude-config' },
+  }), { pane: 'w2:p7', paneOwner: 'revival', session: 'revival' });
+
+  // w2, not w1 (a different project) and not w3 (matched only via a foreground
+  // cwd, which the earlier row already beat) — and the launch env still rides
+  // on the created terminal, exactly as it did on a workspace.
+  const tab = spawner.calls.find(call => call.args.includes('tab'));
+  assert.deepEqual(tab.args, [
+    '--session', 'revival', 'tab', 'create', '--workspace', 'w2',
+    '--cwd', '/srv/project', '--label', 'unsnooze',
+    '--env', 'UNSNOOZE_MUX=herdr',
+    '--env', 'CLAUDE_CONFIG_DIR=/tmp/claude-config',
+  ]);
+  assert.equal(spawner.calls.some(call => call.args.includes('workspace')), false,
+    'no top-level workspace is created for a project herdr already has open');
+  const run = spawner.calls.find(call => call.args.includes('run'));
+  assert.deepEqual(run.args, [
+    '--session', 'revival', 'pane', 'run', 'w2:p7', "'/usr/bin/node' 'agent.js'",
+  ]);
+});
+
+test('newWindow matches a project by a pane foreground cwd when no launch cwd does', async () => {
+  const spawner = fakeSpawner((_file, args, options) => {
+    if (args.join(' ') === 'session list --json') return runningNamedSession;
+    if (args.join(' ').endsWith('pane list')) return JSON.stringify({
+      result: { panes: [{ pane_id: 'w3:p1', workspace_id: 'w3', cwd: '/tmp',
+        foreground_cwd: '/srv/project' }] },
+    });
+    if (args.includes('tab') && args.includes('create')) return tabCreated;
+    if (options.detach) return { pid: 1234, unref() {} };
+    return '';
+  });
+  await createHerdr({ spawner, env: {} })
+    .newWindow('revival', '/srv/project', { file: 'node', args: [], env: {} });
+  const tab = spawner.calls.find(call => call.args.includes('tab'));
+  assert.deepEqual(tab.args.slice(0, 6),
+    ['--session', 'revival', 'tab', 'create', '--workspace', 'w3']);
+});
+
+test('newWindow creates a workspace when the matched one closed under it', async () => {
+  const spawner = fakeSpawner((_file, args, options) => {
+    if (args.join(' ') === 'session list --json') return runningNamedSession;
+    if (args.join(' ').endsWith('pane list')) return projectPaneList;
+    if (args.includes('tab') && args.includes('create')) {
+      throw new Error('workspace_not_found: workspace w2 not found');
+    }
+    if (args.includes('workspace') && args.includes('create')) return workspaceCreated;
+    if (options.detach) return { pid: 1234, unref() {} };
+    return '';
+  });
+  const address = await createHerdr({ spawner, env: {} })
+    .newWindow('revival', '/srv/project', { file: 'node', args: [], env: {} });
+  // A revival into a fresh workspace still revives; failing the revival does not.
+  assert.equal(address.pane, 'w1:p1');
+  assert.equal(spawner.calls.some(call =>
+    call.args.includes('workspace') && call.args.includes('create')), true);
+  assert.equal(spawner.calls.some(call => call.args.includes('run')), true);
+});
+
+test('newWindow creates a workspace when herdr cannot be asked what it has open', async () => {
+  const spawner = fakeSpawner((_file, args, options) => {
+    if (args.join(' ') === 'session list --json') return runningNamedSession;
+    if (args.join(' ').endsWith('pane list')) return 'not json';
+    if (args.includes('workspace') && args.includes('create')) return workspaceCreated;
+    if (options.detach) return { pid: 1234, unref() {} };
+    return '';
+  });
+  const address = await createHerdr({ spawner, env: {} })
+    .newWindow('revival', '/srv/project', { file: 'node', args: [], env: {} });
+  assert.equal(address.pane, 'w1:p1');
 });
 
 function syncLaunchSpawner({ sessions, attachResult = { status: 0 },
