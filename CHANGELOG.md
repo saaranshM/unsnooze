@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.16.2 — 2026-08-22
+
+- **A herdr revival now opens a tab in your project's workspace, not a new
+  workspace of its own.** ([#15](https://github.com/saaranshM/unsnooze/issues/15))
+  `newWindow` means "one more terminal for this work" — a window in tmux, a tab
+  in Zellij — and it was mapped to `herdr workspace create`. But a herdr
+  workspace is the *project*: it is per repo, the way a tmux session is. So
+  every reset left another top-level workspace for the same repo, and a week of
+  them was a sidebar full of duplicates. unsnooze now asks herdr which
+  workspace is already open on that directory and adds a tab there, creating a
+  workspace only when there is genuinely none — a session it just started, or a
+  directory herdr has nothing open on. A tab rather than a split, because a
+  revived agent draws a full-screen TUI and halving the pane you are looking at
+  would leave two terminals too narrow to use; neither takes focus away from
+  what you are doing.
+
 ## 1.16.1 — 2026-08-16
 
 - **`unsnooze status` no longer offers an attach command for headless sessions.**
