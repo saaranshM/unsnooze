@@ -36,7 +36,8 @@ jobs:
     needs: test
     runs-on: ubuntu-latest   # must be GitHub-hosted for provenance
     permissions:
-      contents: read
+      # write, not read: the last step creates the GitHub release for the tag.
+      contents: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -81,3 +82,18 @@ jobs:
         env:
           VERCEL_DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
         run: curl --fail --silent --show-error --request POST --output /dev/null "${VERCEL_DEPLOY_HOOK}?buildCache=false"
+      # GitHub Releases used to be written by hand after the fact, so a release
+      # that npm and the website both had could still be missing from the repo's
+      # Releases tab — 1.16.2 was. The notes are the version's CHANGELOG section;
+      # edit the release afterwards when it deserves more.
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          node scripts/release-notes.mjs "$version" > release-notes.md
+          if gh release view "v$version" >/dev/null 2>&1; then
+            gh release edit "v$version" --notes-file release-notes.md
+          else
+            gh release create "v$version" --title "v$version" --notes-file release-notes.md --verify-tag
+          fi
