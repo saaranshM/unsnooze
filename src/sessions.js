@@ -40,8 +40,26 @@ export function latestSessionId(cwd, aroundTs = null) {
   return best ? best.id : null;
 }
 
+// sessionId lands here straight off a hook payload / transcript record and is
+// used as a path component — the same untrusted-value-as-filename shape the
+// statusline shim had, on the channel everyone has enabled. dashCwd already
+// sanitizes the cwd half; a '/' or a '..' in the id half would walk this read
+// out of the projects tree.
+//
+// Deliberately a filename-shape check rather than UUID_RE: that regex is the
+// right gate for *discovering* transcripts (it reads Claude's own directory
+// listing) but the wrong one here, where the id arrives from an agent whose
+// naming we do not own. Requiring a uuid would silently turn off the context
+// guard for any session named otherwise; requiring a safe component closes
+// the traversal either way. '.' and '..' are harmless: the '.jsonl' suffix
+// makes them ordinary filenames. Returns null for anything else, which every
+// caller already reports as "no transcript".
+const SAFE_SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
+
 export function transcriptPath(cwd, sessionId, { claudeDir = CLAUDE_DIR } = {}) {
-  return join(claudeDir, 'projects', dashCwd(cwd), `${sessionId}.jsonl`);
+  const id = String(sessionId ?? '');
+  if (!SAFE_SESSION_ID_RE.test(id)) return null;
+  return join(claudeDir, 'projects', dashCwd(cwd), `${id}.jsonl`);
 }
 
 export function claudeRecordEnv(env = process.env) {

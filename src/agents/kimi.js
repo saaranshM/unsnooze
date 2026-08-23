@@ -54,7 +54,15 @@ function sessionsDirFor(cwd, kimiDir) {
   return join(kimiDir, 'sessions', createHash('md5').update(cwd).digest('hex'));
 }
 
+// sessionId comes from a hook payload and is used as a path component here.
+// The result only picks `-r <id>` over `--continue` and the id travels as
+// argv with no shell, so the exposure is an existence oracle rather than a
+// traversal — but it is the same shape as transcriptPath's, and the same
+// filename-shape gate closes it.
+const SAFE_SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
+
 function sessionExists(sessionId, kimiDir) {
+  if (!SAFE_SESSION_ID_RE.test(String(sessionId ?? ''))) return false;
   let hashes;
   try { hashes = readdirSync(join(kimiDir, 'sessions')); } catch { return false; }
   return hashes.some(h => existsSync(join(kimiDir, 'sessions', h, sessionId)));
