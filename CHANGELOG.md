@@ -1,5 +1,134 @@
 # Changelog
 
+## 1.17.0 — 2026-08-23
+
+- **A state directory unsnooze cannot write to no longer pins a CPU core
+  forever.** The lock around `~/.unsnooze/state.json` treated every `mkdir`
+  failure as contention. `EEXIST` really is contention — someone else holds the
+  lock — but `EACCES` on an unwritable state directory, `EROFS` on a read-only
+  filesystem and `ENOSPC` on a full one are not, and that branch retried with
+  neither a sleep nor a deadline check. Since `mkdir -p` on a directory that
+  already exists succeeds as a no-op, there was nothing to break the cycle:
+  the loop spun at around 70% of a core, ignored `UNSNOOZE_LOCK_TIMEOUT_MS`
+  entirely, and never returned. It took every writer with it — the daemon, any
+  CLI command, and the StopFailure hook that runs *inside* your agent. unsnooze
+  now repairs a state directory it owns and otherwise fails on the deadline with
+  the errno that caused it.
+
+- **Everything under `~/.unsnooze` is now owner-only (0700 / 0600).** The
+  directory was 0755 and every file inside it 0644, so on a shared machine any
+  other local user could read them. That directory holds your ntfy bearer token
+  (`config.json`), the text of queued prompts and the paths they run in
+  (`state.json`), your fleet's ssh destinations and the commands that fetch
+  their passwords (`hosts.json`), a mirror of every remote host's sessions
+  (`fleet-cache.json`), a lease file per pane carrying its working directory
+  (`leases/`), and — for a headless revival — the entire stdout and stderr of
+  an unattended agent run (`headless/*.log`). Every writer now creates its file
+  owner-only and its directory 0700.
+
+  Upgrading an existing install needed more than that, because none of it is
+  something a writer can fix: `mkdir`'s mode is ignored for a directory that
+  already exists, appending to a log reuses the file's inode, and
+  `config.json` and `hosts.json` are written only by `config set` and
+  `hosts add`, so an install that never touches them again would have kept
+  their old mode — and the token in one of them — indefinitely. So a state
+  write repairs the modes directly, walking the `events/`, `leases/`,
+  `mux-sessions/` and `headless/` subdirectories as well as the top-level
+  files. It re-checks on an interval rather than once per process, because
+  `daemon.log` is created by launchd/systemd redirecting the daemon's stdout
+  and can appear after a first pass has already run — in a process that then
+  lives for days. It strips group and other access without touching the
+  owner's own bits, so an executable in there stays executable; it never
+  follows a symlink or a hardlink into a file it is about to change; and it
+  only ever touches unsnooze's own state directory. `unsnooze doctor` reports
+  from the same walk the repair acts on, so the two cannot disagree about what
+  counts as exposed. It is inert on Windows, which has no POSIX mode bits —
+  libuv synthesises them by mirroring the owner's, so every file there reads
+  as world-readable and no `chmod` can change it; access is governed by the
+  profile ACL instead. The same is true of a state directory on a filesystem
+  that does not implement permissions at all — a CIFS or vfat mount, WSL's
+  `drvfs`, a bind mount from a Windows host — and the platform name does not
+  identify those, so unsnooze finds out by attempting the change and looking:
+  a `chmod` that succeeds while the bits stay put means the filesystem has
+  nothing to set, and the directory is left alone rather than rewritten every
+  minute forever. `unsnooze doctor --fix` reports those three outcomes
+  separately, so "could not" is never printed as "did".
+
+  The statusline shim's own drop directory, `~/.claude/unsnooze`, gets the
+  same treatment: it holds your live rate-limit numbers and was created 0755.
+  It is repaired on the shim's next run rather than only for new installs.
+
+  `unsnooze doctor` now also reports anything under the state directory that
+  other users can read, and `doctor --fix` narrows it. That check exists
+  because the repair deliberately ignores a failed `chmod` — crashing every
+  state write on a filesystem that has no usable one would be the worse bug —
+  so something has to be able to tell you it did not take.
+
+  No credential was ever stored in plaintext: a password source is a
+  *reference* to your keychain, environment or secret tool, never the secret.
+  On a single-user machine nothing here was reachable by anyone new.
+
+- **A hostile `session_id` can no longer steer where unsnooze reads or
+  writes.** Three places took that value — which arrives in a payload from the
+  agent — and used it directly as a filename. The opt-in Claude Code statusline
+  shim built its drop filename by concatenating it, so a `/` or a `..` walked
+  the write out of `~/.claude/unsnooze` and over any `.json` file you can
+  write. `transcriptPath`, on the StopFailure hook path that everyone has
+  enabled, composed a transcript path the same way, turning a read of your own
+  transcript into a read of any `.jsonl` you name. And the Kimi adapter probed
+  for a session directory by the same concatenation, which leaked whether an
+  arbitrary path exists. Claude Code sends a uuid, so all three needed a
+  malicious or compromised agent to reach, and the two reads are only ever
+  mined for a timestamp or a boolean — never echoed back. None of them was in
+  a position to know that. All three now require a filename-shaped id and fall
+  back to `unknown` / no-transcript / not-found. If you have the statusline
+  shim installed, re-run `unsnooze usage --install-statusline` to pick up the
+  fix; the other two need nothing.
+
+- **A corrupt `state.json` no longer prints its own first bytes into the log.**
+  The quarantine message included V8's `JSON.parse` error, and V8 embeds a
+  snippet of the input it choked on — so a state file that had been replaced
+  with something else echoed that file's opening characters into
+  `unsnooze.log`. The quarantined file is still kept on disk, and the log still
+  names it and says why.
+
+- **Three narrower lock fixes.** A writer whose stale-lock steal was itself
+  stolen no longer deletes the thief's lock on the way out — it only removes a
+  lock still stamped with its own pid. The steal itself now re-checks that the
+  directory it is about to remove is still the one it judged stale, narrowing
+  a window where two contenders could both decide to steal and the slower one
+  would delete the winner's fresh lock. And a lock is now stolen on age alone
+  once it is very old: liveness was decided by signalling the recorded pid,
+  which cannot tell "unsnooze is still working" from "that number now belongs
+  to some unrelated long-lived process", so a leaked lock whose pid was later
+  recycled wedged every writer permanently, with no recovery but deleting the
+  directory by hand.
+
+  That last one is a trade rather than a free win — stealing from a holder that
+  really is still working puts two writers in the critical section, and one
+  overwrites the other. It is chosen because a permanent wedge is the worse
+  failure, and the exposure is kept small by making sure the lock is only ever
+  held for in-memory work plus a single write: `upsertSession` used to compute
+  its workspace fingerprint inside the lock, which shells out to git, and
+  `execFileSync`'s timeout is a soft bound — it signals the child and then
+  waits for it to actually exit, which a git wedged on a hung network mount
+  never does. That call now happens before the lock is taken, so nothing
+  unbounded runs inside it.
+
+  *Raised in [#17](https://github.com/saaranshM/unsnooze/issues/17). The report
+  also flagged the askpass `command` source as command injection and reading
+  `state.json` as a symlink-following bug; neither is a vulnerability. A
+  `command` source is your own configured command, in the shape git's
+  `credential.helper = !cmd` has always taken, and it can only be set by
+  someone who can already write to your home directory. As for the symlink:
+  reads do follow one — point `state.json` at a file holding valid JSON and
+  its contents are read as state — but planting that link needs write access
+  to a directory that is now 0700, which is not a boundary anyone crosses
+  without already owning the account. The write side is genuinely safe: the
+  quarantine renames the link rather than the file it points at, and a state
+  write replaces the link with a real file, so the target is never truncated
+  or overwritten.*
+
 ## 1.16.3 — 2026-08-22
 
 - **A dashboard left open overnight no longer runs the machine out of memory.**
