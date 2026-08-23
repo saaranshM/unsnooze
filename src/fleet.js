@@ -5,9 +5,9 @@
 // allowlisted host tokens, closed verb set, sentinel-framed JSON, and
 // control-char-stripped ingest.
 import { join } from 'node:path';
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync as fsExistsSync } from 'node:fs';
+import { readFileSync, existsSync as fsExistsSync } from 'node:fs';
 import { spawn, execFileSync, spawnSync } from 'node:child_process';
-import { STATE_DIR } from './config.js';
+import { STATE_DIR, ensureStateDir, writePrivateFile } from './config.js';
 import { colors, shouldUseTui, makeTable, logoBlock, badge } from './tui.js';
 import { ensureAskpassHelper, resolveSecret, readSecret } from './askpass.js';
 import { UNSNOOZE_BIN } from './spawn.js';
@@ -288,10 +288,12 @@ export function readHosts() {
 }
 
 export function writeHosts(hosts) {
-  mkdirSync(STATE_DIR, { recursive: true });
-  const tmp = HOSTS_FILE + `.tmp.${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(hosts, null, 2) + '\n');
-  renameSync(tmp, HOSTS_FILE);
+  ensureStateDir();
+  // Owner-only: a `command` source's --cmd string is whatever the user
+  // pointed at their secret store, and a keychain source names the
+  // service/account to look up.
+  writePrivateFile(HOSTS_FILE, HOSTS_FILE + `.tmp.${process.pid}`,
+    JSON.stringify(hosts, null, 2) + '\n');
 }
 
 function parseFlags(argv) {
@@ -740,10 +742,11 @@ export function readFleetCache() {
 }
 
 export function writeFleetCache(results) {
-  mkdirSync(STATE_DIR, { recursive: true });
-  const tmp = FLEET_CACHE_FILE + `.tmp.${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(results, null, 2) + '\n');
-  renameSync(tmp, FLEET_CACHE_FILE);
+  ensureStateDir();
+  // Owner-only: the cache mirrors every remote host's cwd paths and
+  // queued-prompt previews.
+  writePrivateFile(FLEET_CACHE_FILE, FLEET_CACHE_FILE + `.tmp.${process.pid}`,
+    JSON.stringify(results, null, 2) + '\n');
 }
 
 // I1: a `prompt`-source host at a real interactive TTY is the one case

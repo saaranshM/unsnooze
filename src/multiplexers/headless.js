@@ -96,9 +96,11 @@ export function createHeadless({
     // A revive is just a detached child. Its output goes to a per-session log
     // because there is no scrollback to read it out of later.
     async newWindow(sessionName, cwd, launchSpec) {
-      mkdirSync(logDir, { recursive: true });
+      // 0700/0600: this log is the entire stdout+stderr of an unattended
+      // agent run — the most revealing thing under the state dir.
+      mkdirSync(logDir, { recursive: true, mode: 0o700 });
       const logPath = join(logDir, `${sessionName}.log`);
-      const fd = openSync(logPath, 'a');
+      const fd = openSync(logPath, 'a', 0o600);
       const child = spawner(launchSpec.file, launchSpec.args || [], {
         cwd,
         detached: true,

@@ -6,9 +6,9 @@
 // the global resumeMessage even when the global came from an env var (see
 // resolveResumeMessage).
 
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { MUX_NAMES, STATE_DIR } from './config.js';
+import { MUX_NAMES, STATE_DIR, ensureStateDir, writePrivateFile } from './config.js';
 
 export const CONFIG_FILE = () => join(process.env.UNSNOOZE_STATE_DIR || STATE_DIR, 'config.json');
 
@@ -267,10 +267,11 @@ export function setConfigValue(key, rawValue) {
 
 export function writeConfig(config) {
   const path = CONFIG_FILE();
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `.config.tmp.${process.pid}`);
-  writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
-  renameSync(tmp, path);
+  ensureStateDir(dirname(path));
+  // Owner-only: ntfyToken is a Bearer credential, and config.json was
+  // world-readable before 1.17.0.
+  writePrivateFile(path, join(dirname(path), `.config.tmp.${process.pid}`),
+    JSON.stringify(config, null, 2) + '\n');
 }
 
 export function configFileExists() {

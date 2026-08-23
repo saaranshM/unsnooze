@@ -29,10 +29,10 @@ export function recordOwnedSession({ mux, name }) {
   if (!mux || !name) return null;
   const record = { mux, name, createdAt: Date.now(), pid: process.pid };
   try {
-    mkdirSync(SESSIONS_DIR(), { recursive: true });
+    mkdirSync(SESSIONS_DIR(), { recursive: true, mode: 0o700 });
     const path = recordPath(mux, name);
     const tmp = `${path}.tmp.${process.pid}.${randomUUID()}`;
-    writeFileSync(tmp, JSON.stringify(record));
+    writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 });
     renameSync(tmp, path);
     return record;
   } catch {

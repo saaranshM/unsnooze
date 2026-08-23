@@ -10,7 +10,7 @@ import { readFileSync, readdirSync, renameSync, existsSync, unlinkSync, lstatSyn
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { CLAUDE_SETTINGS, RESUMER_LOCK } from './config.js';
+import { CLAUDE_SETTINGS, RESUMER_LOCK, STATE_DIR, scanStateDir, narrowStateDir } from './config.js';
 import { getMultiplexer } from './multiplexer.js';
 import { makeLogger } from './logger.js';
 import { shouldUseTui, formatDoctorTui } from './tui.js';
@@ -151,6 +151,17 @@ function daemonRunning() {
  * detail, fix? } — `fix` is a machine-actionable descriptor consumed by
  * applyFixes. healthy === no legacy and no health findings.
  */
+// Both delegate to config.js's walk: the reporter and the automatic repair
+// must never disagree about what counts as exposed, which is exactly what
+// happened when each had its own idea of where to look.
+export function findExposedStateFiles(dir = STATE_DIR, opts = {}) {
+  return scanStateDir(dir, opts).map(e => ({ ...e, mode: e.mode.toString(8) }));
+}
+
+export function narrowStateModes(entries) {
+  return narrowStateDir(entries);
+}
+
 export async function runDoctor({
   runner = defaultRunner,
   platform = process.platform,
@@ -164,6 +175,7 @@ export async function runDoctor({
   rcContent = undefined,
   profileContent = undefined,
   autostartDir = null,
+  stateDir = STATE_DIR,
 } = {}) {
   const findings = [];
 
@@ -220,6 +232,22 @@ export async function runDoctor({
       detail: '  run: unsnooze install --yes  (then: exec $SHELL)',
     });
   }
+  // The state dir is repaired on every write, but chmod is swallowed there —
+  // a filesystem that cannot honour it (FAT, some network mounts) would
+  // otherwise leave everything world-readable with nothing ever saying so.
+  // This is the place that says so, and --fix retries the chmod.
+  const exposed = findExposedStateFiles(stateDir, { platform });
+  if (exposed.length) {
+    findings.push({
+      id: 'state-permissions', kind: 'health',
+      title: `${exposed.length} file(s) in ${stateDir} are readable by other users`,
+      detail: exposed.slice(0, 8).map(e => `  ${e.mode} ${e.rel}`).join('\n')
+        + (exposed.length > 8 ? `\n  …and ${exposed.length - 8} more` : '')
+        + '\n  run: unsnooze doctor --fix',
+      fix: { action: 'narrow-state-modes', entries: exposed },
+    });
+  }
+
   let muxOk = false;
   try { muxOk = !!mux.available(); } catch { muxOk = false; }
   if (!muxOk) {
@@ -321,6 +349,11 @@ export async function applyFixes(report, {
       } else {
         actions.push({ action: 'error', detail: 'could not determine a PATH that finds the multiplexer — run `unsnooze install --daemon` from your shell' });
       }
+    } else if (fix.action === 'narrow-state-modes') {
+      const r = narrowStateModes(fix.entries || []);
+      actions.push({ action: 'narrowed-modes', ...r });
+      log(`doctor: narrowed ${r.fixed} state-dir path(s) to owner-only `
+        + `(${r.refused} refused, ${r.ineffective} ignored by the filesystem)`);
     } else if (fix.action === 'archive-dir') {
       let target = `${fix.dir}.bak`;
       if (existsSync(target)) target = `${fix.dir}.bak.${now}`;
@@ -379,6 +412,16 @@ export async function cmdDoctor(rest = [], deps = {}) {
       if (a.action === 'killed') print(`  ✓ stopped csg process ${a.pid}`);
       else if (a.action === 'removed-unit') print(`  ✓ removed ${a.unit}`);
       else if (a.action === 'archived') print(`  ✓ archived ${a.from} → ${a.to}`);
+      else if (a.action === 'narrowed-modes') {
+        if (a.fixed) print(`  ✓ made ${a.fixed} state-dir path(s) owner-only`);
+        // Distinguish "cannot" from "did not": a filesystem with no POSIX
+        // modes reports success and changes nothing, and telling the user to
+        // try again would be advice that can never work.
+        if (a.ineffective) {
+          print(`  · ${a.ineffective} path(s) unchanged — this filesystem does not enforce POSIX permissions`);
+        }
+        if (a.refused) print(`  ✗ ${a.refused} path(s) could not be changed (permission denied)`);
+      }
       else if (a.action === 'error') print(`  ! ${a.detail}`);
     }
     const pkg = legacy.find(f => f.id === 'csg-package');
@@ -386,8 +429,14 @@ export async function cmdDoctor(rest = [], deps = {}) {
     return 0;
   }
 
+  // Offer --fix whenever anything reported is actually machine-fixable, not
+  // only for csg leftovers: a health finding that carries a `fix` (state
+  // permissions) was otherwise a dead end for the reader.
+  const fixable = report.findings.some(f => f.fix);
   print(legacy.length
     ? '\nRun `unsnooze doctor --fix` to stop csg processes, remove its autostart, and archive its state.'
-    : '\nSee the hints above to finish the install.');
+    : fixable
+      ? '\nRun `unsnooze doctor --fix` to apply the repairs above.'
+      : '\nSee the hints above to finish the install.');
   return 1;
 }

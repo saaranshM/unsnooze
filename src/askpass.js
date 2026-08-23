@@ -3,7 +3,8 @@
 // anywhere. The SERVICE/ACCOUNT/VAR *names* may appear on argv; the secret
 // itself never does — it only ever comes back on stdout/stdin.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { writeFileSync, chmodSync, mkdirSync, renameSync } from 'node:fs';
+import { writeFileSync, chmodSync, renameSync } from 'node:fs';
+import { ensureStateDir } from './config.js';
 import { join } from 'node:path';
 
 export class AuthError extends Error {
@@ -163,7 +164,7 @@ export async function cmdAskpass(args = []) {
 // by Task 5) because ssh controls the helper's argv — it passes only the
 // prompt text, never the host.
 export function ensureAskpassHelper({ platform = process.platform, stateDir, nodePath = process.execPath, scriptPath }) {
-  mkdirSync(stateDir, { recursive: true });
+  ensureStateDir(stateDir);
   if (platform === 'win32') {
     // Native ssh.exe needs a real exe; unix-like win ssh (Git/WSL) accepts a script.
     // The resolution ladder (design §5c) is finalized in Task 7's cross-platform pass;

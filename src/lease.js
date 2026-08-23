@@ -43,10 +43,10 @@ function leasePath(address, leaseId) {
 }
 
 export function writeLease(lease) {
-  mkdirSync(LEASES_DIR, { recursive: true });
+  mkdirSync(LEASES_DIR, { recursive: true, mode: 0o700 });
   const path = leasePath(lease, lease.leaseId);
   const tmp = `${path}.tmp.${process.pid}.${randomUUID()}`;
-  writeFileSync(tmp, JSON.stringify(lease));
+  writeFileSync(tmp, JSON.stringify(lease), { mode: 0o600 });
   renameSync(tmp, path);
   return lease;
 }

@@ -7,13 +7,14 @@
 // All of it is gated on the `updateCheck` setting / UNSNOOZE_UPDATE_CHECK.
 // The check is a plain GET to registry.npmjs.org — nothing identifying.
 
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig } from './settings.js';
 import { notify } from './notify.js';
 import { UNSNOOZE_BIN, pidAlive } from './spawn.js';
+import { ensureStateDir, writePrivateFile } from './config.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const PKG_VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')).version;
@@ -31,10 +32,11 @@ export function readCache() {
 export function writeCache(patch) {
   const merged = { ...readCache(), ...patch };
   const path = CACHE_FILE();
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `.update-check.tmp.${process.pid}`);
-  writeFileSync(tmp, JSON.stringify(merged, null, 2) + '\n');
-  renameSync(tmp, path);
+  // _update-check runs as a detached child, so on a fresh install this can be
+  // the process that creates ~/.unsnooze — it must create it owner-only.
+  ensureStateDir(dirname(path));
+  writePrivateFile(path, join(dirname(path), `.update-check.tmp.${process.pid}`),
+    JSON.stringify(merged, null, 2) + '\n');
   return merged;
 }
 

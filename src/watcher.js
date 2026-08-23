@@ -293,9 +293,9 @@ export function createWatcher({
     }
     if (!dirty) return;
     try {
-      mkdirSync(dirname(offsetsPath), { recursive: true });
+      mkdirSync(dirname(offsetsPath), { recursive: true, mode: 0o700 });
       const tmp = join(dirname(offsetsPath), `.offsets.tmp.${process.pid}`);
-      writeFileSync(tmp, JSON.stringify(offsets));
+      writeFileSync(tmp, JSON.stringify(offsets), { mode: 0o600 });
       renameSync(tmp, offsetsPath);
       dirty = false;
     } catch (err) {

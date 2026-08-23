@@ -11,7 +11,7 @@ import {
   CLAUDE_DIR, CODEX_DIR, USAGE_FILE, USAGE_ETA_WARN_MIN,
   USAGE_BURN_LOOKBACK_MS, USAGE_BURN_MIN_COVERAGE_MS, USAGE_IDLE_GAP_MS,
   USAGE_WINDOW_IDLE_MS, USAGE_CALIBRATION_RING, USAGE_CALIBRATION_MEDIAN_N,
-  USAGE_STATUSLINE_DIR,
+  USAGE_STATUSLINE_DIR, ensureStateDir, writePrivateFile,
 } from './config.js';
 import { readState, updateState } from './state.js';
 import { getConfig } from './settings.js';
@@ -535,10 +535,9 @@ export function readUsageStore(path = USAGE_FILE) {
 }
 
 export function writeUsageStore(store, path = USAGE_FILE) {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `.usage.tmp.${process.pid}`);
-  writeFileSync(tmp, JSON.stringify(store));
-  renameSync(tmp, path);
+  ensureStateDir(dirname(path));
+  writePrivateFile(path, join(dirname(path), `.usage.tmp.${process.pid}`),
+    JSON.stringify(store));
   return store;
 }
 
@@ -1239,15 +1238,30 @@ let data = {};
 try { data = JSON.parse(raw || '{}'); } catch { /* ignore */ }
 
 const dir = path.join(os.homedir(), '.claude', 'unsnooze');
-try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
-const sid = data.session_id || data.sessionId || 'unknown';
+// 0700/0600 like the state dir: these drops carry your live rate-limit
+// numbers, and the shim is the only thing that creates them. mkdir's mode is
+// ignored for a directory that already exists, so an install that predates
+// this is repaired explicitly — the same reasoning ensureStateDir applies one
+// directory over. Skipped on Windows, where the POSIX bits are synthetic.
+try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch { /* ignore */ }
+if (process.platform !== 'win32') {
+  try { fs.chmodSync(dir, 0o700); } catch { /* not ours */ }
+}
+// The id becomes a filename. Claude Code sends a uuid, but nothing here is
+// in a position to trust that: a '/' or a '..' would walk the drop file out
+// of ~/.claude/unsnooze and overwrite any .json the user can write.
+const rawSid = String(data.session_id || data.sessionId || 'unknown');
+const sid = /^[A-Za-z0-9._-]{1,128}$/.test(rawSid) ? rawSid : 'unknown';
 const drop = path.join(dir, 'usage-' + sid + '.json');
 try {
   fs.writeFileSync(drop, JSON.stringify({
     rate_limits: data.rate_limits || null,
     at: Date.now(),
     sessionId: sid,
-  }));
+  }), { mode: 0o600 });
+  // mode only lands when writeFileSync CREATES the file; an existing drop
+  // from before this change keeps its own until chmod'd.
+  if (process.platform !== 'win32') fs.chmodSync(drop, 0o600);
 } catch { /* ignore */ }
 
 const orig = process.env.UNSNOOZE_STATUSLINE_ORIG || '';

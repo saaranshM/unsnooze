@@ -89,9 +89,10 @@ export async function runHook(rest = []) {
       // Seconds-scale problem — leave a marker for the pane's monitor, do NOT
       // record in state.json.
       if (pane) {
-        mkdirSync(EVENTS_DIR, { recursive: true });
+        mkdirSync(EVENTS_DIR, { recursive: true, mode: 0o700 });
         writeFileSync(join(EVENTS_DIR, `${addressHash({ mux: muxName, paneOwner, pane })}.json`),
-          JSON.stringify({ mux: muxName, paneOwner, pane, kind, at: Date.now(), payload: { error: payload.error ?? null } }));
+          JSON.stringify({ mux: muxName, paneOwner, pane, kind, at: Date.now(), payload: { error: payload.error ?? null } }),
+          { mode: 0o600 });
       }
       return 0;
     }

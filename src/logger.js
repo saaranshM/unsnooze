@@ -1,6 +1,6 @@
-import { appendFileSync, mkdirSync, statSync, renameSync, copyFileSync, truncateSync } from 'node:fs';
+import { appendFileSync, statSync, renameSync, copyFileSync, truncateSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { LOG_FILE } from './config.js';
+import { LOG_FILE, ensureStateDir } from './config.js';
 
 // Logs must never grow unbounded (a single upgrade-window crash-loop once
 // produced a 10.3 MB daemon.log). One rotated generation is kept: file → .1.
@@ -46,11 +46,13 @@ export function log(component, message) {
   const line = `${new Date().toISOString()} [${component}] ${message}\n`;
   try {
     if (!dirReady) {
-      mkdirSync(dirname(LOG_FILE), { recursive: true });
+      ensureStateDir(dirname(LOG_FILE));
       dirReady = true;
     }
     rotateIfLarge(LOG_FILE);
-    appendFileSync(LOG_FILE, line);
+    // mode applies only when append CREATES the file — an existing log keeps
+    // whatever it has, and the 0700 dir is what covers it either way.
+    appendFileSync(LOG_FILE, line, { mode: 0o600 });
   } catch {
     // Logging must never crash the hook or monitor paths.
   }

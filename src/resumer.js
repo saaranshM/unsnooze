@@ -4,12 +4,12 @@
 // fires on the next tick), then re-opens/continues every due session.
 // Exits when no non-terminal records remain; the next limit event respawns it.
 
-import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { getMultiplexer, backendCanType } from './multiplexer.js';
 import {
-  RESUMER_LOCK, STATE_DIR, POLL_INTERVAL_MS, STAGGER_MS, VERIFY_DELAY_MS,
+  RESUMER_LOCK, POLL_INTERVAL_MS, STAGGER_MS, VERIFY_DELAY_MS, ensureStateDir,
   BUSY_DEFER_MS, MAX_BUSY_DEFERS, MAX_RESUME_ATTEMPTS, READY_TIMEOUT_MS,
   CAPTURE_LINES, PANE_SCAN_LINES, RESUME_SESSION_NAME,
   RESET_MARGIN_MS, FALLBACK_RESET_MS, PROBE_INTERVAL_MS, PROBE_MAX_MS,
@@ -64,10 +64,10 @@ function defaultIsResumer(pid) {
 // read-check-write window. A held lock is honored only when its pid is alive
 // AND looks like a resumer; stale/garbage/recycled locks are replaced.
 export function acquireSingleton({ isResumer = defaultIsResumer } = {}) {
-  mkdirSync(STATE_DIR, { recursive: true });
+  ensureStateDir();
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      writeFileSync(RESUMER_LOCK, String(process.pid), { flag: 'wx' });
+      writeFileSync(RESUMER_LOCK, String(process.pid), { flag: 'wx', mode: 0o600 });
       return true;
     } catch { /* lock exists — inspect the holder below */ }
     let pid = NaN;
