@@ -1,7 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { createHerdr, SUBMIT_DELAY_MS } from '../src/multiplexers/herdr.js';
+// herdr's newSession calls recordOwnedSession, which writes into
+// STATE_DIR/mux-sessions — the real ~/.unsnooze unless this is set BEFORE the
+// module graph is imported. Must stay above the createHerdr import.
+const STATE_DIR = mkdtempSync(join(tmpdir(), 'unsnooze-herdr-test-'));
+process.env.UNSNOOZE_STATE_DIR = STATE_DIR;
+process.on('exit', () => rmSync(STATE_DIR, { recursive: true, force: true }));
+
+const { createHerdr, SUBMIT_DELAY_MS } = await import('../src/multiplexers/herdr.js');
 
 function fakeSpawner(respond = () => '') {
   const calls = [];

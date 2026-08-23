@@ -20,6 +20,14 @@ import { runDoctor } from '../src/doctor.js';
 import { powershellProfilePath } from '../src/powershell.js';
 import {
 } from '../src/install.js';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// runDoctor's state-permissions check defaults to the real ~/.unsnooze. These
+// tests assert on wrapper findings only, but without a pinned directory the
+// report they build would depend on the developer's own machine — and the
+// walk would read whatever that machine happens to have there.
+const NO_STATE_DIR = join(tmpdir(), 'unsnooze-windows-test-nostate');
 
 // --- StopFailure hook command ---------------------------------------------
 
@@ -227,6 +235,7 @@ test('doctor looks for the wrapper where the platform actually puts it', async (
   // an install they already did.
   const withBlock = installPowershellBlock('', ['claude'], 'C:\\u.js');
   const report = await runDoctor({
+    stateDir: NO_STATE_DIR,
     platform: 'win32',
     runner: () => ({ status: 1, stdout: '' }),
     csgBinPath: null,
@@ -242,6 +251,7 @@ test('doctor looks for the wrapper where the platform actually puts it', async (
 
 test('doctor still reports a genuinely missing windows wrapper', async () => {
   const report = await runDoctor({
+    stateDir: NO_STATE_DIR,
     platform: 'win32',
     runner: () => ({ status: 1, stdout: '' }),
     csgBinPath: null,

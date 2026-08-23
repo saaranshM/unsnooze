@@ -1,5 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// loadStatusSnapshot reaches readState(), which QUARANTINES a state.json it
+// cannot parse — renaming it out of the way. Unpinned, that ran against the
+// developer's real ~/.unsnooze and could have moved their live state file.
+// Must be set before the module graph freezes STATE_DIR.
+const STATE_DIR = mkdtempSync(join(tmpdir(), 'unsnooze-dashboard-test-'));
+process.env.UNSNOOZE_STATE_DIR = STATE_DIR;
+process.on('exit', () => rmSync(STATE_DIR, { recursive: true, force: true }));
+
 import { logoContainsBrand } from '../src/dashboard/Logo.js';
 import { shouldUseDashboard } from '../src/dashboard/run.js';
 import {
