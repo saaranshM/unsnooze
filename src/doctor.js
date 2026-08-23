@@ -158,6 +158,15 @@ export function findExposedStateFiles(dir = STATE_DIR, opts = {}) {
   return scanStateDir(dir, opts).map(e => ({ ...e, mode: e.mode.toString(8) }));
 }
 
+// Deliberately NOT given runDoctor's `platform`. Every other check uses that
+// to simulate an install target — "what would doctor say on Windows?" — but
+// whether mode bits mean anything is a fact about the filesystem actually
+// under the process, not about the platform being simulated. Passing the
+// simulated one made a `platform: 'darwin'` test raise this finding while
+// running on a Windows runner, where the modes are synthetic and no repair
+// could ever clear it. scanStateDir keeps its own injectable platform for
+// direct unit tests.
+
 export function narrowStateModes(entries) {
   return narrowStateDir(entries);
 }
@@ -236,7 +245,7 @@ export async function runDoctor({
   // a filesystem that cannot honour it (FAT, some network mounts) would
   // otherwise leave everything world-readable with nothing ever saying so.
   // This is the place that says so, and --fix retries the chmod.
-  const exposed = findExposedStateFiles(stateDir, { platform });
+  const exposed = findExposedStateFiles(stateDir);
   if (exposed.length) {
     findings.push({
       id: 'state-permissions', kind: 'health',

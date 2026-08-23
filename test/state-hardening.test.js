@@ -19,7 +19,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname } from 'node:path';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -120,7 +120,7 @@ test('a state.json symlink is never written through', { skip: !posix }, () => {
 
     const script = `
       process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(d)};
-      const { readState, updateState } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+      const { readState, updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
       console.log(JSON.stringify(readState().sessions));
       updateState(s => { s.sessions.probe = { key: 'probe' }; return s; });
     `;
@@ -141,11 +141,13 @@ test('releaseLock leaves behind a lock that was stolen from us mid-write', () =>
   // foreign pid); the finally must then leave that new lock alone.
   const lock = join(DIR, 'state.lock');
   rmSync(lock, { recursive: true, force: true });
-  const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
+  let out;
+  try {
+    out = execFileSync(process.execPath, ['--input-type=module', '-e', `
     process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(DIR)};
     const { rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
-    const { updateState } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+    const { updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
     const lock = join(${JSON.stringify(DIR)}, 'state.lock');
     updateState(s => {
       // a concurrent stale-lock steal robs us while we are inside
@@ -159,10 +161,15 @@ test('releaseLock leaves behind a lock that was stolen from us mid-write', () =>
       owner: existsSync(join(lock, 'pid')) ? readFileSync(join(lock, 'pid'), 'utf-8') : null,
     }));
   `], { encoding: 'utf8' });
+  } finally {
+    // The child deliberately leaves a foreign lock behind; if it failed for
+    // any other reason the lock is still there, and every later test in this
+    // file would time out waiting for it. Clean up either way.
+    rmSync(lock, { recursive: true, force: true });
+  }
   const r = JSON.parse(out.trim());
   assert.equal(r.survived, true, "releaseLock must not delete a lock it no longer owns");
   assert.equal(r.owner, '999999', "and must leave the thief's stamp intact");
-  rmSync(lock, { recursive: true, force: true });
 });
 
 test('releaseLock still drops a lock that is ours', () => {
@@ -188,7 +195,7 @@ test('an unwritable-but-owned state dir is repaired instead of spinning forever'
       execFileSync(process.execPath, ['--input-type=module', '-e', `
         process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(d)};
         process.env.UNSNOOZE_LOCK_TIMEOUT_MS = '500';
-        const { updateState } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+        const { updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
         updateState(s => { s.sessions.ok = { key: 'ok' }; return s; });
       `], { stdio: 'pipe', timeout: 20_000 });
       assert.ok(Date.now() - started < 15_000, 'must not hot-loop');
@@ -236,7 +243,7 @@ test('a lock path that can never be created fails by deadline, not by spinning',
         () => execFileSync(process.execPath, ['--input-type=module', '-e', `
           process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(d)};
           process.env.UNSNOOZE_LOCK_TIMEOUT_MS = '500';
-          const { updateState } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+          const { updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
           updateState(s => s);
         `], { stdio: 'pipe', timeout: 20_000 }),
         /cannot create state lock/,
@@ -297,7 +304,7 @@ test('an existing 0644 config.json is repaired without waiting to be rewritten',
     chmodSync(d, 0o755);
     const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
       process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(d)};
-      const { updateState } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+      const { updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
       updateState(s => s);   // any state write repairs the dir's known files
       const { statSync } = await import('node:fs');
       const m = p => (statSync(p).mode & 0o777).toString(8);
@@ -314,6 +321,7 @@ test('a lock stamped with a live but unrelated pid is stolen past the hard ceili
   // pid is recycled onto some unrelated long-lived process used to wedge
   // every writer forever; past the ceiling, age alone wins.
   const lock = join(DIR, 'state.lock');
+  try {
   rmSync(lock, { recursive: true, force: true });
   mkdirSync(lock);
   writeFileSync(join(lock, 'pid'), String(process.pid));   // very much alive
@@ -323,12 +331,15 @@ test('a lock stamped with a live but unrelated pid is stolen past the hard ceili
   const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
     process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(DIR)};
     process.env.UNSNOOZE_LOCK_TIMEOUT_MS = '2000';
-    const { updateState } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+    const { updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
     updateState(s => { s.sessions.unwedged = { key: 'unwedged' }; return s; });
     console.log('acquired');
   `], { encoding: 'utf8' });
   assert.equal(out.trim(), 'acquired');
   assert.ok(readState().sessions.unwedged, 'the write actually landed');
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
 });
 
 test('a stale-but-live lock inside the ceiling is still respected', () => {
@@ -337,6 +348,7 @@ test('a stale-but-live lock inside the ceiling is still respected', () => {
   // (300s) — a fresh lock short-circuits on `age > STALE_LOCK_MS` and never
   // consults HARD_STALE_LOCK_MS at all, so it proves nothing about it.
   const lock = join(DIR, 'state.lock');
+  try {
   rmSync(lock, { recursive: true, force: true });
   mkdirSync(lock);
   writeFileSync(join(lock, 'pid'), String(process.pid));   // very much alive
@@ -346,7 +358,7 @@ test('a stale-but-live lock inside the ceiling is still respected', () => {
     () => execFileSync(process.execPath, ['--input-type=module', '-e', `
       process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(DIR)};
       process.env.UNSNOOZE_LOCK_TIMEOUT_MS = '300';
-      const { updateState } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+      const { updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
       updateState(s => s);
     `], { stdio: 'pipe' }),
     /lock timeout/,
@@ -354,7 +366,9 @@ test('a stale-but-live lock inside the ceiling is still respected', () => {
   );
   assert.equal(readFileSync(join(lock, 'pid'), 'utf-8'), String(process.pid),
     'and its stamp is untouched');
-  rmSync(lock, { recursive: true, force: true });
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
 });
 
 test('every writer creates its state-dir entry owner-only', { skip: !posix }, async () => {
@@ -365,7 +379,7 @@ test('every writer creates its state-dir entry owner-only', { skip: !posix }, as
   const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
     process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(d)};
     const { join } = await import('node:path');
-    const R = (m) => import(${JSON.stringify(join(ROOT, 'src'))} + '/' + m);
+    const R = (m) => import(${JSON.stringify(pathToFileURL(join(ROOT, 'src')).href)} + '/' + m);
     const { updateState } = await R('state.js');
     const { writeHosts, writeFleetCache } = await R('fleet.js');
     const { setConfigValue } = await R('settings.js');
@@ -414,7 +428,7 @@ test('an upgraded 1.16.3 state dir is repaired, subdirectories included',
     chmodSync(d, 0o755);
     const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
       process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(d)};
-      const { updateState } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+      const { updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
       updateState(s => s);   // any single state write repairs the whole dir
       console.log('done');
     `], { encoding: 'utf8' });
@@ -438,7 +452,7 @@ test('the mode repair never chmods through a symlink', { skip: !posix }, () => {
   symlinkSync(outside, join(state, 'config.json'));
   execFileSync(process.execPath, ['--input-type=module', '-e', `
     process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(state)};
-    const { updateState } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+    const { updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
     updateState(s => s);
   `], { stdio: 'pipe' });
   assert.equal(mode(outside), 0o644, "the symlink's target must be left alone");
@@ -533,7 +547,7 @@ test('the workspace fingerprint is computed outside the state lock', { skip: !po
 
   execFileSync(process.execPath, ['--input-type=module', '-e', `
     process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(join(d, 'state'))};
-    const { upsertSession } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+    const { upsertSession } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
     upsertSession({
       sessionId: 'hoist-1', cwd: ${JSON.stringify(d)}, pane: '%1', mux: 'tmux',
       paneOwner: null, status: 'stopped', detectedAt: Date.now(),
@@ -575,7 +589,7 @@ test('the mode repair fires even when the state dir carries a trailing slash', {
   chmodSync(d, 0o755);
   execFileSync(process.execPath, ['--input-type=module', '-e', `
     process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(d + '/')};
-    const { setConfigValue } = await import(${JSON.stringify(join(ROOT, 'src/settings.js'))});
+    const { setConfigValue } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/settings.js')).href)});
     setConfigValue('ntfyTopic', 'unsnooze-x');   // writeConfig only — no state write
   `], { stdio: 'pipe' });
   assert.deepEqual(tooOpenUnder(d), [], 'a config-only run must still repair the directory');
@@ -589,7 +603,7 @@ test('a file that appears after the first repair pass is still narrowed', { skip
   const d = mkdtempSync(join(tmpdir(), 'unsnooze-late-'));
   const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
     process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(d)};
-    const { updateState } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+    const { updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
     const { writeFileSync, statSync } = await import('node:fs');
     const { join } = await import('node:path');
     const daemonLog = join(${JSON.stringify(d)}, 'daemon.log');
@@ -619,7 +633,7 @@ test('the mode repair strips group and other without destroying the execute bit'
     chmodSync(d, 0o755);
     execFileSync(process.execPath, ['--input-type=module', '-e', `
       process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(d)};
-      const { updateState } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+      const { updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
       updateState(s => s);
     `], { stdio: 'pipe' });
     assert.equal(mode(join(d, 'runnable.sh')), 0o700, 'owner keeps +x, group/other lose everything');
@@ -663,7 +677,7 @@ test('the repair fixes leftovers the old allowlist never named', { skip: !posix 
   chmodSync(d, 0o755);
   execFileSync(process.execPath, ['--input-type=module', '-e', `
     process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(d)};
-    const { updateState } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+    const { updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
     updateState(s => s);
   `], { stdio: 'pipe' });
   assert.deepEqual(tooOpenUnder(d), [], 'leftovers are narrowed like anything else');
@@ -710,7 +724,7 @@ test('a hardlinked entry is reported but never chmodded through', { skip: !posix
 
   execFileSync(process.execPath, ['--input-type=module', '-e', `
     process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(state)};
-    const { updateState } = await import(${JSON.stringify(join(ROOT, 'src/state.js'))});
+    const { updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
     updateState(s => s);
   `], { stdio: 'pipe' });
   assert.equal(mode(outside), 0o644, 'the shared inode keeps its own mode');
@@ -767,31 +781,32 @@ test('a filesystem that ignores chmod is not walked forever', { skip: !posix }, 
 
 // F5: this test's title and lead comment described the old non-JSON fixture.
 
-test('runDoctor raises no permission finding on Windows', { skip: !posix }, async () => {
-  // The gate has to hold at the doctor level, not just in scanStateDir:
-  // findExposedStateFiles was not threading `platform`, so runDoctor's own
-  // platform argument — honoured by every other check — was ignored here.
-  const { runDoctor } = await import('../src/doctor.js');
-  const d = mkdtempSync(join(tmpdir(), 'unsnooze-windoctor-'));
-  writeFileSync(join(d, 'config.json'), '{}');
-  chmodSync(join(d, 'config.json'), 0o644);
-  chmodSync(d, 0o755);
+test('the permission check keys off the real filesystem, not a simulated platform',
+  { skip: !posix }, async () => {
+    // runDoctor's `platform` simulates an install target. Whether chmod means
+    // anything is a property of the host filesystem, so this check must not
+    // read the simulated value — doing so raised the finding on a Windows
+    // runner for a test that had injected 'darwin', where no repair could
+    // ever clear it. scanStateDir's own platform option stays injectable.
+    const { runDoctor } = await import('../src/doctor.js');
+    const d = mkdtempSync(join(tmpdir(), 'unsnooze-windoctor-'));
+    writeFileSync(join(d, 'config.json'), '{}');
+    chmodSync(join(d, 'config.json'), 0o644);
+    chmodSync(d, 0o755);
 
-  const common = {
-    runner: () => ({ status: 1, stdout: '' }),
-    csgBinPath: null,
-    mux: { available: () => true, name: 'headless' },
-    designRegistered: () => false,
-    hookInstalled: () => true,
-    wrappersInstalled: () => true,
-    stateDir: d,
-  };
-  const posixReport = await runDoctor({ ...common, platform: 'linux' });
-  assert.ok(posixReport.findings.some(f => f.id === 'state-permissions'),
-    'precondition: on POSIX this directory is genuinely exposed');
-
-  const winReport = await runDoctor({ ...common, platform: 'win32' });
-  assert.ok(!winReport.findings.some(f => f.id === 'state-permissions'),
-    'on Windows the mode bits are synthetic — reporting them would never clear');
-  rmSync(d, { recursive: true, force: true });
-});
+    const common = {
+      runner: () => ({ status: 1, stdout: '' }),
+      csgBinPath: null,
+      mux: { available: () => true, name: 'headless' },
+      designRegistered: () => false,
+      hookInstalled: () => true,
+      wrappersInstalled: () => true,
+      stateDir: d,
+    };
+    for (const platform of ['linux', 'win32', 'darwin']) {
+      const report = await runDoctor({ ...common, platform });
+      assert.ok(report.findings.some(f => f.id === 'state-permissions'),
+        `simulating ${platform} must not change what this POSIX filesystem reports`);
+    }
+    rmSync(d, { recursive: true, force: true });
+  });
