@@ -10,7 +10,8 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import {
-  STATE_DIR, STATE_FILE, LOCK_DIR, STALE_LOCK_MS, PRUNE_AFTER_MS,
+  STATE_DIR, STATE_FILE, LOCK_DIR, STALE_LOCK_MS, PRUNE_AFTER_MS, ensureStateDir,
+  writePrivateFile,
   DEDUPE_WINDOW_MS, STALE_AFTER_MS, PROBE_INTERVAL_MS, PROBE_MAX_MS,
   RESET_MARGIN_MS,
 } from './config.js';
@@ -48,22 +49,78 @@ function lockHolderAlive() {
   }
 }
 
+// lockHolderAlive() can only ask "is this pid alive", never "is it still
+// unsnooze". A leaked lock whose pid is later recycled onto some unrelated
+// long-lived process therefore looks live forever, and every writer — daemon,
+// CLI, in-agent hook — wedges permanently with no way out but deleting the
+// directory by hand. Past this ceiling, age wins regardless.
+//
+// This is a deliberate trade, not a free win: stealing from a holder that IS
+// still working puts two writers in the critical section, and the robbed one's
+// rename then clobbers the thief's write — a lost update. It is chosen because
+// a permanent unrecoverable wedge is the worse failure. The exposure is kept
+// small by holding this lock only for in-memory work plus one write:
+// upsertSession's git call is hoisted out for exactly this reason. Five
+// minutes is ~200x the worst measured critical section.
+//
+// Known limit: both sides of the age are wall-clock, so a forward clock step
+// (VM resume, laptop wake, a large NTP correction) can age a fresh lock past
+// the ceiling at once. There is no cross-process monotonic clock to use
+// instead, which is part of why the ceiling is generous rather than tight.
+const HARD_STALE_LOCK_MS = Math.max(STALE_LOCK_MS * 30, 300_000);
+
 function acquireLock() {
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  let parentRepaired = false;
   for (;;) {
     try {
-      mkdirSync(LOCK_DIR);
+      mkdirSync(LOCK_DIR, { mode: 0o700 });
       // Record the holder so a slow-but-alive writer is never robbed — age
       // alone can't tell a hung process from a busy one.
-      try { writeFileSync(join(LOCK_DIR, 'pid'), String(process.pid)); } catch { /* best-effort */ }
+      try { writeFileSync(join(LOCK_DIR, 'pid'), String(process.pid), { mode: 0o600 }); } catch { /* best-effort */ }
       return;
     } catch (err) {
-      if (err.code !== 'EEXIST') { mkdirSync(STATE_DIR, { recursive: true }); continue; }
+      if (err.code !== 'EEXIST') {
+        // NOT contention. A missing STATE_DIR is worth exactly one immediate
+        // repair-and-retry; every other errno (EACCES on an unwritable
+        // ~/.unsnooze, EROFS, ENOSPC) must fall through to the same backoff
+        // and deadline as any other failure. This branch used to `continue`
+        // unconditionally, skipping both — and since mkdir -p on an existing
+        // STATE_DIR succeeds as a no-op, an unwritable state dir spun here
+        // forever at ~70% of a core, ignoring LOCK_TIMEOUT_MS, in every writer:
+        // the daemon, the CLI, and the StopFailure hook inside the agent.
+        if (!parentRepaired) {
+          parentRepaired = true;
+          try { ensureStateDir(); } catch { /* fall through to the backoff */ }
+          continue;
+        }
+        if (Date.now() > deadline) {
+          throw new Error(`unsnooze: cannot create state lock at ${LOCK_DIR}: ${err.code || err.message}`);
+        }
+        sleepSync(50);
+        // A *recurring* ENOENT means the directory keeps going away under us
+        // (an uninstall racing a write), not that the one-shot repair failed.
+        // Keep repairing it, but from the backoff — never in a tight loop.
+        if (err.code === 'ENOENT') { try { ensureStateDir(); } catch { /* next pass */ } }
+        continue;
+      }
       try {
-        const age = Date.now() - statSync(LOCK_DIR).mtimeMs;
-        if (age > STALE_LOCK_MS && lockHolderAlive() !== true) {
-          rmSync(LOCK_DIR, { recursive: true, force: true });   // steal from a dead/unknown holder
-          log(`stole stale lock (age ${Math.round(age)}ms)`);
+        const before = statSync(LOCK_DIR);
+        const age = Date.now() - before.mtimeMs;
+        if (age > STALE_LOCK_MS && (age > HARD_STALE_LOCK_MS || lockHolderAlive() !== true)) {
+          // Re-stat immediately before removing. The staleness verdict above
+          // costs a readFileSync + kill(), and in that gap another contender
+          // can have stolen this same lock and created a fresh one — removing
+          // that would drop a live holder's lock and break mutual exclusion.
+          // A matching inode means it is still the dir we judged stale. This
+          // narrows the window rather than closing it: a filesystem that
+          // recycles a just-freed directory inode can hand the same number
+          // back, and Windows may report 0 for both — in either case this
+          // degrades to the old unconditional behaviour, never to a worse one.
+          if (statSync(LOCK_DIR).ino === before.ino) {
+            rmSync(LOCK_DIR, { recursive: true, force: true });   // steal from a dead/unknown holder
+            log(`stole stale lock (age ${Math.round(age)}ms)`);
+          }
           continue;
         }
       } catch { /* lock vanished between check and stat — retry */ }
@@ -74,6 +131,14 @@ function acquireLock() {
 }
 
 function releaseLock() {
+  try {
+    // Only drop a lock we still hold. A stale-lock steal can rob a live
+    // holder (see acquireLock); if that happened, the dir now belongs to the
+    // thief, and removing it would hand a third writer a lock the thief still
+    // believes is theirs. An unreadable/absent pid file means the lock is
+    // ours-but-unstamped or already gone — both fall through to the remove.
+    if (readFileSync(join(LOCK_DIR, 'pid'), 'utf-8') !== String(process.pid)) return;
+  } catch { /* no pid file: our own best-effort stamp failed, or it's gone */ }
   try { rmSync(LOCK_DIR, { recursive: true, force: true }); } catch { /* already gone */ }
 }
 
@@ -86,7 +151,12 @@ export function readState() {
     try {
       const quarantine = `${STATE_FILE}.corrupt.${Date.now()}`;
       renameSync(STATE_FILE, quarantine);
-      log(`CORRUPT state.json quarantined to ${quarantine}: ${err.message}`);
+      // err.message, NOT logged: V8 embeds the first bytes of the input in
+      // its JSON.parse message ("Unexpected token 'S', \"SUPER SECR\"..."),
+      // so a state.json that is really a symlink to something else would
+      // print that file's opening bytes into unsnooze.log. The quarantined
+      // file is right there on disk for anyone who needs to see the content.
+      log(`CORRUPT state.json quarantined to ${quarantine} (${err.name || 'parse error'})`);
     } catch { /* someone else quarantined it first */ }
     return EMPTY();
   }
@@ -137,14 +207,14 @@ function normalizeRecord(rec) {
 // Locked read-modify-write. mutator receives the state object and mutates it
 // (or returns a replacement). Returns the final state.
 export function updateState(mutator) {
-  mkdirSync(STATE_DIR, { recursive: true });
+  ensureStateDir();
   acquireLock();
   try {
     const state = readState();
     const result = mutator(state) ?? state;
-    const tmp = join(STATE_DIR, `.state.tmp.${process.pid}`);
-    writeFileSync(tmp, JSON.stringify(result, null, 2));
-    renameSync(tmp, STATE_FILE);
+    // Owner-only: session records embed cwd paths and queued prompt text.
+    writePrivateFile(STATE_FILE, join(STATE_DIR, `.state.tmp.${process.pid}`),
+      JSON.stringify(result, null, 2));
     return result;
   } finally {
     releaseLock();
@@ -159,6 +229,24 @@ export function updateState(mutator) {
 // calibration snapshots so stop + ceiling sample never race (1.13).
 export function upsertSession(record, { after = null } = {}) {
   record = normalizeRecord({ ...record });
+  // Computed BEFORE the lock, never inside the mutator. workspaceFingerprint
+  // shells out to git, and execFileSync's `timeout` is a soft bound — it
+  // sends SIGTERM at the deadline and then waits for the child to actually
+  // exit, which a git wedged in uninterruptible I/O on a hung network mount
+  // never does. That made it the one unbounded operation under the state
+  // lock, and the only way a critical section could outlive
+  // HARD_STALE_LOCK_MS and be stolen from a writer that is still working.
+  // The cost of hoisting is one extra git call when the record turns out to
+  // be a duplicate; the benefit is that the lock is only ever held for
+  // in-memory work plus one write.
+  // 'resuming' is included deliberately: the `closing` branch inside the
+  // mutator can flip such a record to 'stopped', and the apply site below
+  // would then want a baseline this precompute never made. No caller passes
+  // 'resuming' today — this keeps the hoist from becoming a trap for one that
+  // later does.
+  const needsFingerprint = ['stopped', 'resuming'].includes(record.status)
+    && record.workspace === undefined;
+  const fingerprint = needsFingerprint ? workspaceFingerprint(record.cwd) : undefined;
   return updateState(state => {
     prune(state);
     const closing = state.paneClosures.find(c => c.pane && c.leaseId
@@ -228,9 +316,12 @@ export function upsertSession(record, { after = null } = {}) {
       log(`merged duplicate detection for pane ${record.pane} into ${existingKey}`);
     } else {
       // Baseline for the stale-workspace guard, captured once at stop time.
-      // (Merged duplicates above keep the ORIGINAL baseline — spread semantics.)
+      // (Merged duplicates above keep the ORIGINAL baseline — spread
+      // semantics — so this is applied on the non-duplicate branch ONLY.
+      // Assigning it before the branch would let the merge spread it over the
+      // existing record's baseline and silently reset it.)
       if (record.status === 'stopped' && record.workspace === undefined) {
-        record.workspace = workspaceFingerprint(record.cwd);
+        record.workspace = fingerprint;
       }
       const key = record.sessionId || `pane:${addressHash(record)}:${record.detectedAt}`;
       applied = { ...record, key };
