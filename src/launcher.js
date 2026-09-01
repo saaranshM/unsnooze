@@ -2,7 +2,7 @@
 //   - outside a multiplexer: re-exec through its launchWrapped operation
 //   - inside one: spawn a detached per-pane monitor, then run the CLI,
 //     propagating its exit code
-//   - -p/--print: pure pass-through, no monitor (nothing interactive to scrape)
+//   - -p/--print, -h/--help, -v/-V/--version: pure pass-through, no monitor (nothing interactive to scrape)
 
 import { spawn, spawnSync } from 'node:child_process';
 import { getMultiplexer } from './multiplexer.js';
@@ -16,8 +16,12 @@ import { AgentDispatchedError, SessionCreateError, attachHint } from './multiple
 
 const log = makeLogger('launcher');
 
-function isPrintMode(args) {
-  return args.includes('-p') || args.includes('--print');
+export function isPassthrough(args = []) {
+  return args.some(a =>
+    a === '-p' || a === '--print'
+    || a === '-h' || a === '--help'
+    || a === '-v' || a === '-V' || a === '--version'
+  );
 }
 
 export function resolvePaneOwner(muxName, env = process.env) {
@@ -44,7 +48,12 @@ export function runLauncher(args, agentId = 'claude', { processBirthFn = process
   // Recursion / nested-launch guard: inside an unsnooze-managed session, a
   // plain `claude`/`codex`/`unsnooze` call goes straight through. Same for an
   // agent the user disabled in settings — run it, don't watch it.
-  if (process.env.UNSNOOZE_ACTIVE === '1' || isPrintMode(args) || !getConfig(`agents.${agent.id}`)) {
+  //
+  // Non-interactive / informational invocations (-p/--print, -h/--help, -v/--version)
+  // also bypass multiplexer wrapping and monitoring — running a new tmux session
+  // or spawning a watcher for `claude --help` flashes the screen and slows down
+  // simple queries.
+  if (process.env.UNSNOOZE_ACTIVE === '1' || isPassthrough(args) || !getConfig(`agents.${agent.id}`)) {
     const r = spawnSync(agent.bin, args, { stdio: 'inherit', env: { ...process.env, UNSNOOZE_ACTIVE: '1' } });
     return r.status ?? 1;
   }
