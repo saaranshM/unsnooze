@@ -46,12 +46,12 @@ export const FAQ = [
   },
   {
     q: 'Claude Code can auto-continue now — what does unsnooze add?',
-    text: "Claude's own auto-continue covers the 5-hour limit, in-process, for Claude. It cannot fire when the app is closed, the machine slept, or you are on a headless box over ssh, and it does not cover the weekly limit or any other CLI. unsnooze watches from outside the session, so it survives all of that, and it resumes Codex, Grok, Qwen, Kimi, OpenCode and Antigravity too. When Claude does resume itself, unsnooze notices and stands aside rather than sending a second wake — status says so explicitly.",
+    text: "Claude's own auto-continue covers the 5-hour limit, in-process, for Claude. It cannot fire when the app is closed, the machine slept, or you are on a headless box over ssh, and it does not cover the weekly limit or any other CLI. unsnooze watches from outside the session, so it survives all of that, and it resumes Codex, Grok, Qwen, Kimi, OpenCode, Antigravity and Cursor too. When Claude does resume itself, unsnooze notices and stands aside rather than sending a second wake — status says so explicitly.",
     jsx: <>Claude's own auto-continue covers the <strong>5-hour</strong> limit, in-process, for
       Claude. It cannot fire when the app is closed, the machine slept, or you are on a
       headless box over ssh — and it does not cover the <strong>weekly</strong> limit or any
       other CLI. unsnooze watches from outside the session, so it survives all of that, and
-      it resumes Codex, Grok, Qwen, Kimi, OpenCode and Antigravity too. When Claude does
+      it resumes Codex, Grok, Qwen, Kimi, OpenCode, Antigravity and Cursor too. When Claude does
       resume itself, unsnooze notices and stands aside rather than sending a second wake —{' '}
       <C>unsnooze status</C> says so explicitly.</>,
   },

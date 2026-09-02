@@ -50,6 +50,11 @@ const EXPERIMENTAL = [
     desc: <>Antigravity, the Gemini-CLI successor. Parses <em>“Refreshes in 6 days…”</em> as
       the weekly cap; treats 503 capacity errors as transient, not a limit.</>,
   },
+  {
+    cmd: 'cursor-agent',
+    desc: <>Cursor resets on your monthly <em>billing cycle</em>, so unsnooze never schedules
+      a weeks-long wait — it probes and resumes the moment the wall comes down.</>,
+  },
 ];
 
 export default function Agents() {
@@ -57,7 +62,7 @@ export default function Agents() {
     <section id="agents">
       <Reveal>
         <p className="eyebrow">who it watches</p>
-        <h2>Seven AI coding CLIs, <span className="hl">one ledger</span></h2>
+        <h2>Eight AI coding CLIs, <span className="hl">one ledger</span></h2>
         <p className="section-lede">
           Terminal sessions are watched through the shell wrapper and your multiplexer;
           GUI sessions through the files they already write. One shared ledger, one daemon,

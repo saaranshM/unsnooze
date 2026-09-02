@@ -23,6 +23,8 @@
 #       records with the epoch reset and revives via `codex resume <id>`
 #   S15 (macOS) claude desktop sandbox: stop in an isolated CLAUDE_CONFIG_DIR
 #       → revived with that CLAUDE_CONFIG_DIR exported
+#   S17 cursor: the monthly usage banner is recorded as a MODEL limit — probe
+#       only, never a scheduled blind wake (Cursor resets on a billing cycle)
 #
 # SAFETY: this suite must never reach a real agent binary or the user's
 # sessions. Three layers guarantee it:
@@ -591,6 +593,27 @@ wait_state "$S2/state.json" '"workspaceHold": true' || fail "pause mode never he
 kill "$RPID" 2>/dev/null || true; wait "$RPID" 2>/dev/null || true
 [ -s "$S2/pause-received.txt" ] && fail "pause mode typed into the pane anyway: $(cat "$S2/pause-received.txt")"
 grep -q '"holdReason"' "$S2/state.json" || fail "hold reason missing"
+scenario_end
+pass
+
+# ============================================================
+# Cursor's limit is not waitable: usage resets on the monthly billing cycle, so
+# the banner must land as a MODEL limit — recorded and probed, never scheduled
+# for a blind wake. This is the end-to-end twin of the empty-resetPatterns
+# invariant pinned in test/cursor.test.js.
+CURRENT="S17 cursor monthly banner → model limit, probe-only"
+S="$WORK/s17"; mkdir -p "$S/proj"
+PANE=$(new_pane e2e-s17 /bin/sh)
+sleep 0.6
+# verbatim from a real free-plan limit (cursor-agent 2026.08.31, 2026-09-02)
+tmux send-keys -t "$PANE" "clear; echo; echo \"Error: You've hit your usage limit\"; echo 'Get Cursor Pro for more Agent usage, unlimited Tab, and more.'; echo 'fallbackModel:'; echo 'spendLimitHit: false'" Enter
+wait_pane "$PANE" "hit your usage limit" || fail "cursor banner never appeared"
+MPID=$(run_monitor UNSNOOZE_AGENT_CURSOR=on "$S" "$PANE" cursor "$S/proj"); PIDS+=("$MPID")
+wait_state "$S/state.json" '"agent": "cursor"' || fail "cursor stop not recorded"
+grep -q '"limitType": "model"' "$S/state.json" \
+  || fail "cursor banner must be a model limit, not a waitable stop: $(cat "$S/state.json")"
+grep -q '"probeCount": 0' "$S/state.json" \
+  || fail "a model limit must be probe-only (no scheduled blind wake)"
 scenario_end
 pass
 

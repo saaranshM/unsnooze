@@ -1,7 +1,7 @@
 {
   "name": "unsnooze",
-  "version": "1.17.0",
-  "description": "Automatically resume Claude Code, Codex CLI, Grok, Qwen Code, Kimi CLI, OpenCode, and Antigravity sessions when 5-hour or weekly usage limits reset—on macOS, Linux and Windows, with or without a terminal multiplexer.",
+  "version": "1.18.0",
+  "description": "Automatically resume Claude Code, Codex CLI, Grok, Qwen Code, Kimi CLI, OpenCode, Antigravity, and Cursor CLI sessions when 5-hour or weekly usage limits reset—on macOS, Linux and Windows, with or without a terminal multiplexer.",
   "keywords": [
     "claude",
     "claude-code",
@@ -18,6 +18,9 @@
     "moonshot",
     "opencode",
     "antigravity",
+    "cursor",
+    "cursor-cli",
+    "cursor-agent",
     "antigravity-cli",
     "gemini",
     "google",

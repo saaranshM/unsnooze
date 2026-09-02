@@ -16,6 +16,7 @@ import { CLAUDE_SETTINGS, STATE_DIR } from './config.js';
 import { getConfig, configFileExists } from './settings.js';
 import { xmlEscape } from './notify.js';
 import { installGrokHooks, uninstallGrokHooks } from './agents/grok.js';
+import { getAgent } from './agents/index.js';
 import { findCsgProcesses, findCsgAutostarts } from './doctor.js';
 import { UNSNOOZE_BIN, stopResumer } from './spawn.js';
 import { uninstallStatuslineShim } from './usage.js';
@@ -115,18 +116,29 @@ export function removeHookFromSettings(settingsJson) {
 
 // --- zshrc block management ---
 
+// Which shell commands an agent's wrappers shadow. Normally exactly the id,
+// because the id IS the command users type. Cursor breaks that: its id is
+// `cursor` but its command is `cursor-agent`, and the bare `cursor` belongs to
+// the IDE launcher (`cursor .`) which must never be shadowed. An adapter names
+// the commands to wrap via `wrapperNames`; the `_run` argument stays the id.
+export function wrapperNamesFor(id) {
+  const agent = getAgent(id);
+  // getAgent falls back to claude for unknown ids — never borrow its names.
+  return agent.id === id && agent.wrapperNames?.length ? agent.wrapperNames : [id];
+}
+
 export function wrapperBlock(agents = ['claude']) {
   // The missing-file guard is load-bearing: if unsnooze is ever uninstalled,
   // moved, or renamed without cleaning the rc file, the wrapper must degrade
   // to the plain CLI — never brick the user's `claude`/`codex` command.
-  const fns = agents.map(id => `unalias ${id} 2>/dev/null || true
-${id}() {
+  const fns = agents.flatMap(id => wrapperNamesFor(id).map(name => `unalias ${name} 2>/dev/null || true
+${name}() {
   if [ "\${UNSNOOZE_ACTIVE}" = "1" ] || [ ! -f "${UNSNOOZE_BIN}" ]; then
-    command ${id} "$@"
+    command ${name} "$@"
     return $?
   fi
   node "${UNSNOOZE_BIN}" _run ${id} "$@"
-}`).join('\n');
+}`)).join('\n');
   return `${FENCE_OPEN}
 # unsnooze wrappers: route every interactive launch of the CLIs below through
 # unsnooze so limit stops are recorded and auto-resumed.
@@ -142,16 +154,16 @@ ${FENCE_CLOSE}`;
 // PowerShell comments are `#`, so the same fence markers work and
 // stripFencedBlock() removes it unchanged.
 export function powershellWrapperBlock(agents = ['claude'], bin = UNSNOOZE_BIN) {
-  const fns = agents.map(id => `Remove-Item -Path Alias:${id} -Force -ErrorAction SilentlyContinue
-function ${id} {
+  const fns = agents.flatMap(id => wrapperNamesFor(id).map(name => `Remove-Item -Path Alias:${name} -Force -ErrorAction SilentlyContinue
+function ${name} {
   if ($env:UNSNOOZE_ACTIVE -eq '1' -or -not (Test-Path -LiteralPath '${bin}')) {
-    $real = Get-Command ${id} -CommandType Application -ErrorAction SilentlyContinue |
+    $real = Get-Command ${name} -CommandType Application -ErrorAction SilentlyContinue |
       Select-Object -First 1
-    if ($real) { & $real.Source @args } else { Write-Error '${id}: not found' }
+    if ($real) { & $real.Source @args } else { Write-Error '${name}: not found' }
     return
   }
   & node '${bin}' _run ${id} @args
-}`).join('\n');
+}`)).join('\n');
   return `${FENCE_OPEN}
 # unsnooze wrappers: route every interactive launch of the CLIs below through
 # unsnooze so limit stops are recorded and auto-resumed.
@@ -502,7 +514,7 @@ export function uninstallDaemonAutostart({ platform = process.platform, dir = nu
 // --- commands ---
 
 export function enabledAgents() {
-  return ['claude', 'codex', 'grok', 'qwen', 'kimi', 'opencode', 'agy'].filter(id => getConfig(`agents.${id}`));
+  return ['claude', 'codex', 'grok', 'qwen', 'kimi', 'opencode', 'agy', 'cursor'].filter(id => getConfig(`agents.${id}`));
 }
 
 // Qwen keeps Claude-shaped hooks in its own settings.json — reuse the same

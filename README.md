@@ -13,7 +13,7 @@
 
 [Website](https://unsnooze.dev) · [Documentation](https://unsnooze.dev/docs/) · [Changelog](https://unsnooze.dev/changelog/) · [Feedback](https://unsnooze.dev/feedback/)
 
-**Claude Code · Codex CLI · Grok · Qwen · Kimi · OpenCode · Antigravity** — when they hit the 5-hour or weekly usage limit
+**Claude Code · Codex CLI · Grok · Qwen · Kimi · OpenCode · Antigravity · Cursor** — when they hit the 5-hour or weekly usage limit
 ("You've hit your usage limit"), your session just… stops.<br/>
 unsnooze auto-resumes them: it tracks **every** limit-stopped session across all
 your projects and **wakes each one up the moment the usage limit resets** — in
@@ -35,7 +35,7 @@ existing tool solves only a slice of it:
 
 | | **unsnooze** | claude-auto-retry | autoclaude | hydra |
 |---|:---:|:---:|:---:|:---:|
-| Multi-CLI (Claude · Codex · Grok · Qwen · Kimi · OpenCode · Antigravity) | ✅ | ❌ Claude only | ❌ Claude only | partial |
+| Multi-CLI (Claude · Codex · Grok · Qwen · Kimi · OpenCode · Antigravity · Cursor) | ✅ | ❌ Claude only | ❌ Claude only | partial |
 | GUI sessions (VS Code ext, desktop apps) | ✅ watcher daemon | ❌ | ❌ | ❌ |
 | Waits for reset & resumes the **same** session | ✅ | ✅ | ✅ | ❌ switches provider |
 | All sessions at once (shared ledger + one daemon) | ✅ | ❌ one pane | ✅ | ✅ |
@@ -143,6 +143,24 @@ risks, and vulnerability reporting: **[SECURITY.md](SECURITY.md)**.
   overload, not a limit. Dead sessions revive via `agy --conversation=<id>`
   (ids from `~/.gemini/antigravity-cli/history.jsonl`). Like Grok: closed
   source, so `unsnooze report` captures make this adapter better.
+- **Cursor CLI (`cursor-agent`)** — ⚠️ *experimental*, and the only adapter
+  whose limit is **not waitable**. Cursor's included usage resets on your
+  monthly *billing cycle*, not a rolling window, so unsnooze deliberately never
+  schedules a wake for it: the banner is classified as a model limit, which
+  probes every 15/30/60 min and resumes the moment it clears (you switch to
+  Auto, enable on-demand, or the cycle rolls) instead of sleeping for weeks.
+  The banner text is server-provided — the CLI renders `Error: <title>` plus a
+  detail line and `key: value` extras — and the patterns are pinned against a
+  real captured limit (whose own reset date was a month out, which is the point).
+  `unsnooze report cursor` is how the rest gets better. Transport errors take the transient-overload ladder and
+  `Authentication required` is notify-only. Dead sessions revive via
+  `cursor-agent --resume=<id>` — ids come from `~/.cursor/chats/<md5 of the
+  cwd>/<chatId>/meta.json`, which records the `cwd` so every candidate is
+  verified before use — and `--continue` otherwise, which is workspace-scoped.
+
+  The wrapper shadows **`cursor-agent`** only. The bare `cursor` command is the
+  IDE launcher (`cursor .`) and is never touched; the newer `agent` alias is
+  left alone too, being too generic a name to shadow safely.
 
 **OpenRouter** (the API gateway) isn't a separate agent: its 429 bodies
 (`Rate limit exceeded: limit_rpd/…`, free-models-per-day) are detected inside
@@ -557,11 +575,11 @@ password hosts on Windows; a plain `ssh <host>` prompt works with native
 | `notifyChannel` | `auto` | How to deliver: `auto`, `native`, `osc`, or `bell` (see [Notification channels](#notification-channels)). Env: `UNSNOOZE_NOTIFY_CHANNEL`. |
 | `guiWatch` | `true` | May the daemon watch session files for GUI-surface stops (VS Code extension, desktop apps)? Needs the daemon running (`unsnooze install --daemon`). |
 | `resumeMessage` | *"Continue where you left off…"* | The message sent to wake a session. Override it for a single session with `unsnooze message <id> "…"` — visible in `unsnooze status`. |
-| `resumeMessages.claude` / `.codex` / `.grok` / `.qwen` / `.kimi` / `.opencode` / `.agy` | `""` | Per-agent override of `resumeMessage`. Empty = use the global message; clear one with `unsnooze config set resumeMessages.claude ""`. |
-| `resumeExtraArgs.claude` / `.codex` / `.grok` / `.qwen` / `.kimi` / `.opencode` / `.agy` | `""` | Extra flags for launches unsnooze performs itself. A revival spawns the agent binary directly, so flags you normally get from a shell alias or wrapper (`--dangerously-skip-permissions`, `--model …`) do not apply unless you put them here. Quoting is respected: `--append-system-prompt "stay in this repo"` is two arguments, not five. `config.json` may also hold an array (`["--append-system-prompt", "stay in this repo"]`), which skips parsing entirely. |
-| `launchExtraArgs.claude` / `.codex` / `.grok` / `.qwen` / `.kimi` / `.opencode` / `.agy` | `""` | Extra flags for the sessions **you** start through the shell wrapper — the launch-side twin of `resumeExtraArgs`. Use it for flags that have to hold for the whole session: `unsnooze config set launchExtraArgs.claude "--autocompact 400000"` keeps a long, context-heavy run compacting instead of stalling. Flags are placed before your own arguments, since `claude "do the thing"` puts a positional prompt there. Revivals inherit them too, so a flag survives the wake. |
+| `resumeMessages.claude` / `.codex` / `.grok` / `.qwen` / `.kimi` / `.opencode` / `.agy` / `.cursor` | `""` | Per-agent override of `resumeMessage`. Empty = use the global message; clear one with `unsnooze config set resumeMessages.claude ""`. |
+| `resumeExtraArgs.claude` / `.codex` / `.grok` / `.qwen` / `.kimi` / `.opencode` / `.agy` / `.cursor` | `""` | Extra flags for launches unsnooze performs itself. A revival spawns the agent binary directly, so flags you normally get from a shell alias or wrapper (`--dangerously-skip-permissions`, `--model …`) do not apply unless you put them here. Quoting is respected: `--append-system-prompt "stay in this repo"` is two arguments, not five. `config.json` may also hold an array (`["--append-system-prompt", "stay in this repo"]`), which skips parsing entirely. |
+| `launchExtraArgs.claude` / `.codex` / `.grok` / `.qwen` / `.kimi` / `.opencode` / `.agy` / `.cursor` | `""` | Extra flags for the sessions **you** start through the shell wrapper — the launch-side twin of `resumeExtraArgs`. Use it for flags that have to hold for the whole session: `unsnooze config set launchExtraArgs.claude "--autocompact 400000"` keeps a long, context-heavy run compacting instead of stalling. Flags are placed before your own arguments, since `claude "do the thing"` puts a positional prompt there. Revivals inherit them too, so a flag survives the wake. |
 | `agents.claude` / `agents.codex` | `true` | Which CLIs are guarded. |
-| `agents.grok` / `agents.qwen` / `agents.kimi` / `agents.opencode` / `agents.agy` | `false` | Experimental adapters — off by default; enable in `unsnooze setup` or `unsnooze config set agents.qwen on`. |
+| `agents.grok` / `agents.qwen` / `agents.kimi` / `agents.opencode` / `agents.agy` / `agents.cursor` | `false` | Experimental adapters — off by default; enable in `unsnooze setup` or `unsnooze config set agents.qwen on`. |
 | `workspaceGuard` | `inform` | Repo changed while a session slept? `inform` wakes it with a heads-up in the message; `pause` holds it (desktop notification, diff shown on `resume-now`); `off` disables. |
 | `contextGuard` | `inform` | Big cold context at wake? Waking a session re-reads its **entire context at full uncached price** ([why](#why-did-resuming-a-big-session-eat-so-much-of-my-quota)). `inform` resumes and notifies you of the size; `pause` holds sessions above the threshold for `unsnooze resume-now`; `off` disables. Claude Code only for now. |
 | `contextGuardTokens` | `100000` | Context-size threshold (tokens) at which `contextGuard` notifies or holds. |

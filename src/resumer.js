@@ -14,7 +14,7 @@ import {
   CAPTURE_LINES, PANE_SCAN_LINES, RESUME_SESSION_NAME,
   RESET_MARGIN_MS, FALLBACK_RESET_MS, PROBE_INTERVAL_MS, PROBE_MAX_MS,
 } from './config.js';
-import { detectLimit, isBusy } from './patterns.js';
+import { detectLimit, isBusy, modelRemedy } from './patterns.js';
 import { getAgent } from './agents/index.js';
 import { parseResetTime, resetAtMs, nextProbeDelayMs } from './time-parser.js';
 import {
@@ -372,7 +372,7 @@ function rescheduleProbe(rec, now = Date.now()) {
       }, { expect: ['stopped'] });
       log(`${key}: model limit still active at probe ceiling — needs a human`);
       notify('unsnooze: model limit needs you ⚠️',
-        `${rec.cwd}: still limited after probing — /model to switch or /usage-credits`,
+        `${rec.cwd}: still limited after probing — ${modelRemedy(getAgent(rec.agent))}`,
         { context: ctxOf(rec), priority: 4 });
       return 'held';
     }

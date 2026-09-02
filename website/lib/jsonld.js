@@ -35,7 +35,7 @@ export function softwareApplication() {
     '@type': 'SoftwareApplication',
     name: 'unsnooze',
     description:
-      'Wakes every limit-stopped AI coding session the moment the usage limit resets — Claude Code, Codex CLI, Grok, Qwen, Kimi, OpenCode and Antigravity, in tmux or Zellij.',
+      'Wakes every limit-stopped AI coding session the moment the usage limit resets — Claude Code, Codex CLI, Grok, Qwen, Kimi, OpenCode, Antigravity and Cursor, in tmux or Zellij.',
     url: `${SITE_URL}/`,
     applicationCategory: 'DeveloperApplication',
     operatingSystem: 'macOS, Linux, Windows (WSL)',

@@ -148,6 +148,13 @@ export function detectLimit(text, tailLines = 12, sets = claudePatterns) {
   return { hit: true, limitType, resetLine };
 }
 
+// What a user can actually do about a model limit. There is no reset time to
+// wait for, so the notification must name a real remedy — and the remedy is
+// per-CLI (claude has /usage-credits, cursor does not).
+export function modelRemedy(agent) {
+  return agent?.modelRemedy || 'switch models or add credits';
+}
+
 function tail(text, n = 12) {
   return contentLines(text, n);
 }

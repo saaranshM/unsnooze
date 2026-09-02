@@ -114,6 +114,9 @@ export default {
   bin: process.env.UNSNOOZE_CLAUDE_BIN || 'claude',
   experimental: false,
   patterns,
+  // Remedy hint for a model limit — no reset time to wait for, so the
+  // notification has to say what the user can actually do about it.
+  modelRemedy: 'switch models (/model) or add credits (/usage-credits)',
   menu: { isPrompt: isRateLimitOptionsPrompt, stepsToWait: menuStepsToWaitOption },
   // How to reopen a dead session.
   //

@@ -16,7 +16,7 @@ import {
   EVENT_MARKER_TTL_MS, OVERLOAD_BACKOFF_S, OVERLOAD_JITTER,
   PROBE_INTERVAL_MS, RESET_MARGIN_MS, LEASE_GRACE_MS,
 } from './config.js';
-import { detectLimit, isBusy, overloadMatch } from './patterns.js';
+import { detectLimit, isBusy, overloadMatch, modelRemedy } from './patterns.js';
 import { getAgent } from './agents/index.js';
 import { getConfig } from './settings.js';
 import { notify } from './notify.js';
@@ -208,7 +208,7 @@ export function createMonitor({
     log(`pane ${pane}: limit recorded (${resolved.limitType}, via ${detectedVia}), resets ${new Date(at).toISOString()} (${source})`);
     if (resolved.limitType === 'model') {
       notifier(`${agent.name} hit a model limit — needs you`,
-        `${cwd} — switch models (/model) or add credits (/usage-credits); unsnooze wakes it once the banner clears`,
+        `${cwd} — ${modelRemedy(agent)}; unsnooze wakes it once the banner clears`,
         { context: notifyCtx });
     } else {
       notifier(`${agent.name} hit a usage limit`, `${cwd} — auto-resume at ${new Date(at).toLocaleTimeString()}`, { context: notifyCtx });

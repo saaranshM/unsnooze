@@ -6,7 +6,7 @@ import InstallPill from './InstallPill.jsx';
 
 const AGENTS = [
   'Claude Code', 'Codex CLI', 'Grok Build', 'Qwen Code', 'Kimi CLI',
-  'OpenCode', 'Antigravity', 'VS Code extension', 'ChatGPT desktop',
+  'OpenCode', 'Antigravity', 'Cursor CLI', 'VS Code extension', 'ChatGPT desktop',
   'Claude desktop', 'tmux', 'Zellij',
 ];
 

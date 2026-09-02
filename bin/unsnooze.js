@@ -26,6 +26,7 @@ const AGENT_FALLBACK_BINS = {
   kimi: () => process.env.UNSNOOZE_KIMI_BIN || 'kimi',
   opencode: () => process.env.UNSNOOZE_OPENCODE_BIN || 'opencode',
   agy: () => process.env.UNSNOOZE_AGY_BIN || 'agy',
+  cursor: () => process.env.UNSNOOZE_CURSOR_BIN || 'cursor-agent',
 };
 
 async function safeImport(specifier) {

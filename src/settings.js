@@ -45,19 +45,19 @@ export const DEFAULTS = {
   // command that answers 'disabled' still returns a valid framed envelope.
   remoteQueue: true,
   resumeMessage: 'Continue where you left off. The session was interrupted by a usage limit which has now reset — pick up the task you were working on and finish it.',
-  resumeMessages: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '' },  // per-agent override; '' = use resumeMessage
+  resumeMessages: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '', cursor: '' },  // per-agent override; '' = use resumeMessage
   // Extra argv appended when unsnooze itself launches the agent binary (dead-pane
   // reopen, queued prompts). Space-separated. Lets a revived session match the
   // user's normal launch mode — shell aliases don't apply to direct spawns
   // (e.g. claude users who always launch with --dangerously-skip-permissions).
-  resumeExtraArgs: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '' },
+  resumeExtraArgs: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '', cursor: '' },
   // Extra argv for launches the USER performs through the shell wrapper — the
   // launch-side twin of resumeExtraArgs. A flag that has to hold for the whole
   // session (claude's --autocompact, which decides when the context window is
   // compacted) is useless if it only applies to revives, because the session
   // that runs out of context is the one the user started.
-  launchExtraArgs: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '' },
-  agents: { claude: true, codex: true, grok: false, qwen: false, kimi: false, opencode: false, agy: false },   // experimental agents default off
+  launchExtraArgs: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '', cursor: '' },
+  agents: { claude: true, codex: true, grok: false, qwen: false, kimi: false, opencode: false, agy: false, cursor: false },   // experimental agents default off
 };
 
 // Env override per key. Booleans accept 1/0, true/false, on/off, yes/no.
@@ -90,6 +90,7 @@ const ENV_NAMES = {
   'resumeMessages.kimi': 'UNSNOOZE_RESUME_MESSAGE_KIMI',
   'resumeMessages.opencode': 'UNSNOOZE_RESUME_MESSAGE_OPENCODE',
   'resumeMessages.agy': 'UNSNOOZE_RESUME_MESSAGE_AGY',
+  'resumeMessages.cursor': 'UNSNOOZE_RESUME_MESSAGE_CURSOR',
   'resumeExtraArgs.claude': 'UNSNOOZE_RESUME_EXTRA_ARGS_CLAUDE',
   'resumeExtraArgs.codex': 'UNSNOOZE_RESUME_EXTRA_ARGS_CODEX',
   'resumeExtraArgs.grok': 'UNSNOOZE_RESUME_EXTRA_ARGS_GROK',
@@ -97,6 +98,7 @@ const ENV_NAMES = {
   'resumeExtraArgs.kimi': 'UNSNOOZE_RESUME_EXTRA_ARGS_KIMI',
   'resumeExtraArgs.opencode': 'UNSNOOZE_RESUME_EXTRA_ARGS_OPENCODE',
   'resumeExtraArgs.agy': 'UNSNOOZE_RESUME_EXTRA_ARGS_AGY',
+  'resumeExtraArgs.cursor': 'UNSNOOZE_RESUME_EXTRA_ARGS_CURSOR',
   'launchExtraArgs.claude': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_CLAUDE',
   'launchExtraArgs.codex': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_CODEX',
   'launchExtraArgs.grok': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_GROK',
@@ -104,6 +106,7 @@ const ENV_NAMES = {
   'launchExtraArgs.kimi': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_KIMI',
   'launchExtraArgs.opencode': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_OPENCODE',
   'launchExtraArgs.agy': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_AGY',
+  'launchExtraArgs.cursor': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_CURSOR',
   'agents.claude': 'UNSNOOZE_AGENT_CLAUDE',
   'agents.codex': 'UNSNOOZE_AGENT_CODEX',
   'agents.grok': 'UNSNOOZE_AGENT_GROK',
@@ -111,6 +114,7 @@ const ENV_NAMES = {
   'agents.kimi': 'UNSNOOZE_AGENT_KIMI',
   'agents.opencode': 'UNSNOOZE_AGENT_OPENCODE',
   'agents.agy': 'UNSNOOZE_AGENT_AGY',
+  'agents.cursor': 'UNSNOOZE_AGENT_CURSOR',
 };
 
 const KNOWN_KEYS = Object.keys(ENV_NAMES);

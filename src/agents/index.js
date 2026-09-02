@@ -8,8 +8,9 @@ import qwen from './qwen.js';
 import kimi from './kimi.js';
 import opencode from './opencode.js';
 import agy from './agy.js';
+import cursor from './cursor.js';
 
-const REGISTRY = { claude, codex, grok, qwen, kimi, opencode, agy };
+const REGISTRY = { claude, codex, grok, qwen, kimi, opencode, agy, cursor };
 
 // v1: every agent launches the bare TUI and gets the prompt typed once idle.
 function defaultLaunchArgs(message) { return { args: [], messageViaPane: true }; }

@@ -1,5 +1,71 @@
 # Changelog
 
+## 1.18.0 — 2026-09-02
+
+- **Cursor CLI support** (`cursor-agent`) — ⚠️ experimental, off by default;
+  enable in `unsnooze setup` or with `unsnooze config set agents.cursor on`.
+  Sessions are wrapped, tracked in the ledger and revived like any other
+  adapter — `cursor-agent --resume=<id>`, `--continue` when there is no id.
+  Chat ids come from `~/.cursor/chats/<md5 of the cwd>/<chatId>/meta.json`,
+  which records the `cwd`, so a candidate is always verified against the
+  session's directory before it is used; if Cursor changes that layout the
+  adapter returns nothing and falls back to `--continue`, which is
+  workspace-scoped (verified: run from one project it resumes that project's
+  chat, not the globally-newest one).
+
+  Cursor is the first adapter whose limit is **not waitable**, and the design
+  follows from that. Its included usage resets on the monthly *billing cycle*
+  ("Your usage limits will reset when your monthly cycle ends on 8/14/2026"),
+  not on a rolling 5-hour or weekly window, so scheduling a wake would mean a
+  monitor sleeping for weeks and then typing into a wall that is still
+  standing. The banner is classified as a **model limit** instead: unsnooze
+  records the stop, notifies you that it needs a decision, then probes at
+  15/30/60 minutes and resumes the instant the banner clears — when you switch
+  to Auto, enable on-demand usage, or the cycle rolls. If it is still there at
+  the probe ceiling the record goes to `failed` rather than sending a futile
+  wake. The adapter's `resetPatterns` is empty on purpose, with a test pinning
+  it: any reset pattern there would silently re-route Cursor onto the 5-hour
+  fallback ladder.
+
+  Transport failures (`ECONNRESET`, `socket hang up`, "Can't reach the Cursor
+  API") take the transient-overload ladder, and `Authentication required` is
+  notify-only — neither reaches the ledger. The limit text itself is
+  server-provided (the shipped bundle holds no limit strings, only the renderer
+  that prints `Error: <title>`, the detail line, then one `key: value` line per
+  extra). The patterns are pinned against a real limit captured on a free plan:
+
+  ```
+  Error: You've hit your usage limit
+  Get Cursor Pro for more Agent usage, unlimited Tab, and more.
+  fallbackModel:
+  spendLimitHit: false
+  chatMessage: *You've hit your free requests limit. … Your usage limits will
+  reset when your monthly cycle ends on 10/2/2026.*
+  spendLimits: [50,100,200]
+  ```
+
+  A month out, which is the whole argument for not scheduling a wake. Pro-plan
+  wording differs ("Switch to Auto…", "set a Spend Limit") and is covered from
+  user reports, and detection deliberately does not depend on the
+  `key: value` extras alone — Cursor could drop those without changing what the
+  user sees. `unsnooze report cursor` is how the rest improves.
+
+- **The model-limit notification now names a remedy the CLI actually has.**
+  Both the "needs you" notification and the probe-ceiling one hardcoded Claude's
+  wording, so a Cursor user was told to run `/usage-credits` — a command Cursor
+  does not have. The hint moves onto the adapter (`modelRemedy`): Claude keeps
+  its wording, Cursor gets "switch to Auto (/model) or enable on-demand usage in
+  your Cursor dashboard". A model limit has no reset time to wait for, so that
+  sentence is the entire remedy the user gets.
+
+- **The shell wrapper's name is no longer forced to equal the agent id.** An
+  adapter can now declare `wrapperNames`. This exists because Cursor installs
+  its CLI as both `cursor-agent` and `agent`, while the bare `cursor` command
+  is the *IDE launcher* — wrapping it would break `cursor .`. unsnooze wraps
+  `cursor-agent` only, leaves `cursor` untouched, and does not shadow the
+  generic `agent` name either. Output for every existing adapter is unchanged,
+  byte for byte.
+
 ## 1.17.0 — 2026-08-23
 
 - **A state directory unsnooze cannot write to no longer pins a CPU core

@@ -1,7 +1,7 @@
 import Reveal from './Reveal.jsx';
 
 const ROWS = [
-  ['Multi-CLI (Claude · Codex · Grok · Qwen · Kimi · OpenCode · Antigravity)', 'yes', 'no', 'no', 'part'],
+  ['Multi-CLI (Claude · Codex · Grok · Qwen · Kimi · OpenCode · Antigravity · Cursor)', 'yes', 'no', 'no', 'part'],
   ['GUI sessions (VS Code extension, desktop apps)', 'yes', 'no', 'no', 'no'],
   ['Waits for reset & resumes the same session', 'yes', 'yes', 'yes', 'no'],
   ['All sessions at once (shared ledger + one daemon)', 'yes', 'no', 'yes', 'yes'],
