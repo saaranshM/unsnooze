@@ -52,8 +52,10 @@ const EXPERIMENTAL = [
   },
   {
     cmd: 'cursor-agent',
-    desc: <>Cursor resets on your monthly <em>billing cycle</em>, so unsnooze never schedules
-      a weeks-long wait — it probes and resumes the moment the wall comes down.</>,
+    desc: <>The one limit not worth waiting out: Cursor resets on your monthly <em>billing
+      cycle</em>. So unsnooze never schedules a weeks-long sleep — it probes, and resumes the
+      moment the wall comes down. Wraps <code className="chip">cursor-agent</code>, never the{' '}
+      <code className="chip">cursor</code> IDE launcher.</>,
   },
 ];
 

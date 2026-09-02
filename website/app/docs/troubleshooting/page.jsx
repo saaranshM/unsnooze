@@ -70,6 +70,19 @@ export default function TroubleshootingDocsPage() {
                   confirm with <C>unsnooze doctor</C>. Nothing is protected until the wrapper is
                   loaded, because the wrapper is the entry point — you never invoke unsnooze
                   directly.</li>
+                <li><strong>Cursor sessions are not watched, even with the agent enabled.</strong>{' '}
+                  unsnooze wraps <C>cursor-agent</C> — not <C>cursor</C>, which is the IDE
+                  launcher (<C>cursor .</C>) and must keep working, and not the newer{' '}
+                  <C>agent</C> alias, which is far too generic a name to shadow safely. Launch
+                  with <C>cursor-agent</C> and the session is tracked; on some machines{' '}
+                  <C>agent</C> resolves to another vendor's CLI entirely.</li>
+                <li><strong>Cursor hit its limit and unsnooze scheduled no wake.</strong>{' '}
+                  Deliberate. Cursor's usage resets on your monthly <em>billing cycle</em>, not
+                  a rolling window, so a scheduled wake would sleep for weeks and then type
+                  into a wall that never moved. The stop is recorded as a{' '}
+                  <strong>model limit</strong>: you are notified that it needs a decision, and
+                  unsnooze probes at 15/30/60 minutes and resumes the moment the banner clears
+                  — when you change plan, or the cycle rolls.</li>
                 <li><strong>Using <C>headroom wrap claude</C> or <C>headroom wrap codex</C>.</strong>{' '}
                   Headroom resolves and launches the real executable directly, bypassing shell
                   functions, so Unsnooze cannot attach its same-pane monitor. The Claude hook can
