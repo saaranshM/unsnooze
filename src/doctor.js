@@ -16,6 +16,7 @@ import { makeLogger } from './logger.js';
 import { shouldUseTui, formatDoctorTui } from './tui.js';
 import { designRegisteredOffline } from './design.js';
 import { powershellProfilePath } from './powershell.js';
+import { fishConfigPath } from './fish.js';
 
 const log = makeLogger('doctor');
 
@@ -116,13 +117,14 @@ function readOrEmpty(path) {
 // wrappers installed" is a health question — but it has to be asked of the
 // right file. A PowerShell user has no ~/.zshrc, so checking only the POSIX rc
 // files made every native-Windows `unsnooze doctor` report the wrappers
-// missing and point the user at an install they had already run.
+// missing and point the user at an install they had already run. A fish user
+// has no POSIX rc wrapper either — their block lives in the fish config.
 function defaultWrappersInstalled({
   platform = process.platform,
   rcContent = readOrEmpty,
   profileContent = null,
 } = {}) {
-  const rcs = [join(homedir(), '.zshrc'), join(homedir(), '.bashrc')];
+  const rcs = [join(homedir(), '.zshrc'), join(homedir(), '.bashrc'), fishConfigPath()];
   if (rcs.some(rc => rcContent(rc).includes(WRAPPER_MARK))) return true;
   if (platform !== 'win32') return false;
   const readProfile = profileContent

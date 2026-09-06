@@ -680,7 +680,8 @@ watcher stops (no pane context) always use native.
   [Watching without a multiplexer](#watching-without-a-multiplexer))
 - tmux ≥ 3.2, Zellij, **or** herdr ≥ 0.8.0 for pane-level watching. Optional:
   without one, unsnooze runs `headless` and still catches and resumes stops.
-- zsh or bash (wrappers go into `~/.zshrc` / `~/.bashrc`), or PowerShell
+- zsh or bash (wrappers go into `~/.zshrc` / `~/.bashrc`), fish (wrappers go
+  into `~/.config/fish/config.fish`), or PowerShell
   (wrappers go into `$PROFILE.CurrentUserAllHosts`)
 
 ### Supported terminals
