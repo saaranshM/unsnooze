@@ -604,11 +604,12 @@ test('a file that appears after the first repair pass is still narrowed', { skip
   const out = execFileSync(process.execPath, ['--input-type=module', '-e', `
     process.env.UNSNOOZE_STATE_DIR = ${JSON.stringify(d)};
     const { updateState } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/state.js')).href)});
-    const { writeFileSync, statSync } = await import('node:fs');
+    const { writeFileSync, chmodSync, statSync } = await import('node:fs');
     const { join } = await import('node:path');
     const daemonLog = join(${JSON.stringify(d)}, 'daemon.log');
     updateState(s => s);                          // first repair pass
-    writeFileSync(daemonLog, 'as launchd would'); // arrives afterwards, 0644
+    writeFileSync(daemonLog, 'as launchd would'); // arrives afterwards...
+    chmodSync(daemonLog, 0o644);                  // ...at 0644, whatever our umask is
     const at = (statSync(daemonLog).mode & 0o777).toString(8);
     await new Promise(r => setTimeout(r, 20));
     updateState(s => s);                          // a later write re-checks
