@@ -67,8 +67,8 @@ export const FAQ = [
   },
   {
     q: 'What does it need?',
-    text: 'Node ≥ 20, on macOS, Linux or Windows. A multiplexer (tmux ≥ 3.2, Zellij, herdr or cmux) gives you pane-level watching; without one unsnooze runs headless and still resumes. Wrappers install into ~/.zshrc / ~/.bashrc, ~/.config/fish/config.fish for fish, or your PowerShell $PROFILE; everything is reversible with unsnooze uninstall.',
-    jsx: <>Node ≥ 20, on macOS, Linux or Windows. A multiplexer (tmux ≥ 3.2, Zellij, herdr or
+    text: 'Node ≥ 20.12, on macOS, Linux or Windows. A multiplexer (tmux ≥ 3.2, Zellij, herdr or cmux) gives you pane-level watching; without one unsnooze runs headless and still resumes. Wrappers install into ~/.zshrc / ~/.bashrc, ~/.config/fish/config.fish for fish, or your PowerShell $PROFILE; everything is reversible with unsnooze uninstall.',
+    jsx: <>Node ≥ 20.12, on macOS, Linux or Windows. A multiplexer (tmux ≥ 3.2, Zellij, herdr or
       cmux) gives you pane-level watching; without one unsnooze runs headless and still
       resumes. Wrappers install into <C>~/.zshrc</C> / <C>~/.bashrc</C>,{' '}
       <C>~/.config/fish/config.fish</C> for fish, or your PowerShell{' '}

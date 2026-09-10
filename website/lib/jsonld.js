@@ -35,10 +35,10 @@ export function softwareApplication() {
     '@type': 'SoftwareApplication',
     name: 'unsnooze',
     description:
-      'Wakes every limit-stopped AI coding session the moment the usage limit resets — Claude Code, Codex CLI, Grok, Qwen, Kimi, OpenCode, Antigravity and Cursor, in tmux or Zellij.',
+      'Resumes limit-stopped AI coding sessions across your projects — Claude Code, Codex CLI, Grok, Qwen, Kimi, OpenCode, Antigravity and Cursor — with tmux, Zellij, herdr, cmux or headless watching.',
     url: `${SITE_URL}/`,
     applicationCategory: 'DeveloperApplication',
-    operatingSystem: 'macOS, Linux, Windows (WSL)',
+    operatingSystem: 'macOS, Linux, Windows',
     offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
     license: 'https://opensource.org/licenses/MIT',
     sameAs: [

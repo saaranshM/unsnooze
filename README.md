@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/saaranshM/unsnooze/actions/workflows/ci.yml/badge.svg)](https://github.com/saaranshM/unsnooze/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/unsnooze?color=f59e0b)](https://www.npmjs.com/package/unsnooze)
-[![node](https://img.shields.io/badge/node-%E2%89%A5%2020-3fb950)](package.json)
+[![node](https://img.shields.io/badge/node-%E2%89%A5%2020.12-3fb950)](package.json)
 [![license](https://img.shields.io/badge/license-MIT-8b949e)](LICENSE)
 
 **Automatically resume every limit-stopped AI coding session when its usage limit resets.**
@@ -223,7 +223,8 @@ Two things worth knowing:
 
 ## GUI surfaces (VS Code extension, desktop apps)
 
-Terminal sessions are watched through the shell wrapper + tmux, Zellij, or herdr. Sessions in
+Terminal sessions are watched through the shell wrapper and tmux, Zellij, herdr,
+or cmux, with headless watching when no multiplexer is available. Sessions in
 **Claude Code's VS Code extension / desktop app** and **Codex's IDE
 extension / desktop app** have no pane to scrape — so `unsnooze daemon` tails
 the session files those surfaces already write:
@@ -239,6 +240,10 @@ the session files those surfaces already write:
   where Codex lives only inside ChatGPT.app (no `codex` on PATH), unsnooze
   automatically resumes through the app-bundled binary
   (`/Applications/ChatGPT.app/Contents/Resources/codex`).
+  The watcher also recognizes a reported 99% five-hour window followed within
+  one minute by an empty `premium` bucket with no credits, using the previous
+  future reset time. The snapshots must come from the same rollout; 99% alone
+  is not a stop signal. This works across watcher polls and daemon restarts.
 - **Claude desktop (cowork) sessions** *(experimental, macOS)* run in
   sandboxes under `~/Library/Application Support/Claude`; unsnooze watches
   those too and revives with the session's isolated `CLAUDE_CONFIG_DIR`
@@ -289,11 +294,11 @@ StopFailure hook (claude, grok) ──────────────┤
 
 </details>
 
-Limit events are never persisted by the CLIs themselves; the reset time is
-parsed from the banner text, DST-safe. Unparseable banners are never guessed
-at — unsnooze probes the pane on a backoff schedule until a real reset time
-appears. Every resume is verified afterwards (banner came back → reschedule
-from the fresh banner, capped at 5 attempts).
+Detection uses agent hooks, saved session files, and terminal banners. Reset
+times come from the agent's saved timestamp or the banner text, parsed DST-safe.
+When no reset time is available, unsnooze probes on a backoff schedule. Every
+resume is verified afterwards (banner came back → reschedule from the fresh
+banner, capped at 5 attempts).
 
 ## Know the wall before you hit it
 
@@ -683,6 +688,16 @@ watcher stops (no pane context) always use native.
 - zsh or bash (wrappers go into `~/.zshrc` / `~/.bashrc`), fish (wrappers go
   into `~/.config/fish/config.fish`), or PowerShell
   (wrappers go into `$PROFILE.CurrentUserAllHosts`)
+
+Fish wrappers are installed when fish is the login shell or its config already
+exists. An absolute `XDG_CONFIG_HOME` changes the config location to
+`$XDG_CONFIG_HOME/fish/config.fish`; `unsnooze install --fishrc <path>` and
+`unsnooze uninstall --fishrc <path>` override it explicitly. After upgrading an
+existing install, run `unsnooze setup` and open a new shell to load the wrappers.
+
+Agent help/version commands, such as `claude --help` and `codex --version`, run
+directly without a multiplexer session, pane monitor, `launchExtraArgs`, or an
+unsnooze update notice. `unsnooze help` still shows unsnooze's own commands.
 
 ### Supported terminals
 

@@ -1,16 +1,58 @@
 # Changelog
 
-## Unreleased
+## 1.19.0 — 2026-09-10
 
-**fish shell support.** Wrappers now install into `~/.config/fish/config.fish`
-when the file exists or fish is the login shell — `unsnooze setup` covers fish
-users with no extra steps, `unsnooze uninstall` removes the block, and
-`unsnooze doctor` checks the fish config when the POSIX rc files are empty.
-The fish block is the same guarded wrapper as the zsh/bash one (`UNSNOOZE_ACTIVE`
-recursion guard, fallback to the real CLI if the entry point vanishes,
-`_run <id>` routing) written in fish syntax: `name() { … }` is a parse error
-there, so `$?` becomes `$status` and the body uses `test` / `or` / `not`.
-An explicit `--fishrc <path>` override targets a different file (tests, CI).
+Fish shell support, direct help/version commands, and a fix for Codex sessions
+that stop at a reported 99% usage.
+
+### Fish shell support
+
+`unsnooze setup` and `unsnooze install` now install fish wrappers when fish is
+your login shell or its config file already exists. The default location is
+`~/.config/fish/config.fish`; an absolute `XDG_CONFIG_HOME` is respected.
+`unsnooze doctor` checks this file, and `unsnooze uninstall` removes the wrappers.
+Re-running setup replaces the existing block and preserves your other settings.
+Use `--fishrc <path>` with install or uninstall to choose another config file.
+
+After upgrading, run `unsnooze setup` once to add the fish wrappers, then open
+a new shell. Thanks to [@duncanmcqueen](https://github.com/duncanmcqueen) for
+[PR #21](https://github.com/saaranshM/unsnooze/pull/21).
+
+### Help and version commands run directly
+
+Commands such as `claude --help` and `codex --version` now pass straight to
+the agent. They do not open a multiplexer session, start a pane monitor,
+prepend `launchExtraArgs`, or append an unsnooze update notice. The existing
+print-mode passthrough is unchanged. Thanks to [@chid](https://github.com/chid)
+for [PR #23](https://github.com/saaranshM/unsnooze/pull/23).
+
+### Codex can be detected as stopped at a reported 99%
+
+The GUI watcher now recognizes the sequence reported in
+[issue #20](https://github.com/saaranshM/unsnooze/issues/20): a five-hour Codex
+window reaches 99%, then the next rate-limit snapshot switches to an empty
+`premium` bucket with no credits. It records the stop and schedules the session
+using the previous reset time, plus the normal safety margin.
+
+This fallback requires snapshots from the same rollout no more than a minute
+apart, no available credits, and a future reset time. It works across watcher
+polls and daemon restarts. An already-exhausted weekly window still takes
+precedence if it resets later. A 99% reading alone does not trigger a resume.
+
+The separate report of stale 64% usage was not reproduced; this release fixes
+the missed stop detection. Thanks to [@mio-tsuki](https://github.com/mio-tsuki)
+for the sample. Fixed in [PR #24](https://github.com/saaranshM/unsnooze/pull/24).
+
+### Test fixes
+
+- Permission tests now set their required file mode explicitly, so they pass
+  with different system umasks. Thanks to
+  [@Chang-Jin-Lee](https://github.com/Chang-Jin-Lee) for
+  [PR #22](https://github.com/saaranshM/unsnooze/pull/22).
+- Fish install/uninstall tests use temporary profiles and leave existing user
+  settings, wrappers, and daemon state untouched.
+- Help/version tests use a portable test executable instead of relying on
+  platform-specific `echo` behavior.
 
 ## 1.18.0 — 2026-09-02
 

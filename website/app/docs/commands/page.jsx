@@ -40,7 +40,10 @@ export default function CommandsDocsPage() {
 
             <section className="doc-sec" id="commands">
               <h2>Command reference</h2>
-              <p>Verbatim from <C>unsnooze help</C> (current main):</p>
+              <p>Agent help/version commands, such as <C>claude --help</C> and{' '}
+                <C>codex --version</C>, go straight to the agent without opening a multiplexer
+                session, starting a pane monitor, adding <C>launchExtraArgs</C>, or showing an
+                unsnooze update notice. <C>unsnooze help</C> shows the commands below.</p>
               <Shell title="unsnooze help">{`unsnooze — wakes every limit-stopped AI coding session when the limit resets
 
 Usage:
@@ -59,8 +62,8 @@ Usage:
   unsnooze preview [id]            dry-run: what WOULD happen right now, and
                                    why — nothing is typed or opened (exit 2
                                    when a wake is actionable, else 0)
-  unsnooze dashboard [tab]         live TUI (status|usage|sessions|doctor|logs|fleet|prompts)
-                                   — q to quit, mouse: click/wheel (m toggles)
+  unsnooze dashboard [tab]         live TUI (status|usage|sessions|doctor|logs|fleet|prompts) — q to quit,
+                                   mouse: click/wheel (m toggles)
   unsnooze hosts [add|rm|list]     register ssh hosts for the fleet view
                                    add <name> <dest> [--auth key|password]
                                      [--source prompt|env|keychain|command]
@@ -92,7 +95,9 @@ Usage:
                                    auto|native|osc|bell, updateCheck)
   unsnooze setup                   interactive setup wizard (agents + toggles)
   unsnooze install [--yes]         wire up shell wrappers + hooks (non-interactive)
+                                   (--fishrc <path> overrides the fish config)
   unsnooze uninstall [--purge]     remove wrappers + hooks (and state with --purge)
+                                   (--fishrc <path> overrides the fish config)
   unsnooze report [agent] [pane]   capture a pane to report an undetected banner
   unsnooze help                    show this help (also -h / --help)`}</Shell>
             </section>

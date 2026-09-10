@@ -97,6 +97,12 @@ export default function TroubleshootingDocsPage() {
                   reports it) or the banner wording was not recognised. Capture it with{' '}
                   <C>unsnooze report</C> — an unmatched banner is a one-release fix, but only if
                   someone sends the text.</li>
+                <li><strong>Codex stopped at 99% with no tracked session.</strong>{' '}
+                  Update to v1.19.0 or later and check that the daemon, <C>guiWatch</C>, and
+                  the Codex agent are enabled. The watcher now recognizes a recent 99%
+                  five-hour snapshot followed by an empty <C>premium</C> bucket with no credits
+                  in the same rollout, then schedules the session using the previous reset
+                  time. A 99% reading alone is not a stop signal.</li>
                 <li><strong>It was recorded but never woke.</strong> A wake problem, and{' '}
                   <C>unsnooze preview &lt;id&gt;</C> names the reason rather than guessing. The
                   usual answers are a guard deliberately holding it — see{' '}

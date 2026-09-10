@@ -43,7 +43,7 @@ export default function DocsPage() {
 
             <section className="doc-sec" id="install">
               <h2>Getting started</h2>
-              <p>You need <strong>Node ≥ 20</strong>, on <strong>macOS, Linux or Windows</strong>.
+              <p>You need <strong>Node ≥ 20.12</strong>, on <strong>macOS, Linux or Windows</strong>.
                 A multiplexer — <strong>tmux ≥ 3.2</strong>, <strong>Zellij</strong>,{' '}
                 <strong>herdr</strong> or <strong>cmux</strong> — gives you pane-level watching;
                 without one unsnooze runs headless and still catches and resumes stops.</p>
@@ -52,8 +52,8 @@ $ unsnooze setup`}</Shell>
               <p>The setup wizard asks which agents to guard and which toggles you want, then wires
                 everything up:</p>
               <ul>
-                <li><strong>Shell wrappers</strong> into <C>~/.zshrc</C> / <C>~/.bashrc</C> (or
-                  <C> ~/.config/fish/config.fish</C> for fish) — after
+                <li><strong>Shell wrappers</strong> into <C>~/.zshrc</C> / <C>~/.bashrc</C>,{' '}
+                  <C>~/.config/fish/config.fish</C> for fish, or PowerShell's <C>$PROFILE</C> — after
                   this, typing <C>claude</C> or <C>codex</C> runs the CLI inside a watched
                   multiplexer pane. You never call unsnooze directly to be protected.</li>
                 <li><strong>The Claude <C>StopFailure</C> hook</strong> — the authoritative
@@ -64,6 +64,10 @@ $ unsnooze setup`}</Shell>
                 <li><strong><C>~/.unsnooze/config.json</C></strong> with your choices —
                   see <a href="/docs/settings/#settings">Settings</a>.</li>
               </ul>
+              <p>Fish wrappers are added when fish is your login shell or its config file
+                already exists. An absolute <C>XDG_CONFIG_HOME</C> changes the location to{' '}
+                <C>$XDG_CONFIG_HOME/fish/config.fish</C>. After upgrading, run{' '}
+                <C>unsnooze setup</C> and open a new shell to load the wrappers.</p>
               <p>Every file it touches is backed up first (<C>*.unsnooze-orig</C> pristine,{' '}
                 <C>*.unsnooze-bak</C> rolling), and <C>unsnooze uninstall</C> removes every change.
                 Verify the install any time with <C>unsnooze doctor</C> — it reports{' '}

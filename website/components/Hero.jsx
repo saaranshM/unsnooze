@@ -38,16 +38,16 @@ export default function Hero({ version }) {
       <motion.p className="lede" {...enter(0.18)}>
         When Claude Code, Codex, or any of your AI coding agents hits the 5-hour or
         weekly usage limit, the session just… stops. <strong>unsnooze tracks every
-        limit-stopped session across all your projects and wakes each one — in tmux
-        or Zellij — the moment the limit resets.</strong> Even if your laptop slept
+        limit-stopped session across all your projects and resumes it when the limit
+        resets, with or without a terminal multiplexer.</strong> Even if your laptop slept
         through it.
       </motion.p>
 
       <motion.div {...enter(0.28)}>
         <InstallPill />
         <div className="badges">
-          {version && <span>v{version}</span>}<span>MIT</span><span>Node ≥ 20</span>
-          <span>tmux · Zellij · herdr</span><span>macOS · Linux · Windows</span><span>zero telemetry</span>
+          {version && <span>v{version}</span>}<span>MIT</span><span>Node ≥ 20.12</span>
+          <span>tmux · Zellij · herdr · cmux</span><span>macOS · Linux · Windows</span><span>zero telemetry</span>
         </div>
       </motion.div>
 

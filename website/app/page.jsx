@@ -21,7 +21,7 @@ export const metadata = {
   // Front-loaded: Google shows ~155 chars, so the payoff has to land before the
   // adapter list rather than after it.
   description:
-    'Hit the Claude Code 5-hour or weekly usage limit overnight? unsnooze wakes every limit-stopped session in tmux or Zellij the moment the limit resets — Claude Code, Codex CLI, Grok, Qwen, Kimi, OpenCode, Antigravity and Cursor, across all your projects.',
+    'Hit the Claude Code 5-hour or weekly usage limit overnight? unsnooze wakes every limit-stopped session with tmux, Zellij, herdr, cmux or headless watching the moment the limit resets — Claude Code, Codex CLI, Grok, Qwen, Kimi, OpenCode, Antigravity and Cursor, across all your projects.',
   alternates: { canonical: '/' },
   openGraph: {
     title: 'unsnooze — while you sleep, the work continues',
