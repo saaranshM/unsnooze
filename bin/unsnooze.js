@@ -69,7 +69,7 @@ async function maybeLaunchExitNotice(args) {
   try {
     if (process.env.TMUX || process.env.ZELLIJ || process.env.UNSNOOZE_ACTIVE === '1') return;
     if (!process.stderr.isTTY) return;                            // pipes, CI, scripts
-    if (args.includes('-p') || args.includes('--print')) return;  // non-interactive runs
+    if (args.some(a => a === '-p' || a === '--print' || a === '-h' || a === '--help' || a === '-v' || a === '-V' || a === '--version')) return;  // non-interactive runs
     const mod = await safeImport('../src/update-check.js');
     if (!mod) return;
     const notice = mod.launchExitNotice();
