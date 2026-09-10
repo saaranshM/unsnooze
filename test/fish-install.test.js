@@ -4,21 +4,40 @@
 // block, its own target selection, and uninstall coverage — everything
 // asserted here mirrors the zsh/bash cases in install.test.js.
 
-const AUTOSTART_ISOLATION = mkdtempSync(join(tmpdir(), 'unsnooze-fish-autostart-'));
-process.env.UNSNOOZE_LAUNCH_AGENTS_DIR = join(AUTOSTART_ISOLATION, 'LaunchAgents');
-process.env.UNSNOOZE_SYSTEMD_USER_DIR = join(AUTOSTART_ISOLATION, 'systemd');
-
-import { test } from 'node:test';
+import { test, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import os, { tmpdir } from 'node:os';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-import {
+// Uninstall also removes other shell wrappers, hooks, and the daemon lock.
+// Resolve every default path inside this fixture before importing install.js.
+const PROFILE = mkdtempSync(join(tmpdir(), 'unsnooze-fish-profile-'));
+mock.method(os, 'homedir', () => PROFILE);
+syncBuiltinESMExports();
+for (const [name, path] of Object.entries({
+  UNSNOOZE_STATE_DIR: 'state', UNSNOOZE_CLAUDE_DIR: 'claude',
+  UNSNOOZE_GROK_DIR: 'grok', UNSNOOZE_QWEN_DIR: 'qwen',
+  UNSNOOZE_FISH_CONFIG: 'config.fish',
+  UNSNOOZE_LAUNCH_AGENTS_DIR: 'LaunchAgents', UNSNOOZE_SYSTEMD_USER_DIR: 'systemd',
+})) process.env[name] = join(PROFILE, path);
+
+const {
   cmdInstall, cmdUninstall, installFishBlock, fishWrapperBlock, stripFencedBlock,
-} from '../src/install.js';
+} = await import('../src/install.js');
 import { fishConfigPath } from '../src/fish.js';
+
+after(() => {
+  mock.restoreAll();
+  syncBuiltinESMExports();
+  rmSync(PROFILE, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+});
+
+// Native Windows install/uninstall also changes PowerShell and Task Scheduler.
+// Keep the fish integration cases on platforms that actually run fish.
+const installTest = (name, fn) => test(name, { skip: process.platform === 'win32' }, fn);
 
 test('fishConfigPath honors XDG_CONFIG_HOME (absolute only) and UNSNOOZE_FISH_CONFIG', () => {
   assert.equal(
@@ -76,10 +95,10 @@ test('installFishBlock is replace-don-append, like the POSIX twin', () => {
   assert.ok(second.content.includes('# my fish config'));
 });
 
-test('generated block parses as real fish (skipped when fish is not installed)', () => {
+test('generated block parses as real fish', t => {
   let fish = null;
   try { fish = execFileSync('which', ['fish'], { encoding: 'utf-8' }).trim(); } catch { /* absent */ }
-  if (!fish) return;
+  if (!fish) return t.skip('fish is not installed');
   const dir = mkdtempSync(join(tmpdir(), 'unsnooze-fish-parse-'));
   try {
     const content = installFishBlock('', ['claude', 'codex', 'grok', 'qwen', 'kimi', 'opencode', 'agy', 'cursor']);
@@ -99,7 +118,7 @@ test('the fish block round-trips through stripFencedBlock for uninstall', () => 
   assert.match(content, /set -x EDITOR nvim/);
 });
 
-test('cmdInstall writes the fish config at --fishrc, backing up first', () => {
+installTest('cmdInstall writes the fish config at --fishrc, backing up first', () => {
   const dir = mkdtempSync(join(tmpdir(), 'unsnooze-fish-install-'));
   try {
     const settings = join(dir, 'settings.json');
@@ -118,7 +137,7 @@ test('cmdInstall writes the fish config at --fishrc, backing up first', () => {
   }
 });
 
-test('cmdInstall creates config.fish when fish is the login shell', () => {
+installTest('cmdInstall creates config.fish when fish is the login shell', () => {
   const dir = mkdtempSync(join(tmpdir(), 'unsnooze-fish-login-'));
   const prevFish = process.env.UNSNOOZE_FISH_CONFIG;
   const prevShell = process.env.SHELL;
@@ -140,7 +159,7 @@ test('cmdInstall creates config.fish when fish is the login shell', () => {
   }
 });
 
-test('cmdInstall leaves fish alone when there is no fish on the machine', () => {
+installTest('cmdInstall leaves fish alone when there is no fish on the machine', () => {
   const dir = mkdtempSync(join(tmpdir(), 'unsnooze-fish-absent-'));
   const prevFish = process.env.UNSNOOZE_FISH_CONFIG;
   const prevShell = process.env.SHELL;
@@ -159,7 +178,7 @@ test('cmdInstall leaves fish alone when there is no fish on the machine', () => 
   }
 });
 
-test('cmdUninstall removes the fish block and nothing else', () => {
+installTest('cmdUninstall removes the fish block and nothing else', () => {
   const dir = mkdtempSync(join(tmpdir(), 'unsnooze-fish-uninstall-'));
   try {
     const settings = join(dir, 'settings.json');
@@ -177,7 +196,7 @@ test('cmdUninstall removes the fish block and nothing else', () => {
   }
 });
 
-test('cmdUninstall removes fish block created by login-shell install', () => {
+installTest('cmdUninstall removes fish block created by login-shell install', () => {
   const dir = mkdtempSync(join(tmpdir(), 'unsnooze-fish-uninstall2-'));
   const prevFish = process.env.UNSNOOZE_FISH_CONFIG;
   const prevShell = process.env.SHELL;
@@ -196,10 +215,10 @@ test('cmdUninstall removes fish block created by login-shell install', () => {
   }
 });
 
-test('a fish wrapper actually routes, guards, and propagates exit status (skipped without fish)', () => {
+test('a fish wrapper actually routes, guards, and propagates exit status', t => {
   let fish = null;
   try { fish = execFileSync('which', ['fish'], { encoding: 'utf-8' }).trim(); } catch { /* absent */ }
-  if (!fish) return;
+  if (!fish) return t.skip('fish is not installed');
   const dir = mkdtempSync(join(tmpdir(), 'unsnooze-fish-live-'));
   try {
     const fakeBin = join(dir, 'unsnooze.js');
@@ -209,7 +228,7 @@ test('a fish wrapper actually routes, guards, and propagates exit status (skippe
     writeFileSync(cfg, block);
 
     // Routes through unsnooze with argv intact.
-    const routed = execFileSync(fish, ['-c', `source ${cfg}; claude hello "two words"; echo "exit=$status"`],
+    const routed = execFileSync(fish, ['--no-config', '-c', `source '${cfg}'; claude hello "two words"; echo "exit=$status"`],
       { encoding: 'utf-8', env: { ...process.env, UNSNOOZE_ACTIVE: '' } });
     assert.match(routed, /"_run"/);
     assert.match(routed, /"claude"/, 'the _run argument stays the agent id');
@@ -217,7 +236,7 @@ test('a fish wrapper actually routes, guards, and propagates exit status (skippe
     assert.match(routed, /exit=7/, 'exit status must propagate');
 
     // Recursion guard: an active unsnooze run falls back to the real CLI.
-    const guarded = execFileSync(fish, ['-c', `set -gx UNSNOOZE_ACTIVE 1; source ${cfg}; type -q claude; and echo shadowed`],
+    const guarded = execFileSync(fish, ['--no-config', '-c', `set -gx UNSNOOZE_ACTIVE 1; source '${cfg}'; type -q claude; and echo shadowed`],
       { encoding: 'utf-8' });
     assert.match(guarded, /shadowed/, 'the wrapper function must still be defined under the guard');
   } finally {

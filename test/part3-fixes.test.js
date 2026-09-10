@@ -21,6 +21,7 @@ const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-part3-'));
 // repointed the running job at a temp dir and broke its log paths).
 process.env.UNSNOOZE_LAUNCH_AGENTS_DIR = join(DIR, 'LaunchAgents-isolated');
 process.env.UNSNOOZE_SYSTEMD_USER_DIR = join(DIR, 'systemd-isolated');
+process.env.UNSNOOZE_FISH_CONFIG = join(DIR, 'config.fish');
 process.env.UNSNOOZE_STATE_DIR = DIR;
 process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 process.env.UNSNOOZE_LOCK_TIMEOUT_MS = '400';   // keep lock-wait tests fast
