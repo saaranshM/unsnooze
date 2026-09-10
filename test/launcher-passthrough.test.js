@@ -16,6 +16,10 @@ const REAL_BIN = fileURLToPath(new URL('../bin/unsnooze.js', import.meta.url));
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-passthrough-'));
 const SHIMS = join(DIR, 'shims');
 mkdirSync(SHIMS);
+const AGENT = join(SHIMS, 'claude');
+// GNU echo handles --help/--version itself. This stub always prints argv.
+writeFileSync(AGENT, '#!/bin/sh\nprintf \'%s\\n\' "$@"\n');
+chmodSync(AGENT, 0o755);
 
 after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
@@ -51,7 +55,7 @@ function run(args = ['_run', 'claude', '--help'], extraEnv = {}) {
       ...process.env,
       PATH: `${SHIMS}:/usr/bin:/bin`,
       UNSNOOZE_STATE_DIR: join(DIR, 'state'),
-      UNSNOOZE_CLAUDE_BIN: '/bin/echo',
+      UNSNOOZE_CLAUDE_BIN: AGENT,
       UNSNOOZE_MULTIPLEXER: 'tmux',
       TMUX: '', ZELLIJ: '', UNSNOOZE_ACTIVE: '',
       ...extraEnv,
