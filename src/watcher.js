@@ -22,7 +22,7 @@ import {
 } from './config.js';
 import { getMultiplexer } from './multiplexer.js';
 import { parseTranscriptLine } from './watchers/claude.js';
-import { parseRolloutLine, rolloutMeta } from './watchers/codex.js';
+import { parseRolloutLines, rolloutMeta } from './watchers/codex.js';
 import { ROLLOUT_RE } from './agents/codex.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { upsertSession, readState, updateState } from './state.js';
@@ -85,8 +85,8 @@ export function codexSource({ roots }) {
     roots,
     enabled: () => getConfig('agents.codex'),
     match: p => ROLLOUT_RE.test(basename(p)),
-    parse(lines, path) {
-      const hits = lines.map(parseRolloutLine).filter(Boolean);
+    parse(lines, path, { offset } = {}) {
+      const hits = parseRolloutLines(lines, { path, offset });
       if (hits.length === 0) return [];
       const last = hits[hits.length - 1];   // the latest snapshot governs
       const meta = rolloutMeta(path);
@@ -322,7 +322,10 @@ export function createWatcher({
     const lastNl = buf.lastIndexOf(0x0a);
     if (lastNl === -1) { setOffset(path, offset); return null; }  // partial line — wait
     setOffset(path, offset + lastNl + 1);
-    return buf.subarray(0, lastNl + 1).toString('utf-8').split('\n').filter(l => l.trim());
+    return {
+      offset,
+      lines: buf.subarray(0, lastNl + 1).toString('utf-8').split('\n').filter(l => l.trim()),
+    };
   }
 
   function walk(dir, depth, cb) {
@@ -353,11 +356,12 @@ export function createWatcher({
             const usageMatch = source.usageMatch ? source.usageMatch(path) : stopMatch;
             if (!stopMatch && !usageMatch) return;
             seen.add(path);
-            const lines = readAppended(path);
-            if (!lines || lines.length === 0) return;
+            const appended = readAppended(path);
+            if (!appended || appended.lines.length === 0) return;
+            const { lines, offset } = appended;
             if (stopMatch) {
               try {
-                candidates.push(...source.parse(lines, path));
+                candidates.push(...source.parse(lines, path, { offset }));
               } catch (err) {
                 log(`parse error in ${path}: ${err.message}`);
               }
