@@ -5,8 +5,11 @@
 //     atomic write)
 //   - ~/.zshrc + ~/.bashrc: one fence-marked block with a wrapper function per
 //     enabled agent (claude/codex/grok), routed through `unsnooze _run`
+//   - ~/.config/fish/config.fish: the same block in fish syntax (fish shares
+//     no syntax with POSIX rc files — a bash function there is a parse error)
 //   - ~/.grok/hooks/unsnooze.json when the grok agent is enabled
-// --settings <path> / --zshrc <path> override targets (used by tests).
+// --settings <path> / --zshrc <path> / --fishrc <path> override targets (used
+// by tests).
 
 import { readFileSync, writeFileSync, renameSync, existsSync, copyFileSync, rmSync, mkdirSync, unlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -21,6 +24,7 @@ import { findCsgProcesses, findCsgAutostarts } from './doctor.js';
 import { UNSNOOZE_BIN, stopResumer } from './spawn.js';
 import { uninstallStatuslineShim } from './usage.js';
 import { powershellProfilePath } from './powershell.js';
+import { fishConfigPath } from './fish.js';
 
 const FENCE_OPEN = '# >>> unsnooze >>>';
 const FENCE_CLOSE = '# <<< unsnooze <<<';
@@ -33,13 +37,17 @@ const LEGACY_FENCES = [
 const OLD_FENCE_OPEN = LEGACY_FENCES[0].open;
 
 function parseArgs(rest) {
-  const opts = { yes: false, settings: CLAUDE_SETTINGS, zshrc: join(homedir(), '.zshrc'), purge: false, daemon: false };
+  const opts = {
+    yes: false, settings: CLAUDE_SETTINGS, zshrc: join(homedir(), '.zshrc'),
+    fishrc: fishConfigPath(), purge: false, daemon: false,
+  };
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === '--yes' || rest[i] === '-y') opts.yes = true;
     else if (rest[i] === '--purge') opts.purge = true;
     else if (rest[i] === '--daemon') opts.daemon = true;
     else if (rest[i] === '--settings') opts.settings = rest[++i];
     else if (rest[i] === '--zshrc') opts.zshrc = rest[++i];
+    else if (rest[i] === '--fishrc') opts.fishrc = rest[++i];
   }
   return opts;
 }
@@ -202,6 +210,38 @@ export function installZshrcBlock(content, agents = ['claude']) {
   ({ content: cleaned } = stripFencedBlock(cleaned, FENCE_OPEN, FENCE_CLOSE));
   const result = cleaned.replace(/\n+$/, '\n') + '\n' + wrapperBlock(agents) + '\n';
   return { content: result, oldRemoved };
+}
+
+// The fish twin of wrapperBlock(). Fish shares no syntax with the POSIX block:
+// `name() { … }` is a parse error there, `$?` is `$status`, and `"${X}"` is
+// `"${X}"` verbatim text — so the wrapper gets its own body. Same semantics as
+// the zsh/bash wrapper: a recursion guard (UNSNOOZE_ACTIVE), the load-bearing
+// missing-file fallback to the real CLI, and `_run <id>` routing.
+//
+// Redefining a function replaces any earlier one, which covers fish "aliases"
+// (they are functions too) — no `unalias` analogue is needed. Fish comments
+// are `#`, so the same fence markers work and stripFencedBlock() removes it
+// unchanged.
+export function fishWrapperBlock(agents = ['claude'], bin = UNSNOOZE_BIN) {
+  const fns = agents.flatMap(id => wrapperNamesFor(id).map(name => `function ${name} --description 'unsnooze-wrapped ${name}'
+  if test "$UNSNOOZE_ACTIVE" = "1"; or not test -f '${bin}'
+    command ${name} $argv
+    return $status
+  end
+  node '${bin}' _run ${id} $argv
+end`)).join('\n');
+  return `${FENCE_OPEN}
+# unsnooze wrappers: route every interactive launch of the CLIs below through
+# unsnooze so limit stops are recorded and auto-resumed.
+${fns}
+${FENCE_CLOSE}`;
+}
+
+// installZshrcBlock's fish twin. Same fence, same replace-don't-append
+// behaviour, so re-running setup never stacks a second copy of the wrappers.
+export function installFishBlock(content, agents = ['claude'], bin = UNSNOOZE_BIN) {
+  const { content: cleaned } = stripFencedBlock(content, FENCE_OPEN, FENCE_CLOSE);
+  return cleaned.replace(/\n+$/, '\n') + '\n' + fishWrapperBlock(agents, bin) + '\n';
 }
 
 // --- daemon autostart ---
@@ -555,6 +595,22 @@ function rcTargets(opts, explicit) {
   return existing.length > 0 ? existing : [opts.zshrc];
 }
 
+// The fish config is a separate target from the POSIX rc loop: fish syntax
+// shares nothing with bash, so it gets its own block, and fish reads only
+// <config-home>/fish/config.fish. Touch it when the file already exists (the
+// same any-rc rule as zsh/bash), or when fish is the login shell — a fish
+// user may not have created config.fish yet, and a wrapper that would never
+// load is the same silent-miss as a profile written to a guessed path. Empty
+// list = no evidence of fish on this machine; leave it alone.
+function fishTargets(opts, explicit) {
+  if (explicit) return [opts.fishrc];
+  const cfg = fishConfigPath();
+  if (existsSync(cfg)) return [cfg];
+  const loginShell = process.env.SHELL || userInfo().shell;
+  if (typeof loginShell === 'string' && /(^|\/|\\)fish$/.test(loginShell)) return [cfg];
+  return [];
+}
+
 export function cmdInstall(rest, { agents = enabledAgents() } = {}) {
   const opts = parseArgs(rest);
   const explicitRc = rest.includes('--zshrc');
@@ -620,6 +676,21 @@ export function cmdInstall(rest, { agents = enabledAgents() } = {}) {
       console.log(`unsnooze: PowerShell wrappers (${agents.join(', ')}) installed in ${psProfile}`);
     } catch (err) {
       console.log(`unsnooze: could not write the PowerShell profile (${err.message})`);
+    }
+  }
+
+  // 3c. Fish config. The POSIX loop above is a parse error in fish, and the
+  //     PowerShell profile never loads there — fish needs its own block or a
+  //     fish user's `claude` never routes through unsnooze at all.
+  for (const cfg of fishTargets(opts, rest.includes('--fishrc'))) {
+    try {
+      mkdirSync(dirname(cfg), { recursive: true });
+      const before = existsSync(cfg) ? readFileSync(cfg, 'utf-8') : '';
+      if (existsSync(cfg)) backupOnce(cfg);
+      atomicWrite(cfg, installFishBlock(before, agents, UNSNOOZE_BIN));
+      console.log(`unsnooze: fish wrappers (${agents.join(', ')}) installed in ${cfg}`);
+    } catch (err) {
+      console.log(`unsnooze: could not write the fish config (${err.message})`);
     }
   }
 
@@ -696,6 +767,17 @@ export function cmdUninstall(rest) {
     }
   } catch (err) {
     console.log(`unsnooze: could not clean the PowerShell profile (${err.message})`);
+  }
+
+  // The fish config is a wrapper site too, same reason as the PowerShell
+  // profile above: a stale block would keep shadowing the real CLI.
+  for (const cfg of fishTargets(opts, rest.includes('--fishrc'))) {
+    if (!existsSync(cfg)) continue;
+    const { content, found } = stripFencedBlock(readFileSync(cfg, 'utf-8'), FENCE_OPEN, FENCE_CLOSE);
+    if (found) {
+      atomicWrite(cfg, content);
+      console.log(`unsnooze: fish wrappers removed from ${cfg}`);
+    }
   }
 
   const autostart = uninstallDaemonAutostart();

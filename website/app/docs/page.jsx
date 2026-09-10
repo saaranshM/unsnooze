@@ -52,7 +52,8 @@ $ unsnooze setup`}</Shell>
               <p>The setup wizard asks which agents to guard and which toggles you want, then wires
                 everything up:</p>
               <ul>
-                <li><strong>Shell wrappers</strong> into <C>~/.zshrc</C> / <C>~/.bashrc</C> — after
+                <li><strong>Shell wrappers</strong> into <C>~/.zshrc</C> / <C>~/.bashrc</C> (or
+                  <C> ~/.config/fish/config.fish</C> for fish) — after
                   this, typing <C>claude</C> or <C>codex</C> runs the CLI inside a watched
                   multiplexer pane. You never call unsnooze directly to be protected.</li>
                 <li><strong>The Claude <C>StopFailure</C> hook</strong> — the authoritative

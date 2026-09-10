@@ -11,6 +11,7 @@ import { join } from 'node:path';
 const AUTOSTART_ISOLATION = mkdtempSync(join(tmpdir(), 'unsnooze-install-autostart-'));
 process.env.UNSNOOZE_LAUNCH_AGENTS_DIR = join(AUTOSTART_ISOLATION, 'LaunchAgents');
 process.env.UNSNOOZE_SYSTEMD_USER_DIR = join(AUTOSTART_ISOLATION, 'systemd');
+process.env.UNSNOOZE_FISH_CONFIG = join(AUTOSTART_ISOLATION, 'config.fish');
 
 import {
   cmdInstall, mergeHookIntoSettings, removeHookFromSettings, installZshrcBlock, stripFencedBlock,

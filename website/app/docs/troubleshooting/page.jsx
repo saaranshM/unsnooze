@@ -65,7 +65,8 @@ export default function TroubleshootingDocsPage() {
                 problem from a wake problem, and they have different fixes.</p>
               <ul>
                 <li><strong>Typing <C>claude</C> starts nothing watched.</strong> The shell
-                  wrapper lives in <C>~/.zshrc</C> or <C>~/.bashrc</C>, so it only applies to
+                  wrapper lives in <C>~/.zshrc</C> or <C>~/.bashrc</C> (<C>~/.config/fish/config.fish</C>{' '}
+                  for fish), so it only applies to
                   shells started after <C>unsnooze setup</C> ran. Open a new terminal, then
                   confirm with <C>unsnooze doctor</C>. Nothing is protected until the wrapper is
                   loaded, because the wrapper is the entry point — you never invoke unsnooze

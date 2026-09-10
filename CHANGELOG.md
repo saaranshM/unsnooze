@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+**fish shell support.** Wrappers now install into `~/.config/fish/config.fish`
+when the file exists or fish is the login shell — `unsnooze setup` covers fish
+users with no extra steps, `unsnooze uninstall` removes the block, and
+`unsnooze doctor` checks the fish config when the POSIX rc files are empty.
+The fish block is the same guarded wrapper as the zsh/bash one (`UNSNOOZE_ACTIVE`
+recursion guard, fallback to the real CLI if the entry point vanishes,
+`_run <id>` routing) written in fish syntax: `name() { … }` is a parse error
+there, so `$?` becomes `$status` and the body uses `test` / `or` / `not`.
+An explicit `--fishrc <path>` override targets a different file (tests, CI).
+
 ## 1.18.0 — 2026-09-02
 
 **Cursor CLI support**, a wrapper change that keeps `cursor .` working, and a
