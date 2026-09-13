@@ -11,8 +11,9 @@
 // the overload path, never the ledger.
 
 import { openSync, readSync, closeSync, readdirSync, statSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { CODEX_DIR } from '../config.js';
+import { findOnPath } from '../which.js';
 
 // Since the 2026 unified ChatGPT desktop app absorbed the Codex app, the codex
 // binary ships INSIDE the app bundle and many machines have no standalone
@@ -21,15 +22,53 @@ import { CODEX_DIR } from '../config.js';
 // codex-cli 0.144 from ChatGPT.app).
 export const CHATGPT_CODEX_BIN = '/Applications/ChatGPT.app/Contents/Resources/codex';
 
-function codexOnPath(env = process.env) {
-  return (env.PATH || '').split(':').some(dir => {
-    try { return dir && existsSync(join(dir, 'codex')); } catch { return false; }
-  });
+// Windows keeps the Desktop/Store install's CLI under a versioned runtime
+// directory — %LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe — whose name
+// changes on every update. The interactive shell finds it through a PATH the
+// app rewrote; a daemon started at logon keeps the PATH it was born with,
+// which after an update names a directory that no longer exists (#25). So
+// look the directory up at launch time and take the newest runtime, the way
+// CHATGPT_CODEX_BIN covers the macOS bundle. Layout as reported by the
+// issue's Microsoft Store install; a machine without it just gets null.
+export function windowsBundledCodex({ env = process.env, readdir = readdirSync, stat = statSync } = {}) {
+  if (!env.LOCALAPPDATA) return null;
+  const base = join(env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin');
+  let entries;
+  try { entries = readdir(base, { withFileTypes: true }); } catch { return null; }
+  let best = null;
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const exe = join(base, e.name, 'codex.exe');
+    let mtime;
+    try { mtime = stat(exe).mtimeMs; } catch { continue; }
+    if (!best || mtime > best.mtime) best = { exe, mtime };
+  }
+  return best ? best.exe : null;
 }
 
-export function resolveCodexBin({ env = process.env, onPath = () => codexOnPath(env), exists = existsSync } = {}) {
+// What to spawn for codex. Order, on Windows: an explicit UNSNOOZE_CODEX_BIN,
+// a codex.exe on PATH (spawn resolves the bare name itself), the newest
+// Desktop/Store runtime, then a .cmd/.bat shim on PATH by full path — Node
+// refuses to spawn those without a shell, and a full path makes the launcher's
+// error say which file it was. Elsewhere: PATH, then the macOS app bundle.
+export function resolveCodexBin({
+  env = process.env,
+  platform = process.platform,
+  exists = existsSync,
+  onPath = null,
+  bundled = () => windowsBundledCodex({ env }),
+} = {}) {
   if (env.UNSNOOZE_CODEX_BIN) return env.UNSNOOZE_CODEX_BIN;
-  if (onPath()) return 'codex';
+  if (platform === 'win32') {
+    if (findOnPath(['codex.exe'], { env, exists, platform })) return 'codex';
+    const runtime = bundled();
+    if (runtime) return runtime;
+    const shim = findOnPath(['codex.cmd', 'codex.bat'], { env, exists, platform });
+    if (shim) return shim.path;
+    return 'codex';
+  }
+  const found = onPath ? onPath() : !!findOnPath(['codex'], { env, exists, platform });
+  if (found) return 'codex';
   if (exists(CHATGPT_CODEX_BIN)) return CHATGPT_CODEX_BIN;
   return 'codex';   // neither — the launcher degrades gracefully on spawn error
 }
@@ -67,6 +106,14 @@ export const patterns = {
 // null (the resumer then uses `codex resume --last`, which codex itself scopes
 // to the launch cwd).
 export const ROLLOUT_RE = /^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+
+// The thread uuid a rollout path names, or null for anything else. Cheaper than
+// rolloutMeta() (no read) and the same id in every rollout seen so far.
+export function rolloutId(path) {
+  if (typeof path !== 'string') return null;
+  const m = basename(path).match(ROLLOUT_RE);
+  return m ? m[1].toLowerCase() : null;
+}
 
 function fileHead(path, bytes = 4096) {
   let fd;
@@ -115,11 +162,22 @@ export default {
   experimental: false,
   patterns,
   menu: null,                      // no interactive limit menu
+  // What to do about a workspace wall (credits depleted, workspace cap): no
+  // window reset clears it, so the resumer's ceiling notification names this.
+  modelRemedy: 'add credits to the ChatGPT workspace (or ask its owner to), then `unsnooze resume-now`',
   // Resume takes the prompt in argv — `codex resume <id> "msg"` starts the turn
   // immediately, nothing to type into the TUI.
-  resumeArgs(sessionId, message) {
+  //
+  // canType: false (headless — no pane): the TUI cannot run there at all. It
+  // refuses a non-TTY stdin before it looks at the session ("Error: stdin is
+  // not a terminal", exit 1 — reproduced against codex-cli 0.150 with the
+  // headless backend's exact stdio), so `codex exec resume <id> "msg"` carries
+  // the same conversation forward non-interactively instead (#25). With
+  // --last, codex reads a lone positional as the prompt, not a session id.
+  resumeArgs(sessionId, message, { canType = true } = {}) {
+    const tail = sessionId ? [sessionId, message] : ['--last', message];
     return {
-      args: sessionId ? ['resume', sessionId, message] : ['resume', '--last', message],
+      args: canType ? ['resume', ...tail] : ['exec', 'resume', ...tail],
       messageViaPane: false,
     };
   },

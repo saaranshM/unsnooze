@@ -31,7 +31,8 @@ const {
   minCeiling,
   usageReportToJson,
   appendCalibration,
-  smoothUsedPercent,
+  clampUsedPercent,
+  previousCodexSample,
   extractClaudeUsage,
   extractCodexUsage,
   asciiBar,
@@ -265,11 +266,93 @@ test('medianCeiling from recent stops; ring bounded; formulaV stored', () => {
   assert.equal(med, 102_000);
 });
 
-test('smoothUsedPercent clamps stale/>100 spikes', () => {
-  assert.equal(smoothUsedPercent(105, 90), 100);
-  assert.equal(smoothUsedPercent(50, 90), 50); // drop is fine
-  assert.equal(smoothUsedPercent(null, 40), 40);
-  assert.equal(smoothUsedPercent(12, null), 12);
+test('clampUsedPercent clamps to [0,100] and never averages an exact reading', () => {
+  assert.equal(clampUsedPercent(105, 90), 100);
+  assert.equal(clampUsedPercent(-3, 10), 0);
+  assert.equal(clampUsedPercent(50, 90), 50); // drop is fine
+  assert.equal(clampUsedPercent(null, 40), 40);
+  assert.equal(clampUsedPercent(12, null), 12);
+  // #20 follow-up: (29 + 99) / 2 = 64 was reported as `exact`. A jump is a jump.
+  assert.equal(clampUsedPercent(99, 29), 99);
+  assert.equal(clampUsedPercent(100, 28), 100);
+  assert.equal(clampUsedPercent(99, 83), 99);
+});
+
+// The #20 follow-up, end to end: a fast burn (GPT-6 Astra Ultra, "entire
+// allowance in about 10 minutes") reads 29% then 99% — the report must say 99,
+// the burn must be the real 70pp/min, and the 80/95 warnings must fire.
+test('buildUsageReport: a >15pp Codex jump is reported as read and still warns', () => {
+  const RESET = 1_788_631_754;
+  const T = Date.parse('2026-09-05T13:48:36.539Z');
+  const line = (pct, at, rl = {}) => JSON.stringify({
+    timestamp: new Date(at).toISOString(), type: 'event_msg',
+    payload: { type: 'token_count', rate_limits: {
+      limit_id: 'codex',
+      primary: { used_percent: pct, window_minutes: 300, resets_at: RESET },
+      secondary: { used_percent: 32, window_minutes: 10080, resets_at: 1_788_751_350 },
+      plan_type: 'plus', rate_limit_reached_type: null, ...rl,
+    } },
+  });
+  const samples = [line(29, T - 60_000), line(99, T)]
+    .map(l => extractCodexUsage(l, { rollout: 'aaaaaaaa-0000-4000-8000-000000000001' }));
+  const report = buildUsageReport({ now: T + 60_000, codexSamples: samples });
+  const w = report.agents.find(a => a.agent === 'codex').windows.find(x => x.label === '5h');
+  assert.equal(w.ladder.pct, 99);
+  assert.equal(w.ladder.tier, 'exact');
+  assert.ok(Math.abs(w.burn.burnPerMin - 70) < 0.01, `burn was ${w.burn.burnPerMin}`);
+  assert.equal(usageExitCode({ ...report, warnAt: [80, 95] }), 2);
+  const store = {};
+  evaluateUsageWarnings(report, store, { warnAt: [80, 95] });          // debounce tick
+  const fired = evaluateUsageWarnings(report, store, { warnAt: [80, 95] });
+  assert.deepEqual(fired.map(f => f.threshold).sort((a, b) => a - b), [80, 95]);
+});
+
+test('extractCodexUsage: only the account bucket feeds the windows', () => {
+  const at = '2026-09-05T13:48:36.539Z';
+  const line = rl => JSON.stringify({ timestamp: at, type: 'event_msg',
+    payload: { type: 'token_count', rate_limits: rl } });
+  const window = { used_percent: 29, window_minutes: 300, resets_at: 1_788_631_754 };
+  // Codex defaults a missing limit_id to "codex" — older rollouts have none.
+  assert.equal(extractCodexUsage(line({ primary: window })).primary.usedPercent, 29);
+  assert.equal(extractCodexUsage(line({ limit_id: 'codex', primary: window })).primary.usedPercent, 29);
+  for (const id of ['codex_other', 'premium', 'bengalfox']) {
+    assert.equal(extractCodexUsage(line({ limit_id: id, primary: window })), null, id);
+  }
+  const tagged = extractCodexUsage(line({ primary: window }), { rollout: 'AAAAAAAA-0000-4000-8000-000000000001' });
+  assert.equal(tagged.rollout, 'AAAAAAAA-0000-4000-8000-000000000001');
+  assert.equal(extractCodexUsage(line({ primary: window })).rollout, null);
+});
+
+test('previousCodexSample: the newest earlier reading of the same rollout, or any when untagged', () => {
+  const mk = (at, rollout, pct = 50) => ({ agent: 'codex', at, rollout,
+    primary: { usedPercent: pct, windowMinutes: 300, resetsAtMs: at + 3_600_000 } });
+  const a1 = mk(1000, 'a', 29), b1 = mk(1500, 'b', 5), a2 = mk(2000, 'a', 40), b2 = mk(2500, 'b', 6);
+  const a3 = mk(3000, 'a', 99);
+  const sorted = [a1, b1, a2, b2, a3];
+  assert.equal(previousCodexSample(sorted, a3), a2, 'another thread\'s reading is not this one moving');
+  assert.equal(previousCodexSample(sorted, b2), b1);
+  assert.equal(previousCodexSample(sorted, a1), null);
+  // Store samples from before the rollout was carried compare with anything.
+  const legacy = mk(3500, null, 99);
+  assert.equal(previousCodexSample([...sorted, legacy], legacy), a3);
+  const untagged = mk(100, null, 1);
+  assert.equal(previousCodexSample([untagged, a3], a3), untagged,
+    'an untagged earlier sample (older daemon store) still counts');
+});
+
+test('buildUsageReport: another rollout\'s snapshot is not the previous reading', () => {
+  const now = Date.now();
+  const mk = (at, pct, rollout) => ({ at, agent: 'codex', rollout,
+    primary: { usedPercent: pct, windowMinutes: 300, resetsAtMs: now + 3_600_000 },
+    secondary: null });
+  const report = buildUsageReport({ now, codexSamples: [
+    mk(now - 20 * 60_000, 70, 'a'),
+    mk(now - 60_000, 5, 'b'),          // a fresh Desktop tab's first reading
+    mk(now, 80, 'a'),
+  ] });
+  const w = report.agents.find(a => a.agent === 'codex').windows[0];
+  assert.equal(w.ladder.pct, 80);
+  assert.ok(Math.abs(w.burn.burnPerMin - 0.5) < 0.01, `burn must come from rollout a alone, got ${w.burn.burnPerMin}`);
 });
 
 // --- extractors ---
@@ -745,7 +828,6 @@ test('buildUsageReport: codex %-space burn + ETA band, capped at resets_at', () 
     primary: { usedPercent: pct, windowMinutes: 300, resetsAtMs },
     secondary: { usedPercent: 5, windowMinutes: 10080, resetsAtMs: now + 3 * 86_400_000 },
   });
-  // 10pp over 20min stays under the >15pp spike smoothing
   const report = buildUsageReport({
     now,
     claudeSamples: [],

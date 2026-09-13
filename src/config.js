@@ -254,6 +254,8 @@ export const MUX_NAMES = ['tmux', 'zellij', 'herdr', 'cmux', 'headless'];
 // Where a headless revive tees the agent's output. There is no pane to scroll
 // back through, so the log is the only record of what an unattended run did.
 export const HEADLESS_LOG_DIR = join(STATE_DIR, 'headless');
+// The daemon's Windows Task Scheduler entry (install.js creates it; doctor names it).
+export const WINDOWS_TASK_NAME = 'unsnooze';
 
 // Pane scanning
 export const PANE_SCAN_LINES = envInt('UNSNOOZE_PANE_SCAN_LINES', 12);

@@ -46,10 +46,16 @@ test('99% followed by empty premium records the known five-hour reset', () => {
   assert.equal(hits[0].limitType, '5h');
   assert.equal(hits[0].resetAt, RESET * 1000);
   assert.equal(hits[0].timestampMs, BLOCKED);
-  // The empty bucket must not erase or reduce the latest exact usage.
+  // The empty bucket must not erase or reduce the latest exact usage — and
+  // neither must the reading before it. The reporter saw 64 = (29 + 99) / 2:
+  // an earlier, lower snapshot used to be averaged in and labelled `exact`.
+  const rollout = { rollout: '019f56fe-3508-7f10-8bb2-5e1db403916f' };
+  const earlier = normal({ primary: { used_percent: 29, window_minutes: 300, resets_at: RESET } }, BEFORE - 60_000);
   const report = buildUsageReport({ now: BLOCKED,
-    codexSamples: [normal(), premium()].map(extractCodexUsage).filter(Boolean) });
-  assert.equal(report.agents.find(a => a.agent === 'codex').windows[0].ladder.pct, 99);
+    codexSamples: [earlier, normal(), premium()].map(l => extractCodexUsage(l, rollout)).filter(Boolean) });
+  const codex = report.agents.find(a => a.agent === 'codex').windows[0];
+  assert.equal(codex.ladder.pct, 99);
+  assert.equal(codex.ladder.tier, 'exact');
 });
 
 test('99% alone, other buckets, stale context, and available credits do not infer stops', () => {

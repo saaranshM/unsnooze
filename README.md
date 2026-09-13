@@ -719,7 +719,10 @@ herdr restores saved agent panes itself, so a revival on top would resume the
 same conversation twice.
 ² Into a fresh workspace; cmux has no joinable named-session model.
 ³ As a detached process. Its output goes to `~/.unsnooze/headless/<session>.log`,
-since there is no scrollback to read it out of later.
+since there is no scrollback to read it out of later; the prompt rides in argv
+(`claude --resume <id> "…"`, `codex exec resume <id> "…"`), and a revival that
+exits non-zero is retried, with its last output as the `last error` in
+`unsnooze status`.
 ⁴ Nothing to wrap into — your own terminal is the session.
 
 Pick one explicitly with `unsnooze config set multiplexer tmux|zellij|herdr|cmux|headless`.
@@ -758,12 +761,18 @@ Native Windows works: PowerShell wrappers, a cmd-safe StopFailure hook, and a
 logon-triggered Scheduled Task for the daemon. Install as usual and run
 `unsnooze doctor` to confirm.
 
-Two honest caveats. The daemon is started at logon but not restarted if it
+Three honest caveats. The daemon is started at logon but not restarted if it
 dies — Task Scheduler is not a supervisor the way launchd and systemd are — so
 after upgrading unsnooze, log out and back in (or run `unsnooze daemon`
-yourself). And stored-password fleet hosts still need Git-for-Windows or WSL
-`ssh`; native `ssh.exe` requires an `.exe` askpass helper unsnooze does not yet
-ship.
+yourself). The daemon also keeps the `PATH` it was born with: an agent whose
+install directory changes on update (the Codex Desktop/Store runtime lives
+under `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>`) can vanish from the daemon's
+view while your shell still finds it — unsnooze looks that directory up at
+launch time, `unsnooze doctor` prints what each agent resolves to, and
+`UNSNOOZE_CODEX_BIN` (or `UNSNOOZE_CLAUDE_BIN`, …) pins a path; point it at an
+`.exe`, since Node cannot launch a `.cmd` shim directly. And stored-password
+fleet hosts still need Git-for-Windows or WSL `ssh`; native `ssh.exe` requires
+an `.exe` askpass helper unsnooze does not yet ship.
 
 WSL remains the richer option, because that is where the Unix multiplexers live
 — and where the agent CLIs often already are:

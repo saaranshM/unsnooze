@@ -936,6 +936,36 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
     log(`${key}: limit still active, rescheduled to ${new Date(at).toISOString()} (${source})`);
     return;
   }
+  // A pane-less backend answers every capture with '', so "no banner" is not
+  // evidence there. Headless records what became of the launcher it spawned;
+  // a child that already died non-zero (`spawn codex ENOENT`, the Codex TUI's
+  // "stdin is not a terminal") resumed nothing, and marking it resumed would
+  // drop a retryable stop from the ledger and announce a wake that never
+  // happened (#25). Exit 0 is fine — `claude --resume … "prompt"` runs to
+  // completion and exits before the verify delay — and so is still running.
+  if (typeof mux.paneOutcome === 'function') {
+    let outcome = null;
+    try { outcome = await mux.paneOutcome(rec.pane); } catch { outcome = null; }
+    if (outcome?.exited && outcome.code !== 0) {
+      const attempts = (rec.attempts || 0) + 1;
+      const how = outcome.code != null ? `exit ${outcome.code}`
+        : outcome.signal ? `killed by ${outcome.signal}` : 'failed to start';
+      const why = outcome.output || outcome.error || '';
+      const lastError = `revive died before it could resume (${how}${why ? `: ${why}` : ''})`;
+      const applied = transitionStopEpisode(rec, 'stopped', {
+        attempts,
+        // Same backoff (and same manual exemption) as every other retry.
+        resetAt: rec.manual ? Date.now() : Date.now() + retryBackoffMs(attempts),
+        lastError, verifyRetries: 0, resumeEpisodeAt: null,
+      }, { expect: ['resuming'] });
+      if (!applied) {
+        releaseSupersededResume(key);
+        return 'stale';
+      }
+      log(`${key}: ${lastError}`);
+      return 'retry';
+    }
+  }
   if (!transitionStopEpisode(rec, 'resumed', {
     lastError: null, verifyRetries: 0, resumeEpisodeAt: null,
     bannerCleared: true,

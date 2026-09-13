@@ -15,7 +15,7 @@ import { readFileSync, writeFileSync, renameSync, existsSync, copyFileSync, rmSy
 import { execFileSync } from 'node:child_process';
 import { homedir, userInfo } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
-import { CLAUDE_SETTINGS, STATE_DIR } from './config.js';
+import { CLAUDE_SETTINGS, STATE_DIR, WINDOWS_TASK_NAME } from './config.js';
 import { getConfig, configFileExists } from './settings.js';
 import { xmlEscape } from './notify.js';
 import { installGrokHooks, uninstallGrokHooks } from './agents/grok.js';
@@ -253,7 +253,7 @@ export function installFishBlock(content, agents = ['claude'], bin = UNSNOOZE_BI
 export const DAEMON_LABEL = 'com.unsnooze.daemon';
 // Task Scheduler has no reverse-DNS convention and shows this name to the user
 // in taskschd.msc, so it is a plain word rather than the launchd label.
-export const WINDOWS_TASK_NAME = 'unsnooze';
+export { WINDOWS_TASK_NAME };
 
 // Is this process running under the supervisor we install, rather than from
 // somebody's shell? It decides whether exiting is safe: a supervised daemon

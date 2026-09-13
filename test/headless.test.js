@@ -6,7 +6,7 @@
 
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -162,4 +162,86 @@ test('headless offers no attach hint — there is no session to attach to', asyn
   // The backends that do have something joinable still say so.
   assert.match(attachHint('tmux', 'unsnooze-1'), /tmux attach/);
   assert.match(attachHint('herdr', 'unsnooze-1'), /herdr session attach/);
+});
+
+// --- exit records (#25) ---------------------------------------------------
+// With no pane to capture, the only honest answer to "did the revive work" is
+// what became of the process. These run with a scripted child so they hold on
+// Windows too; test/headless-revive.test.js drives the real thing.
+
+function scriptedSpawner(pid = 5150) {
+  const handlers = {};
+  const spawner = () => ({ pid, unref() {}, on(ev, fn) { handlers[ev] = fn; } });
+  spawner.exit = (code, signal = null) => handlers.exit?.(code, signal);
+  spawner.error = err => handlers.error?.(err);
+  return spawner;
+}
+
+test('paneOutcome reports a recorded non-zero exit with the child\'s own output', async () => {
+  const dir = scratch();
+  const spawner = scriptedSpawner(5150);
+  const alive = pid => pid !== 5150;
+  const mux = createHeadless({ spawner, alive, logDir: dir, env: {} });
+  // An earlier revival into the same session name already wrote here; the
+  // record must not blame this child for that.
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'unsnooze-resumed.log'), 'older revival: agent started\n');
+
+  const { pane } = await mux.newWindow('unsnooze-resumed', dir, { file: 'node', args: [], env: {} });
+  assert.equal(pane, 'pid:5150');
+  appendFileSync(join(dir, 'unsnooze-resumed.log'),
+    '[launcher] headless: launching codex with no pane\nunsnooze: failed to launch codex: spawn codex ENOENT\n');
+  spawner.exit(127);
+
+  const outcome = await mux.paneOutcome(pane);
+  assert.equal(outcome.exited, true);
+  assert.equal(outcome.code, 127);
+  assert.match(outcome.output, /spawn codex ENOENT/);
+  assert.doesNotMatch(outcome.output, /older revival/, 'output is this child\'s slice of the shared log');
+  assert.ok(existsSync(join(dir, 'exits', '5150.json')), 'the exit survives the resumer that saw it');
+});
+
+test('paneOutcome is exited:false while the child runs and null when nothing was recorded', async () => {
+  const dir = scratch();
+  const spawner = scriptedSpawner(6160);
+  let running = true;
+  const mux = createHeadless({ spawner, alive: pid => pid === 6160 && running, logDir: dir, env: {} });
+  const { pane } = await mux.newWindow('unsnooze-resumed', dir, { file: 'node', args: [], env: {} });
+  assert.deepEqual(await mux.paneOutcome(pane), { exited: false });
+  running = false;                       // gone, but no exit event reached us
+  assert.equal(await mux.paneOutcome(pane), null);
+  assert.equal(await mux.paneOutcome('nonsense'), null);
+});
+
+test('a spawn error and a signal are recorded as failures, and exit 0 as success', async () => {
+  const dir = scratch();
+  const mux = createHeadless({ spawner: scriptedSpawner(1), alive: () => false, logDir: dir, env: {} });
+  const spawners = [scriptedSpawner(7001), scriptedSpawner(7002), scriptedSpawner(7003)];
+  const muxes = spawners.map(spawner => createHeadless({ spawner, alive: () => false, logDir: dir, env: {} }));
+  const panes = [];
+  for (const m of muxes) panes.push((await m.newWindow('s', dir, { file: 'node', args: [], env: {} })).pane);
+  spawners[0].error(new Error('spawn node ENOENT'));
+  spawners[1].exit(null, 'SIGTERM');
+  spawners[2].exit(0);
+  const [errored, killed, clean] = await Promise.all(panes.map(p => mux.paneOutcome(p)));
+  assert.equal(errored.exited, true); assert.equal(errored.code, null); assert.match(errored.error, /ENOENT/);
+  assert.equal(killed.exited, true); assert.equal(killed.signal, 'SIGTERM');
+  assert.equal(clean.exited, true); assert.equal(clean.code, 0);
+});
+
+test('a recycled pid does not inherit the previous process\'s exit', async () => {
+  const dir = scratch();
+  const first = scriptedSpawner(8080);
+  const muxA = createHeadless({ spawner: first, alive: () => false, logDir: dir, env: {} });
+  const { pane } = await muxA.newWindow('s', dir, { file: 'node', args: [], env: {} });
+  first.exit(127);
+  assert.equal((await muxA.paneOutcome(pane)).code, 127);
+
+  const second = scriptedSpawner(8080);
+  let running = true;
+  const muxB = createHeadless({ spawner: second, alive: () => running, logDir: dir, env: {} });
+  await muxB.newWindow('s', dir, { file: 'node', args: [], env: {} });
+  assert.deepEqual(await muxB.paneOutcome(pane), { exited: false });
+  running = false;
+  assert.equal(await muxB.paneOutcome(pane), null, 'the old 127 must be gone');
 });

@@ -170,21 +170,73 @@ test('unified-app session_meta head still yields id/cwd/originator', async () =>
   assert.equal(meta.originator, 'codex_exec');
 });
 
-test('non-window reached_type strings (workspace credit/limit variants) still bind the latest reset', () => {
-  // Since the unified app, rate_limit_reached_type carries reason strings
-  // (rate_limit_reached, workspace_owner_usage_limit_reached, …), not window
-  // names — the parser must fall back to the latest-resetting window.
-  const line = JSON.stringify({
+// rate_limit_reached_type is a REASON (rate_limit_reached, workspace_owner_
+// usage_limit_reached, …), never a window name. What it binds to:
+//   - an exhausted window (>= 100) always wins — the latest reset governs;
+//   - a plain rate_limit_reached with nothing at 100 binds the window nearest
+//     exhaustion (the server reports fractions; #20's real stop read 99.0).
+//     Binding the LATEST reset here scheduled a 99.x% five-hour stop for the
+//     weekly reset, days out;
+//   - a workspace_* reason with nothing at 100 is a wall no window reset
+//     takes down (out of credits, workspace cap). It gets no reset time, so
+//     the resumer probes and, at the ceiling, names the remedy instead of
+//     sleeping for a week and waking into the same wall (#25).
+function reached(type, primary, secondary) {
+  return JSON.stringify({
     timestamp: '2026-07-12T15:42:31.000Z', type: 'event_msg',
     payload: { type: 'token_count', rate_limits: {
       limit_id: 'codex',
-      primary: { used_percent: 97, window_minutes: 300, resets_at: 1786400000 },
-      secondary: { used_percent: 99, window_minutes: 10080, resets_at: 1786462931 },
-      plan_type: 'business', rate_limit_reached_type: 'workspace_owner_usage_limit_reached',
+      primary: { used_percent: primary, window_minutes: 300, resets_at: 1786400000 },
+      secondary: { used_percent: secondary, window_minutes: 10080, resets_at: 1786462931 },
+      plan_type: 'business', rate_limit_reached_type: type,
     } },
   });
-  const c = parseRolloutLine(line);
-  assert.ok(c, 'reached_type must bind even when no window shows 100%');
-  assert.equal(c.resetAt, 1786462931 * 1000, 'latest reset governs');
-  assert.equal(c.reachedType, 'workspace_owner_usage_limit_reached');
+}
+
+test('rate_limit_reached below 100% binds the window nearest exhaustion, not the latest reset', () => {
+  const fiveHour = parseRolloutLine(reached('rate_limit_reached', 99.6, 40));
+  assert.equal(fiveHour.limitType, '5h');
+  assert.equal(fiveHour.resetAt, 1786400000 * 1000);
+  assert.equal(fiveHour.reachedType, 'rate_limit_reached');
+  const weekly = parseRolloutLine(reached('rate_limit_reached', 40, 99.5));
+  assert.equal(weekly.limitType, 'weekly');
+  assert.equal(weekly.resetAt, 1786462931 * 1000);
+  // A tie goes to the primary — the shorter wait.
+  assert.equal(parseRolloutLine(reached('rate_limit_reached', 99, 99)).limitType, '5h');
+});
+
+test('a workspace wall with no exhausted window has no reset to wait for', () => {
+  for (const type of ['workspace_owner_credits_depleted', 'workspace_member_credits_depleted',
+    'workspace_owner_usage_limit_reached', 'workspace_member_usage_limit_reached']) {
+    const c = parseRolloutLine(reached(type, 97, 99));
+    assert.ok(c, `${type} is still a stop`);
+    assert.equal(c.limitType, 'model', type);
+    assert.equal(c.resetAt, null, type);
+    assert.equal(c.reachedType, type);
+    assert.equal(c.timestampMs, Date.parse('2026-07-12T15:42:31.000Z'));
+  }
+});
+
+test('a credits-only bucket carrying a workspace reason is not a stop of its own', () => {
+  // The account bucket's line, 0.6s earlier, already recorded the real stop;
+  // this one describes no window and must not re-file it as a probe.
+  const line = JSON.stringify({
+    timestamp: '2026-07-12T15:42:31.600Z', type: 'event_msg',
+    payload: { type: 'token_count', rate_limits: {
+      limit_id: 'premium', primary: null, secondary: null,
+      credits: { has_credits: false, unlimited: false, balance: '0' },
+      plan_type: 'business', rate_limit_reached_type: 'workspace_member_credits_depleted',
+    } },
+  });
+  assert.equal(parseRolloutLine(line), null);
+});
+
+test('an exhausted window still governs when a workspace reason rides along', () => {
+  // #25: primary at 100 plus workspace_member_credits_depleted. The window
+  // reset is what brings the plan allowance back — Codex itself reports this
+  // combination as a usage limit — so it stays a waitable 5h stop.
+  const c = parseRolloutLine(reached('workspace_member_credits_depleted', 100, 40));
+  assert.equal(c.limitType, '5h');
+  assert.equal(c.resetAt, 1786400000 * 1000);
+  assert.equal(c.reachedType, 'workspace_member_credits_depleted');
 });

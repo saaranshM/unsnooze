@@ -23,7 +23,7 @@ import {
 import { getMultiplexer } from './multiplexer.js';
 import { parseTranscriptLine } from './watchers/claude.js';
 import { parseRolloutLines, rolloutMeta } from './watchers/codex.js';
-import { ROLLOUT_RE } from './agents/codex.js';
+import { ROLLOUT_RE, rolloutId } from './agents/codex.js';
 import { parseResetTime, resetAtMs } from './time-parser.js';
 import { upsertSession, readState, updateState } from './state.js';
 import { getConfig } from './settings.js';
@@ -97,12 +97,14 @@ export function codexSource({ roots }) {
         limitType: last.limitType,
         resetLine: null,
         resetAt: last.resetAt,
+        reason: last.reachedType || null,
         origin: meta.originator,
         timestampMs: last.timestampMs,
       }];
     },
-    usage(lines) {
-      return lines.map(extractCodexUsage).filter(Boolean);
+    usage(lines, path) {
+      const rollout = rolloutId(path);
+      return lines.map(line => extractCodexUsage(line, { rollout })).filter(Boolean);
     },
   };
 }
@@ -191,6 +193,7 @@ export function dispatchCandidate(c) {
         s.resetSource = source;
         if (bannerAt != null) s.bannerAt = bannerAt;
         if (c.limitType && c.limitType !== 'unknown') s.limitType = c.limitType;
+        if (c.reason) s.limitReason = c.reason;
       }
     });
     log(`refreshed reset for tracked stop: session=${c.sessionId} resetAt=${new Date(at).toISOString()}`);
@@ -217,6 +220,7 @@ export function dispatchCandidate(c) {
     lastError: null,
   };
   if (c.env) record.env = c.env;   // e.g. CLAUDE_CONFIG_DIR for sandboxed desktop sessions
+  if (c.reason) record.limitReason = c.reason;   // e.g. Codex's rate_limit_reached_type
   // Raw reset without margin for calibration window math.
   const rawResetMs = c.resetAt != null
     ? c.resetAt
@@ -235,7 +239,7 @@ export function dispatchCandidate(c) {
   upsertSession(record, {
     after: calSample ? (state) => applyCalibrationToState(state, calSample) : null,
   });
-  log(`limit stop via transcript: agent=${c.agent} session=${c.sessionId || '?'} origin=${c.origin || '?'} resetAt=${new Date(at).toISOString()} (${source})`);
+  log(`limit stop via transcript: agent=${c.agent} session=${c.sessionId || '?'} origin=${c.origin || '?'} resetAt=${new Date(at).toISOString()} (${source})${c.reason ? ` reason=${c.reason}` : ''}`);
   notify('limit hit 😴', `${c.cwd || c.agent}: tracked — resumes when the limit resets`);
 }
 

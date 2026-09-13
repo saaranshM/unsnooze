@@ -15,7 +15,7 @@ import {
 } from './config.js';
 import { readState, updateState } from './state.js';
 import { getConfig } from './settings.js';
-import { ROLLOUT_RE } from './agents/codex.js';
+import { ROLLOUT_RE, rolloutId } from './agents/codex.js';
 import { shouldUseTui, formatUsageTui, bar as tuiBar } from './tui.js';
 import { shouldUseDashboard, runDashboard } from './dashboard/run.js';
 
@@ -343,18 +343,17 @@ export function calibrationStopCount(calibration, agent, limitType, pool = null)
   return n;
 }
 
-// Clamp spikes (>100) and one-tick stale regressions that jump >15pp upward
-// without intermediate samples (Codex can briefly report stale/overshoot %).
-export function smoothUsedPercent(current, previous) {
+// Clamp an exact reading to [0, 100]; fall back to the previous one when the
+// current is unparseable. Nothing else: the value is the server's own number
+// (Codex copies it out of a response header, the Claude statusline hands it
+// over verbatim), and there is no client-side estimate in it to smooth. This
+// used to average a >15pp jump with the previous sample "for one tick" — but
+// the report recomputes from the last two samples, and at the moment a user is
+// blocked no further sample ever arrives, so a real 99% sat at 64% for the rest
+// of the window and never crossed the 80/95 warn thresholds (#20 follow-up).
+export function clampUsedPercent(current, previous) {
   if (!Number.isFinite(current)) return Number.isFinite(previous) ? previous : null;
-  let v = current;
-  if (v > 100) v = 100;
-  if (v < 0) v = 0;
-  if (Number.isFinite(previous) && v > previous + 15 && previous < 95) {
-    // Soft-cap upward spike: average with previous for one tick
-    v = (v + previous) / 2;
-  }
-  return v;
+  return Math.min(100, Math.max(0, current));
 }
 
 // Dominant model-pool among samples (for Max per-bucket calibration).
@@ -428,7 +427,7 @@ export function recordExactPctSample(store, exactClaude, { now = Date.now(), kee
   if (last && last.pct === pct && now - last.at < 30_000) return store;
   arr.push({
     at: now,
-    pct: smoothUsedPercent(pct, last?.pct),
+    pct: clampUsedPercent(pct, last?.pct),
     resetsAtMs: normalizeResetsAtMs(exactClaude.fiveHour.resets_at),
   });
   store.exactPct.claude5h = arr
@@ -475,13 +474,23 @@ export function pctSpaceEta(history, {
   };
 }
 
-export function extractCodexUsage(line) {
+// `rollout` is the uuid of the file the line came from (rolloutId()). A
+// snapshot is only comparable with the previous snapshot of the SAME thread:
+// Codex emits one token_count line per response per rate-limit bucket, every
+// line carries the thread's last-known snapshot, and threads (Desktop tabs,
+// sub-agents) interleave on disk — so "the machine's second-newest line" can be
+// another thread's minutes-old reading, or another bucket entirely.
+export function extractCodexUsage(line, { rollout = null } = {}) {
   if (!line || !line.trim()) return null;
   let entry;
   try { entry = JSON.parse(line); } catch { return null; }
   if (entry?.type !== 'event_msg' || entry.payload?.type !== 'token_count') return null;
   const rl = entry.payload.rate_limits;
   if (!rl || typeof rl !== 'object') return null;
+  // Only the account bucket feeds the 5h/weekly lines. Codex defaults a missing
+  // limit_id to "codex"; `premium`, `codex_other` and friends are separate
+  // meters with their own windows and must not be read as this one moving.
+  if (rl.limit_id != null && rl.limit_id !== 'codex') return null;
 
   function win(w) {
     if (!w || typeof w !== 'object') return null;
@@ -501,10 +510,24 @@ export function extractCodexUsage(line) {
   return {
     agent: 'codex',
     at: ts,
+    rollout: rollout || null,
     primary,
     secondary: win(rl.secondary),
     planType: rl.plan_type || null,
   };
+}
+
+// The reading to measure `latest` against: the newest earlier sample from the
+// same rollout. Samples recorded before the rollout was carried (an older
+// daemon's store) fall back to the newest earlier sample of any origin.
+export function previousCodexSample(sorted, latest) {
+  const idx = sorted.lastIndexOf(latest);
+  for (let i = (idx === -1 ? sorted.length : idx) - 1; i >= 0; i--) {
+    const s = sorted[i];
+    if (s.at > latest.at) continue;
+    if (latest.rollout == null || s.rollout == null || s.rollout === latest.rollout) return s;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -821,17 +844,19 @@ export function buildUsageReport({
 
   // --- Codex ---
   {
-    const latest = [...codexSamples].sort((a, b) => a.at - b.at).at(-1);
-    const prev = codexSamples.length >= 2
-      ? [...codexSamples].sort((a, b) => a.at - b.at).at(-2)
-      : null;
+    const sorted = [...codexSamples].sort((a, b) => a.at - b.at);
+    const latest = sorted.at(-1);
+    const prev = latest ? previousCodexSample(sorted, latest) : null;
     if (latest?.primary) {
       const windows = [];
       for (const key of ['primary', 'secondary']) {
         const w = latest[key];
         if (!w) continue;
-        const prevW = prev?.[key];
-        const pct = smoothUsedPercent(w.usedPercent, prevW?.usedPercent);
+        // A window that changed size between the two readings is not the same
+        // window; its old reading says nothing about this one's movement.
+        const candidate = prev?.[key];
+        const prevW = candidate && candidate.windowMinutes === w.windowMinutes ? candidate : null;
+        const pct = clampUsedPercent(w.usedPercent, prevW?.usedPercent);
         const label = w.label || labelWindow(w.windowMinutes);
         // %-space burn for ETA on the primary/short window only
         let burn = { idle: true, burnPerMin: 0, activeMin: 0, warmingUp: false };
@@ -1107,8 +1132,9 @@ export function collectCodexSamples({
       match,
       onCandidate(path) {
         onFile?.(path);
+        const rollout = rolloutId(path);
         for (const line of tailLines(path)) {
-          const s = extractCodexUsage(line);
+          const s = extractCodexUsage(line, { rollout });
           if (s && s.at >= cut) samples.push(s);
         }
       },

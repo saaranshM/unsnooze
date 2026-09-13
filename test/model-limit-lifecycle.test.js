@@ -75,6 +75,35 @@ test('at the ceiling: the record is held for a human, and STILL nothing is typed
   assert.match(saved.lastError, /\/model|credits/i, 'and says what the human has to do');
 });
 
+// A Codex workspace wall reaches the same ceiling with no pane and no Claude
+// transcript to probe — the remedy it names has to be Codex's, not Claude's.
+test('at the ceiling, a headless Codex workspace wall is held with the Codex remedy', async () => {
+  const old = Date.now() - (FALLBACK_RESET_MS + RESET_MARGIN_MS + 60_000);
+  const state = upsertSession({
+    sessionId: 'codex-wall-2', cwd: '/repo', mux: 'headless', paneOwner: null, agent: 'codex',
+    muxSession: null, status: 'stopped', limitType: 'model', detectedVia: 'transcript',
+    limitReason: 'workspace_member_credits_depleted',
+    detectedAt: old, bannerAt: old, resetAt: old, resetSource: 'fallback',
+    attempts: 0, lastAttemptAt: null, lastError: null, probeCount: 5,
+  });
+  const rec = Object.values(state.sessions).find(r => r.sessionId === 'codex-wall-2');
+  const headless = { name: 'headless', paneAlive: async () => false, capturePane: async () => '' };
+  const result = await probeFallback(rec, { mux: headless });
+  assert.equal(result, 'held');
+  const saved = readState().sessions[rec.key];
+  assert.equal(saved.status, 'failed');
+  assert.match(saved.lastError, /model limit/i);
+});
+
+test('the Codex adapter names a remedy for a workspace wall that is not Claude\'s', async () => {
+  const { modelRemedy } = await import('../src/patterns.js');
+  const { getAgent } = await import('../src/agents/index.js');
+  const remedy = modelRemedy(getAgent('codex'));
+  assert.match(remedy, /credits/i);
+  assert.match(remedy, /resume-now/);
+  assert.doesNotMatch(remedy, /\/usage-credits|\/model/, 'those are Claude slash commands');
+});
+
 test('preview predicts the same hold, rather than promising a wake', async () => {
   const old = Date.now() - (FALLBACK_RESET_MS + RESET_MARGIN_MS + 60_000);
   const rec = seedModelStop({ detectedAt: old, probeCount: 5 });

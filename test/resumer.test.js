@@ -497,6 +497,46 @@ test('verifyOne: clean pane → resumed', async () => {
     'a later limit must re-arm after verified clean progress');
 });
 
+// #25: a backend with nothing to capture answers '' — which is not a clean
+// pane, it is no pane. Such a backend reports what became of the process
+// instead, and a launcher that died non-zero puts the stop back with backoff.
+test('verifyOne: a pane-less backend whose revive died non-zero → stopped with the reason', async () => {
+  const rec = seed({ pane: null, mux: 'headless', agent: 'codex' });
+  const headless = {
+    name: 'headless',
+    paneAlive: async () => false,
+    capturePane: async () => '',
+    newWindow: async () => ({ pane: 'pid:4242', paneOwner: null }),
+    paneOutcome: async pane => (pane === 'pid:4242'
+      ? { exited: true, code: 127, signal: null, output: 'unsnooze: failed to launch codex: spawn codex ENOENT' }
+      : null),
+  };
+  assert.equal(await dispatchOne(rec, { mux: headless, resolveMux: () => headless }), 'reopen');
+  assert.equal(await verifyOne(rec.key, { resolveMux: () => headless }), 'retry');
+  const after1 = readState().sessions[rec.key];
+  assert.equal(after1.status, 'stopped');
+  assert.equal(after1.attempts, 1);
+  assert.ok(after1.resetAt > Date.now(), 'backoff, not a hot loop');
+  assert.match(after1.lastError, /exit 127.*spawn codex ENOENT/);
+  assert.notEqual(after1.bannerCleared, true);
+});
+
+test('verifyOne: a pane-less backend whose revive is running, exited 0, or unknown → resumed', async () => {
+  for (const outcome of [{ exited: false }, { exited: true, code: 0 }, null, new Error('boom')]) {
+    const rec = seed({ pane: null, mux: 'headless' });
+    const headless = {
+      name: 'headless',
+      paneAlive: async () => false,
+      capturePane: async () => '',
+      newWindow: async () => ({ pane: 'pid:4343', paneOwner: null }),
+      paneOutcome: async () => { if (outcome instanceof Error) throw outcome; return outcome; },
+    };
+    await dispatchOne(rec, { mux: headless, resolveMux: () => headless });
+    assert.equal(await verifyOne(rec.key, { resolveMux: () => headless }), 'resumed', JSON.stringify(outcome));
+    assert.equal(readState().sessions[rec.key].status, 'resumed');
+  }
+});
+
 test('verifyOne: a newer stop merged before verification is not erased', async () => {
   const rec = seed({ pane: '%215' });
   await dispatchOne(rec, { mux: {

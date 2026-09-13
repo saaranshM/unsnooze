@@ -90,9 +90,61 @@ test('runDoctor is all-clear on a clean, fully-installed machine', async () => {
     mux: { name: 'tmux', available: () => true },
     hookInstalled: () => true,
     wrappersInstalled: () => true,
+    // An agent whose binary exists (CI runners have no claude/codex installed).
+    agents: [{ id: 'claude', bin: process.execPath }],
+    enabled: () => true,
   });
   assert.equal(report.healthy, true);
   assert.equal(report.findings.filter(f => f.kind === 'legacy').length, 0);
+  assert.ok(report.findings.some(f => f.id === 'agent-bin-claude' && f.kind === 'info'
+    && f.title === `claude: ${process.execPath}`), 'doctor names the binary each agent launches as');
+});
+
+// #25: the daemon's revivals died with `spawn codex ENOENT` and nothing in
+// `unsnooze doctor` said so. Doctor now resolves each enabled agent the way
+// the launcher would, and a miss is a health finding, not an info line.
+test('runDoctor flags an enabled agent whose binary cannot be launched', async () => {
+  const base = {
+    runner: () => ({ status: 0, stdout: '' }),
+    launchAgentsDir: join(DIR, 'no-such-dir'),
+    csgStateDir: join(DIR, 'no-such-state'),
+    csgBinPath: null,
+    mux: { name: 'headless', available: () => true },
+    hookInstalled: () => true,
+    wrappersInstalled: () => true,
+    enabled: id => id !== 'grok',
+  };
+  const missing = await runDoctor({ ...base,
+    env: { PATH: join(DIR, 'empty-bin') },
+    agents: [{ id: 'codex', bin: 'codex' }, { id: 'grok', bin: 'grok' }],
+  });
+  const codex = missing.findings.find(f => f.id === 'agent-bin-codex');
+  assert.equal(codex.kind, 'health');
+  assert.match(codex.title, /codex is not launchable/);
+  assert.match(codex.detail, /ENOENT/);
+  assert.match(codex.detail, /UNSNOOZE_CODEX_BIN/);
+  assert.equal(missing.healthy, false);
+  assert.ok(!missing.findings.some(f => f.id === 'agent-bin-grok'), 'a disabled agent is not checked');
+
+  // On Windows the daemon's environment can differ from doctor's, and the
+  // finding has to say how to refresh it.
+  const win = await runDoctor({ ...base, platform: 'win32',
+    env: { PATH: 'C:\\dead' }, exists: () => false,
+    agents: [{ id: 'codex', bin: 'codex' }],
+    rcContent: () => '', profileContent: () => '',
+  });
+  assert.match(win.findings.find(f => f.id === 'agent-bin-codex').detail, /schtasks \/end .*schtasks \/run/);
+
+  // A .cmd shim is found but not launchable — a different message.
+  const shim = await runDoctor({ ...base, platform: 'win32',
+    env: { PATH: 'C:\\npm' }, exists: p => p === 'C:\\npm\\codex.cmd',
+    agents: [{ id: 'codex', bin: 'codex' }],
+    rcContent: () => '', profileContent: () => '',
+  });
+  const f = shim.findings.find(x => x.id === 'agent-bin-codex');
+  assert.equal(f.kind, 'health');
+  assert.match(f.title, /codex\.cmd, a \.cmd\/\.bat shim/);
+  assert.match(f.detail, /UNSNOOZE_CODEX_BIN to the agent's \.exe/);
 });
 
 test('runDoctor flags missing hook / wrappers / multiplexer as health problems', async () => {
@@ -163,6 +215,8 @@ test('cmdDoctor prints a report and exits 0 when healthy, 1 when not', async () 
     mux: { name: 'tmux', available: () => true },
     hookInstalled: () => true,
     wrappersInstalled: () => true,
+    agents: [{ id: 'claude', bin: process.execPath }],
+    enabled: () => true,
     print: l => lines.push(l),
   };
   assert.equal(await cmdDoctor([], cleanDeps), 0);
@@ -242,6 +296,10 @@ function healthyDeps(over = {}) {
     hookInstalled: () => true,
     wrappersInstalled: () => true,
     platform: 'darwin',
+    // A resolvable agent: CI runners have no claude/codex, and the daemon-PATH
+    // findings under test must be the only thing deciding `healthy`.
+    agents: [{ id: 'claude', bin: process.execPath }],
+    enabled: () => true,
     ...over,
   };
 }

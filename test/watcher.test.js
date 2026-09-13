@@ -224,6 +224,27 @@ test('dispatchCandidate persists origin and env in the ledger, without a pane ke
   assert.ok(rec.resetAt > Date.now(), 'reset parsed from the reset line');
 });
 
+// #25 / C4: a Codex workspace wall (credits depleted, workspace cap) with no
+// exhausted window arrives with no reset time. It must land as a probing
+// fallback record of the model-limit kind — the resumer then holds it for a
+// human at the ceiling — and never as a 5h/weekly stop with a wake scheduled
+// against a reset that clears nothing.
+test('dispatchCandidate turns a Codex workspace wall into a probing model-limit record', () => {
+  const now = Date.now();
+  dispatchCandidate({
+    agent: 'codex', sessionId: 'codex-wall-1', cwd: '/tmp/proj-wall',
+    limitType: 'model', resetLine: null, resetAt: null,
+    reason: 'workspace_member_credits_depleted', origin: 'Codex Desktop', timestampMs: now,
+  });
+  const rec = readState().sessions['codex-wall-1'];
+  assert.ok(rec);
+  assert.equal(rec.status, 'stopped');
+  assert.equal(rec.limitType, 'model');
+  assert.equal(rec.resetSource, 'fallback', 'no reset time → probe, not sleep');
+  assert.ok(rec.resetAt - now < 3_600_000, `a probe, not a multi-day wake (resetAt ${rec.resetAt - now}ms out)`);
+  assert.equal(rec.limitReason, 'workspace_member_credits_depleted');
+});
+
 test('re-emitted stop must not clobber a resuming record or reset attempts', () => {
   const candidate = sid => ({
     agent: 'claude', sessionId: sid, cwd: '/tmp/proj-re', limitType: '5h',

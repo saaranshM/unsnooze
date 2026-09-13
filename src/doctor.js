@@ -17,6 +17,10 @@ import { shouldUseTui, formatDoctorTui } from './tui.js';
 import { designRegisteredOffline } from './design.js';
 import { powershellProfilePath } from './powershell.js';
 import { fishConfigPath } from './fish.js';
+import { listAgents } from './agents/index.js';
+import { getConfig } from './settings.js';
+import { resolveBin } from './which.js';
+import { WINDOWS_TASK_NAME } from './config.js';
 
 const log = makeLogger('doctor');
 
@@ -187,6 +191,10 @@ export async function runDoctor({
   profileContent = undefined,
   autostartDir = null,
   stateDir = STATE_DIR,
+  env = process.env,
+  exists = existsSync,
+  agents = listAgents(),
+  enabled = id => !!getConfig(`agents.${id}`),
 } = {}) {
   const findings = [];
 
@@ -288,6 +296,14 @@ export async function runDoctor({
     }
   } catch { /* best-effort: a PATH check must never break doctor */ }
 
+  // What each enabled agent would actually be launched as — resolved the way
+  // the launcher resolves it, from this environment. #25 was a daemon whose
+  // logon-time PATH no longer named the Codex runtime directory; every revival
+  // died with ENOENT and nothing said so until the headless log was read.
+  // Doctor cannot see the daemon's environment, only its own, so on Windows
+  // it also says how the two can differ.
+  for (const f of agentBinFindings({ platform, env, exists, agents, enabled })) findings.push(f);
+
   findings.push({
     id: 'daemon', kind: 'info',
     title: daemonRunning() ? 'resumer/daemon: running' : 'resumer/daemon: not running (starts on the next limit stop)',
@@ -308,6 +324,45 @@ export async function runDoctor({
 
   const healthy = findings.every(f => f.kind === 'info');
   return { findings, healthy };
+}
+
+export function agentBinFindings({
+  platform = process.platform, env = process.env, exists = existsSync,
+  agents = listAgents(), enabled = id => !!getConfig(`agents.${id}`),
+} = {}) {
+  const findings = [];
+  const envVar = id => `UNSNOOZE_${String(id).toUpperCase()}_BIN`;
+  const windowsNote = platform === 'win32'
+    ? `\n  the daemon's Scheduled Task keeps the PATH it had at logon; after an agent update, run\n`
+      + `  schtasks /end /tn ${WINDOWS_TASK_NAME} && schtasks /run /tn ${WINDOWS_TASK_NAME}  (or sign out and in)`
+    : '';
+  for (const agent of agents) {
+    if (!agent?.id || !enabled(agent.id)) continue;
+    const bin = agent.bin;
+    let resolved = null;
+    try { resolved = resolveBin(bin, { env, exists, platform }); } catch { resolved = null; }
+    if (resolved?.launchable) {
+      findings.push({
+        id: `agent-bin-${agent.id}`, kind: 'info',
+        title: `${agent.id}: ${resolved.path}`,
+        detail: '',
+      });
+    } else if (resolved) {
+      findings.push({
+        id: `agent-bin-${agent.id}`, kind: 'health',
+        title: `${agent.id} resolves to ${resolved.path}, a .cmd/.bat shim that cannot be launched directly`,
+        detail: `  set ${envVar(agent.id)} to the agent's .exe`,
+      });
+    } else {
+      findings.push({
+        id: `agent-bin-${agent.id}`, kind: 'health',
+        title: `${agent.id} is not launchable from this environment (${bin} not found)`,
+        detail: `  every revival of a ${agent.id} session will fail with ENOENT\n`
+          + `  install it, put it on PATH, or set ${envVar(agent.id)}${windowsNote}`,
+      });
+    }
+  }
+  return findings;
 }
 
 // --- fixes ------------------------------------------------------------------------

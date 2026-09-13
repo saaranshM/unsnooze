@@ -103,3 +103,21 @@ test('a revive inherits launchExtraArgs, so --autocompact survives the wake', ()
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout, '--autocompact 400000 --resume abc-123 carry on\n');
 });
+
+// #25: the launcher's failure line is what the resumer reads back out of the
+// headless log when a revival dies, so it has to say what was launched and
+// why it failed — and exit non-zero, so the recorded exit is a failure.
+test('a binary that cannot be launched exits 127 and names itself and the reason', () => {
+  const r = run({ UNSNOOZE_MULTIPLEXER: 'headless', UNSNOOZE_CODEX_BIN: join(DIR, 'nowhere', 'codex') },
+    ['_run', 'codex', 'resume', '--last', 'hey']);
+  assert.equal(r.status, 127);
+  assert.match(r.stderr, /unsnooze: failed to launch .*codex: spawn .* ENOENT/);
+});
+
+test('a .cmd/.bat shim that cannot be launched says which env var to point at the .exe', () => {
+  const r = run({ UNSNOOZE_MULTIPLEXER: 'headless', UNSNOOZE_CODEX_BIN: join(DIR, 'nowhere', 'codex.cmd') },
+    ['_run', 'codex', 'resume', '--last', 'hey']);
+  assert.equal(r.status, 127);
+  assert.match(r.stderr, /codex\.cmd is a \.cmd\/\.bat shim/);
+  assert.match(r.stderr, /UNSNOOZE_CODEX_BIN at the \.exe/);
+});

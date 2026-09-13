@@ -1,5 +1,72 @@
 # Changelog
 
+## 1.19.1 — 2026-09-13
+
+A Codex usage reading that was averaged down, and a headless Codex revival
+that could never have worked — reported as a success.
+
+### `unsnooze usage` reports Codex's exact percentage as read
+
+The 64% in [issue #20](https://github.com/saaranshM/unsnooze/issues/20) was
+`(29 + 99) / 2`: a jump of more than 15 points was averaged with the reading
+before it and still labelled `exact`. The averaging was meant to soften a
+one-tick spike, but at the moment a session is blocked no further reading
+arrives, so the low number stayed for the rest of the window — and 64 is
+below the 80/95 warning thresholds, so the usage-wall notification never
+fired. Codex's `used_percent` is the server's own number and is now shown
+unchanged (still clamped to 0–100).
+
+Two things could put a much lower reading in front of the latest one: Codex
+writes one snapshot per rate-limit bucket per response, and `unsnooze usage`
+read every bucket (`premium`, `codex_other`, …) as the account window; and
+Codex Desktop tabs and sub-agents each write their own rollout, so "the
+previous reading" could be another thread's minutes-old snapshot. Only the
+account bucket feeds the 5h/weekly lines now, and burn is measured between
+readings of the same rollout. Thanks to
+[@mio-tsuki](https://github.com/mio-tsuki) for working out the arithmetic.
+
+### Headless Codex revivals run, and a revival that dies says so
+
+[Issue #25](https://github.com/saaranshM/unsnooze/issues/25): on Windows the
+daemon's Scheduled Task could not find `codex`, every revival died with
+`spawn codex ENOENT`, and unsnooze logged `verified resumed` anyway.
+
+- **`codex exec resume`.** Under the headless backend a revival ran the Codex
+  TUI, which exits before touching the session when stdin is not a terminal —
+  on every OS, since the backend shipped in 1.16.0. Headless Codex revivals
+  now run `codex exec resume <id> "<prompt>"`, which continues the same
+  conversation non-interactively, the way Claude's headless revival already
+  passed its prompt in argv.
+- **A dead revival is a failed attempt.** With no pane to capture, an empty
+  capture used to count as a cleared banner. The headless backend now records
+  each revival's exit, and a non-zero one puts the stop back on the ledger
+  with backoff and a `last error` that carries the child's own words — visible
+  in `unsnooze status`. Exit 0 still counts as resumed.
+- **Windows finds the Codex runtime.** The Desktop/Store install keeps
+  `codex.exe` under a versioned directory that changes on update, and a daemon
+  started at logon keeps the PATH it was born with. Codex is now resolved at
+  launch: `UNSNOOZE_CODEX_BIN`, then `codex.exe` on PATH, then the newest
+  runtime under `%LOCALAPPDATA%\OpenAI\Codex\bin`. A `.cmd`/`.bat` shim
+  cannot be launched directly by Node; the launcher now says so and names the
+  variable to point at the `.exe` instead of failing with `EINVAL`.
+- **`unsnooze doctor` names each agent's binary** as the launcher would resolve
+  it, and reports an agent that cannot be launched as a health problem — on
+  Windows with the note that the daemon's environment can lag the shell's and
+  how to refresh it.
+- **Codex stops bind to the right reset.** A `rate_limit_reached` at a reported
+  99.x% was scheduled for the *weekly* reset (the latest one), days out; it now
+  binds the window nearest exhaustion. A workspace wall — credits depleted or
+  a workspace cap, with no window exhausted — has no reset to wait for and is
+  now held for a human with the remedy (add credits, then
+  `unsnooze resume-now`) instead of a blind wake. An exhausted window still
+  governs when a workspace reason rides along, since its reset is what brings
+  the plan allowance back.
+
+The Windows resolution follows the layout in the report and wants a Windows
+run before it is trusted; continuing an open Codex Desktop thread in place
+(`codex queue`) is a separate follow-up. Thanks to
+[@nwn900](https://github.com/nwn900) for the precise report.
+
 ## 1.19.0 — 2026-09-10
 
 Fish shell support, direct help/version commands, and a fix for Codex sessions

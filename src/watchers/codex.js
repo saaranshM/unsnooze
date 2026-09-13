@@ -40,12 +40,32 @@ function emptyPremium(rl) {
     && Number(rl.credits.balance) === 0;
 }
 
+// rate_limit_reached_type names WHY the server refused, never a window. The
+// enum (codex-rs/protocol) is rate_limit_reached and four workspace_* values:
+// {owner,member}_credits_depleted and {owner,member}_usage_limit_reached. The
+// workspace ones are a wall that no window reset takes down by itself — the
+// Codex TUI tells the user to add credits or raise the limit, and only maps
+// them back to a plain usage limit when a window is in fact exhausted.
+function workspaceWall(reachedType) {
+  return typeof reachedType === 'string' && reachedType.startsWith('workspace_');
+}
+
+// The window a "limit reached" is about when none reads 100: the one nearest
+// exhaustion, primary on a tie. The server reports fractional percentages and
+// #20's real stop read 99.0, so ">= 100" alone is not the whole story. (The
+// previous rule took the window with the LATEST reset, which for any
+// rate_limit_reached under 100% was the weekly one — days out.)
+function nearestExhausted(windows) {
+  return windows.reduce((a, b) => ((b.used_percent ?? 0) > (a?.used_percent ?? -1) ? b : a), null);
+}
+
 // With several exhausted windows, the latest reset governs: resuming at an
 // earlier one would immediately hit the other limit again.
 function parseSnapshot(entry, previous = null) {
   if (!entry) return null;
   const rl = entry.payload.rate_limits;
   const ts = entry.timestamp ? Date.parse(entry.timestamp) : NaN;
+  const reachedType = rl.rate_limit_reached_type || null;
 
   const windows = ['primary', 'secondary']
     .map(k => rl[k])
@@ -54,11 +74,23 @@ function parseSnapshot(entry, previous = null) {
   const exhausted = windows.filter(w => (w.used_percent ?? 0) >= 100);
   if (exhausted.length > 0) {
     binding = exhausted.reduce((a, b) => ((b.resets_at || 0) > (a.resets_at || 0) ? b : a));
-  } else if (rl.rate_limit_reached_type) {
-    const named = rl[rl.rate_limit_reached_type];
-    binding = (named && typeof named === 'object')
-      ? named
-      : windows.reduce((a, b) => ((b.resets_at || 0) > (a?.resets_at || 0) ? b : a), null);
+  } else if (workspaceWall(reachedType) && windows.length > 0) {
+    // Out of credits (or over the workspace cap) with no window exhausted:
+    // there is no reset to sleep until. Record it the way a model limit is
+    // recorded — no reset time, so the resumer probes and, at the ceiling,
+    // makes the stall visible with the adapter's remedy instead of waking
+    // into the same wall (#25 saw one of these scheduled as a 5h stop).
+    // Only from a snapshot that describes windows: a credits-only bucket
+    // (premium/null) carrying the reason must not re-file the 5h stop the
+    // account bucket recorded a moment earlier as a probe.
+    return {
+      limitType: 'model',
+      resetAt: null,
+      reachedType,
+      timestampMs: Number.isFinite(ts) ? ts : null,
+    };
+  } else if (reachedType) {
+    binding = nearestExhausted(windows);
   }
   // #20: Codex can stop at a reported 99%, then emit an empty premium bucket
   // instead of a 100% snapshot. Infer a stop only for that transition,
@@ -85,7 +117,7 @@ function parseSnapshot(entry, previous = null) {
   return {
     limitType: labelWindow(binding.window_minutes),
     resetAt: binding.resets_at ? binding.resets_at * 1000 : null,
-    reachedType: rl.rate_limit_reached_type || null,
+    reachedType,
     timestampMs: Number.isFinite(ts) ? ts : null,
   };
 }
