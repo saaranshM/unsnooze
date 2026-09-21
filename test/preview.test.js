@@ -107,6 +107,27 @@ test('headless → plan: reopen with the argv dispatch actually uses', async () 
   assert.deepEqual(codex.argv.slice(0, 5), ['codex', 'exec', '--skip-git-repo-check', 'resume', rec.sessionId]);
 });
 
+// `codex exec resume` rejects -s/-p/--add-dir after the subcommand (exit 2,
+// "unexpected argument"); `exec` itself takes them. resumeExtraArgs set to
+// match a normal launch must land where they parse, or every revival dies.
+test('codex resumeExtraArgs go after `exec` on headless, and stay appended in a pane', async () => {
+  const { createHeadless } = await import('../src/multiplexers/headless.js');
+  process.env.UNSNOOZE_RESUME_EXTRA_ARGS_CODEX = '-s workspace-write';
+  try {
+    const rec = seed({ pane: null, mux: 'headless', agent: 'codex' });
+    const headless = await planFor(rec, { mux: createHeadless({ env: {}, alive: () => false }) });
+    assert.deepEqual(headless.argv.slice(0, 7),
+      ['codex', 'exec', '-s', 'workspace-write', '--skip-git-repo-check', 'resume', rec.sessionId]);
+    const paned = await planFor(seed({ agent: 'codex', leaseId: 'L-mine' }),
+      { mux: { ...liveClaudePane('L-other') }, matchesLease: async () => false });
+    assert.equal(paned.action, 'reopen');
+    assert.deepEqual(paned.argv.slice(0, 2), ['codex', 'resume']);
+    assert.deepEqual(paned.argv.slice(-2), ['-s', 'workspace-write']);
+  } finally {
+    delete process.env.UNSNOOZE_RESUME_EXTRA_ARGS_CODEX;
+  }
+});
+
 test('busy pane → defer, no message shown as pending keystrokes', async () => {
   const rec = seed({});
   const mux = { ...liveClaudePane(), capturePane: async () => 'thinking… esc to interrupt' };

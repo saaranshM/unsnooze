@@ -180,11 +180,19 @@ export default {
   // a guard the TUI never had: without the flag, a session that ran in a
   // plain folder could never be revived headless. It is the user's own
   // session, resumed where it already ran, so the flag goes on.
+  //
+  // extraArgsAt: resumeExtraArgs go right after `exec`, not at the end. The
+  // `resume` subcommand rejects -s/--sandbox, -p/--profile and --add-dir
+  // ("unexpected argument", exit 2) — exactly what a user sets to match
+  // their normal launch — while `exec` takes them. (TUI-only flags such as
+  // -a or --search have no exec equivalent and still fail, visibly.)
   resumeArgs(sessionId, message, { canType = true } = {}) {
     const tail = sessionId ? [sessionId, message] : ['--last', message];
+    if (canType) return { args: ['resume', ...tail], messageViaPane: false };
     return {
-      args: canType ? ['resume', ...tail] : ['exec', '--skip-git-repo-check', 'resume', ...tail],
+      args: ['exec', '--skip-git-repo-check', 'resume', ...tail],
       messageViaPane: false,
+      extraArgsAt: 1,
     };
   },
   // v1: every agent launches the bare TUI and gets the prompt typed once idle.

@@ -123,6 +123,15 @@ export function resolveRecordMux(rec) {
   return getMultiplexer(rec.mux, { owner: rec.paneOwner });
 }
 
+// The user's resumeExtraArgs, placed where the adapter's command parses them:
+// appended, unless the adapter names an index (codex's `exec resume` takes
+// its options after `exec`, not after the prompt).
+function withResumeExtraArgs(resume, agentId) {
+  const extra = resolveResumeExtraArgs(agentId);
+  const at = Number.isInteger(resume.extraArgsAt) ? resume.extraArgsAt : resume.args.length;
+  return [...resume.args.slice(0, at), ...extra, ...resume.args.slice(at)];
+}
+
 const stopEpisodeAt = rec => rec?.bannerAt ?? rec?.detectedAt;
 
 // Newer non-error parent-context Claude usage proves that a user/provider retry
@@ -590,7 +599,7 @@ export async function planFor(rec, {
   const resume = agent.resumeArgs(rec.sessionId, message, { canType: backendCanType(mux) });
   return {
     ...base, action: 'reopen', target: { session: target }, message,
-    argv: [agent.id, ...resume.args, ...resolveResumeExtraArgs(agent.id)],
+    argv: [agent.id, ...withResumeExtraArgs(resume, agent.id)],
     messageViaPane: !!resume.messageViaPane,
   };
 }
@@ -760,7 +769,7 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
   const leaseId = createLeaseId();
   const target = await reviveTarget(mux, rec);
   const launchSpec = {
-    file: selfCmd[0], args: [...selfCmd.slice(1), '_run', agent.id, ...resume.args, ...resolveResumeExtraArgs(agent.id)],
+    file: selfCmd[0], args: [...selfCmd.slice(1), '_run', agent.id, ...withResumeExtraArgs(resume, agent.id)],
     env: reopenEnv(rec, leaseId, target),
   };
   // reviveTarget can await a multiplexer query. Recheck after it and claim the
