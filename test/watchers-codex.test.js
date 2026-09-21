@@ -205,10 +205,10 @@ test('rate_limit_reached below 100% binds the window nearest exhaustion, not the
   assert.equal(parseRolloutLine(reached('rate_limit_reached', 99, 99)).limitType, '5h');
 });
 
-test('a workspace wall with no exhausted window has no reset to wait for', () => {
+test('a workspace wall with no spent window has no reset to wait for', () => {
   for (const type of ['workspace_owner_credits_depleted', 'workspace_member_credits_depleted',
     'workspace_owner_usage_limit_reached', 'workspace_member_usage_limit_reached']) {
-    const c = parseRolloutLine(reached(type, 97, 99));
+    const c = parseRolloutLine(reached(type, 97, 60));
     assert.ok(c, `${type} is still a stop`);
     assert.equal(c.limitType, 'model', type);
     assert.equal(c.resetAt, null, type);
@@ -233,10 +233,22 @@ test('a credits-only bucket carrying a workspace reason is not a stop of its own
 
 test('an exhausted window still governs when a workspace reason rides along', () => {
   // #25: primary at 100 plus workspace_member_credits_depleted. The window
-  // reset is what brings the plan allowance back — Codex itself reports this
-  // combination as a usage limit — so it stays a waitable 5h stop.
+  // reset is what brings the plan allowance back, so it stays a waitable 5h
+  // stop rather than a wall held for a human.
   const c = parseRolloutLine(reached('workspace_member_credits_depleted', 100, 40));
   assert.equal(c.limitType, '5h');
   assert.equal(c.resetAt, 1786400000 * 1000);
   assert.equal(c.reachedType, 'workspace_member_credits_depleted');
+});
+
+// The server reports fractions, and a real stop has read 99.0 (#20): a window
+// at 99.x% is as spent as one at 100. Treating it as a wall held the same stop
+// for a human that one tenth of a percent later was a waitable 5h stop.
+test('a window at 99.x% governs a workspace reason just like an exhausted one', () => {
+  const c = parseRolloutLine(reached('workspace_owner_usage_limit_reached', 99.6, 40));
+  assert.equal(c.limitType, '5h');
+  assert.equal(c.resetAt, 1786400000 * 1000);
+  assert.equal(c.reachedType, 'workspace_owner_usage_limit_reached');
+  // Both spent: the later reset governs, as with exhausted windows.
+  assert.equal(parseRolloutLine(reached('workspace_member_credits_depleted', 99.2, 99.4)).limitType, 'weekly');
 });

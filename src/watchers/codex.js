@@ -43,12 +43,17 @@ function emptyPremium(rl) {
 // rate_limit_reached_type names WHY the server refused, never a window. The
 // enum (codex-rs/protocol) is rate_limit_reached and four workspace_* values:
 // {owner,member}_credits_depleted and {owner,member}_usage_limit_reached. The
-// workspace ones are a wall that no window reset takes down by itself — the
-// Codex TUI tells the user to add credits or raise the limit, and only maps
-// them back to a plain usage limit when a window is in fact exhausted.
+// workspace ones are a wall that no window reset takes down by itself: Codex
+// words them "Your workspace is out of credits…" / "You hit your spend cap…",
+// with no time to try again at. A window that is spent as well is another
+// matter — its reset brings the plan's own allowance back (parseSnapshot).
 function workspaceWall(reachedType) {
   return typeof reachedType === 'string' && reachedType.startsWith('workspace_');
 }
+
+// A window counts as spent from 99%: the server reports fractions, and #20's
+// real stop read 99.0 (the same line the empty-premium inference draws).
+const SPENT_PERCENT = 99;
 
 // The window a "limit reached" is about when none reads 100: the one nearest
 // exhaustion, primary on a tie. The server reports fractional percentages and
@@ -75,20 +80,29 @@ function parseSnapshot(entry, previous = null) {
   if (exhausted.length > 0) {
     binding = exhausted.reduce((a, b) => ((b.resets_at || 0) > (a.resets_at || 0) ? b : a));
   } else if (workspaceWall(reachedType) && windows.length > 0) {
-    // Out of credits (or over the workspace cap) with no window exhausted:
-    // there is no reset to sleep until. Record it the way a model limit is
-    // recorded — no reset time, so the resumer probes and, at the ceiling,
-    // makes the stall visible with the adapter's remedy instead of waking
-    // into the same wall (#25 saw one of these scheduled as a 5h stop).
-    // Only from a snapshot that describes windows: a credits-only bucket
-    // (premium/null) carrying the reason must not re-file the 5h stop the
-    // account bucket recorded a moment earlier as a probe.
-    return {
-      limitType: 'model',
-      resetAt: null,
-      reachedType,
-      timestampMs: Number.isFinite(ts) ? ts : null,
-    };
+    const spent = windows.filter(w => (w.used_percent ?? 0) >= SPENT_PERCENT);
+    if (spent.length > 0) {
+      // The plan's window is spent too (99.x% is as spent as 100): its reset
+      // brings the allowance back, so it governs exactly like an exhausted
+      // one — otherwise the same stop reads as a waitable 5h stop at 100.0
+      // and as a wall to hold for a human at 99.9.
+      binding = spent.reduce((a, b) => ((b.resets_at || 0) > (a.resets_at || 0) ? b : a));
+    } else {
+      // Out of credits (or over the workspace cap) with no window spent:
+      // there is no reset to sleep until. Record it the way a model limit is
+      // recorded — no reset time, so the resumer probes and, at the ceiling,
+      // makes the stall visible with the adapter's remedy instead of waking
+      // into the same wall (#25 saw one of these scheduled as a 5h stop).
+      // Only from a snapshot that describes windows: a credits-only bucket
+      // (premium/null) carrying the reason must not re-file the 5h stop the
+      // account bucket recorded a moment earlier as a probe.
+      return {
+        limitType: 'model',
+        resetAt: null,
+        reachedType,
+        timestampMs: Number.isFinite(ts) ? ts : null,
+      };
+    }
   } else if (reachedType) {
     binding = nearestExhausted(windows);
   }
