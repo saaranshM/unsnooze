@@ -90,6 +90,10 @@ export async function cmdStatus(args = []) {
       sessions: Object.values(state.sessions).map(s => ({
         key: s.key, sessionId: s.sessionId ?? null, agent: s.agent ?? 'claude',
         cwd: s.cwd ?? null, status: s.status, limitType: s.limitType ?? null,
+        // Why the provider refused, when it said (Codex's rate_limit_reached_type,
+        // e.g. workspace_member_credits_depleted) — the reason a stop is probed
+        // and held rather than scheduled.
+        limitReason: s.limitReason ?? null,
         resetAt: s.resetAt ?? null, resetSource: s.resetSource ?? null,
         mux: s.mux ?? null, pane: s.pane ?? null, muxSession: s.muxSession ?? null,
         attempts: s.attempts ?? 0, lastError: s.lastError ?? null,

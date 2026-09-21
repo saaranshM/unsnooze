@@ -245,6 +245,67 @@ test('dispatchCandidate turns a Codex workspace wall into a probing model-limit 
   assert.equal(rec.limitReason, 'workspace_member_credits_depleted');
 });
 
+// One Codex stop can arrive as two candidates in different ticks: the
+// token_count snapshot (exact epoch) and the task_complete error (banner text,
+// sometimes just "Try again later."). The weaker must not undo the stronger
+// while it still stands — the rule monitor.js §7 and the merge path apply.
+test('a weaker re-emit keeps a still-future exact reset; a passed one is replaced', () => {
+  const now = Date.now();
+  const exact = now + 3 * 3_600_000;
+  dispatchCandidate({
+    agent: 'codex', sessionId: 'codex-exact-1', cwd: '/tmp/proj-exact', limitType: 'weekly',
+    resetLine: null, resetAt: exact, origin: 'codex_cli_rs', timestampMs: now - 1000,
+  });
+  dispatchCandidate({
+    agent: 'codex', sessionId: 'codex-exact-1', cwd: '/tmp/proj-exact', limitType: 'unknown',
+    resetLine: "You've hit your usage limit. Try again later.", resetAt: null,
+    origin: 'codex_cli_rs', timestampMs: now,
+  });
+  let rec = readState().sessions['codex-exact-1'];
+  assert.equal(rec.resetSource, 'absolute');
+  assert.ok(Math.abs(rec.resetAt - exact) <= 60_000, 'the exact epoch (plus margin) still governs');
+  assert.equal(rec.limitType, 'weekly');
+  assert.equal(rec.bannerAt, now, 'the newer evidence is still recorded');
+
+  // Once the exact reset has passed and the session is still stopped, the
+  // fresh evidence is all there is.
+  setStatus(rec.key, 'stopped', { resetAt: now - 1000 });
+  dispatchCandidate({
+    agent: 'codex', sessionId: 'codex-exact-1', cwd: '/tmp/proj-exact', limitType: 'unknown',
+    resetLine: "You've hit your usage limit. Try again later.", resetAt: null,
+    origin: 'codex_cli_rs', timestampMs: now + 1000,
+  });
+  rec = readState().sessions['codex-exact-1'];
+  assert.equal(rec.resetSource, 'fallback');
+  assert.ok(rec.resetAt > now);
+});
+
+test('a later stop without a reason clears the earlier one', () => {
+  const now = Date.now();
+  dispatchCandidate({
+    agent: 'codex', sessionId: 'codex-reason-1', cwd: '/tmp/proj-reason', limitType: 'model',
+    resetLine: null, resetAt: null, reason: 'workspace_member_credits_depleted', timestampMs: now - 2000,
+  });
+  assert.equal(readState().sessions['codex-reason-1'].limitReason, 'workspace_member_credits_depleted');
+  dispatchCandidate({
+    agent: 'codex', sessionId: 'codex-reason-1', cwd: '/tmp/proj-reason', limitType: '5h',
+    resetLine: null, resetAt: now + 3_600_000, timestampMs: now,
+  });
+  const rec = readState().sessions['codex-reason-1'];
+  assert.equal(rec.limitType, '5h');
+  assert.equal(rec.limitReason, undefined, 'a plain 5h stop is not a workspace wall');
+
+  // And through a merge into a finished record of the same session.
+  setStatus(rec.key, 'failed', { limitReason: 'workspace_member_credits_depleted' });
+  dispatchCandidate({
+    agent: 'codex', sessionId: 'codex-reason-1', cwd: '/tmp/proj-reason', limitType: '5h',
+    resetLine: null, resetAt: now + 3_600_000, timestampMs: now + 1000,
+  });
+  const merged = Object.values(readState().sessions).find(r => r.sessionId === 'codex-reason-1');
+  assert.equal(merged.status, 'stopped');
+  assert.equal(merged.limitReason ?? null, null);
+});
+
 test('re-emitted stop must not clobber a resuming record or reset attempts', () => {
   const candidate = sid => ({
     agent: 'claude', sessionId: sid, cwd: '/tmp/proj-re', limitType: '5h',

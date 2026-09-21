@@ -195,15 +195,26 @@ test('status --json prints machine shape; resume core marks without typing', asy
         mux: 'tmux', pane: '%1', muxSession: 'unsnooze', attempts: 0,
         limitType: '5h', detectedAt: Date.now(),
       },
+      'bbbb1111-2222-3333-4444-555566667777': {
+        key: 'bbbb1111-2222-3333-4444-555566667777',
+        sessionId: 'bbbb1111-2222-3333-4444-555566667777',
+        agent: 'codex', cwd: '/tmp/q', status: 'stopped',
+        resetAt: Date.now() + 900_000, resetSource: 'fallback',
+        mux: 'headless', pane: null, muxSession: null, attempts: 0,
+        limitType: 'model', limitReason: 'workspace_member_credits_depleted', detectedAt: Date.now(),
+      },
     },
   }));
   const env = { ...process.env, UNSNOOZE_STATE_DIR: stateDir, NO_COLOR: '1' };
   const out = execFileSync(process.execPath, ['bin/unsnooze.js', 'status', '--json'], { env, encoding: 'utf-8' });
   const j = JSON.parse(out);
   assert.equal(j.version, 1);
-  assert.equal(j.sessions.length, 1);
-  assert.equal(j.sessions[0].agent, 'claude');
-  assert.equal(j.sessions[0].status, 'stopped');
+  assert.equal(j.sessions.length, 2);
+  const claude = j.sessions.find(x => x.agent === 'claude');
+  assert.equal(claude.status, 'stopped');
+  assert.equal(claude.limitReason, null);
+  // Why a Codex stop is probed and held rather than scheduled.
+  assert.equal(j.sessions.find(x => x.agent === 'codex').limitReason, 'workspace_member_credits_depleted');
   rmSync(home, { recursive: true, force: true });
 });
 

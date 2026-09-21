@@ -24,7 +24,9 @@ import { getMultiplexer } from './multiplexer.js';
 import { parseTranscriptLine } from './watchers/claude.js';
 import { parseRolloutLines, rolloutMeta } from './watchers/codex.js';
 import { ROLLOUT_RE, rolloutId } from './agents/codex.js';
-import { parseResetTime, resetAtMs } from './time-parser.js';
+import { parseResetTime, resetAtMs, sourceRank } from './time-parser.js';
+import { getAgent } from './agents/index.js';
+import { modelRemedy } from './patterns.js';
 import { upsertSession, readState, updateState } from './state.js';
 import { getConfig } from './settings.js';
 import { notify } from './notify.js';
@@ -186,17 +188,31 @@ export function dispatchCandidate(c) {
     : null;
   if (existing && existing.status === 'cancelled') return;
   if (existing && (existing.status === 'stopped' || existing.status === 'resuming')) {
+    let kept = false;
     updateState(state => {
       const s = state.sessions[existing.key];
       if (s && (s.status === 'stopped' || s.status === 'resuming')) {
-        s.resetAt = at;
-        s.resetSource = source;
+        // A weaker estimate never replaces a stronger one that still stands —
+        // the rule monitor.js §7 and upsertSession's merge already apply. One
+        // Codex stop's token_count line and its task_complete error can land
+        // in different ticks, and a "Try again later." banner must not turn
+        // the exact epoch the snapshot gave into a 15-minute probe.
+        kept = sourceRank(source) < sourceRank(s.resetSource) && s.resetAt > Date.now();
+        if (!kept) {
+          s.resetAt = at;
+          s.resetSource = source;
+          if (c.limitType && c.limitType !== 'unknown') s.limitType = c.limitType;
+          // The reason belongs to the stop it came with: a later plain stop
+          // must not keep reporting an earlier workspace wall.
+          if (c.reason) s.limitReason = c.reason;
+          else delete s.limitReason;
+        }
         if (bannerAt != null) s.bannerAt = bannerAt;
-        if (c.limitType && c.limitType !== 'unknown') s.limitType = c.limitType;
-        if (c.reason) s.limitReason = c.reason;
       }
     });
-    log(`refreshed reset for tracked stop: session=${c.sessionId} resetAt=${new Date(at).toISOString()}`);
+    log(kept
+      ? `kept the stronger reset for tracked stop: session=${c.sessionId} (${source} would have replaced it)`
+      : `refreshed reset for tracked stop: session=${c.sessionId} resetAt=${new Date(at).toISOString()}`);
     return;
   }
 
@@ -220,7 +236,10 @@ export function dispatchCandidate(c) {
     lastError: null,
   };
   if (c.env) record.env = c.env;   // e.g. CLAUDE_CONFIG_DIR for sandboxed desktop sessions
-  if (c.reason) record.limitReason = c.reason;   // e.g. Codex's rate_limit_reached_type
+  // e.g. Codex's rate_limit_reached_type. Cleared explicitly when absent:
+  // upsertSession merges into an older record of the same session.
+  if (c.reason) record.limitReason = c.reason;
+  else if (existing?.limitReason) record.limitReason = null;
   // Raw reset without margin for calibration window math.
   const rawResetMs = c.resetAt != null
     ? c.resetAt
