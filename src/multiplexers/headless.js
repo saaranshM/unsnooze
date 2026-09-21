@@ -178,13 +178,21 @@ export function createHeadless({
       // where this child's output starts.
       let from = 0;
       try { from = statSync(logPath).size; } catch { /* just created */ }
+      // The child gets this process's environment — the one backend that
+      // passes it through. A resumer spawned by the StopFailure hook runs in
+      // claude's, which carries UNSNOOZE_ACTIVE=1: the launcher's "nested
+      // call, pass straight through" marker. A revival is a fresh top-level
+      // launch; with the marker it dropped launchExtraArgs and, on a spawn
+      // failure, exited 1 without saying why.
+      const childEnv = { ...env, ...launchSpec.env };
+      delete childEnv.UNSNOOZE_ACTIVE;
       let child;
       try {
         child = spawner(launchSpec.file, launchSpec.args || [], {
           cwd,
           detached: true,
           stdio: ['ignore', fd, fd],
-          env: { ...env, ...launchSpec.env },
+          env: childEnv,
           windowsHide: true,
         });
       } finally {
@@ -240,9 +248,12 @@ export function createHeadless({
     async paneOutcome(pane) {
       const pid = parsePidAddress(pane);
       if (pid === null) return null;
-      if (alive(pid)) return { exited: false };
+      // The record first: newWindow clears any old one for this pid at spawn,
+      // so a record here is our child's exit — even if the pid has since been
+      // handed to another process (Windows recycles them quickly), which a
+      // liveness check alone would read as our revival still running.
       const exit = readExit(pid);
-      if (!exit) return null;
+      if (!exit) return alive(pid) ? { exited: false } : null;
       return {
         exited: true,
         code: exit.code ?? null,

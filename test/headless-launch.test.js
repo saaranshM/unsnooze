@@ -121,3 +121,14 @@ test('a .cmd/.bat shim that cannot be launched says which env var to point at th
   assert.match(r.stderr, /codex\.cmd is a \.cmd\/\.bat shim/);
   assert.match(r.stderr, /UNSNOOZE_CODEX_BIN at the \.exe/);
 });
+
+// A resumer spawned by the StopFailure hook inherits UNSNOOZE_ACTIVE=1 from
+// claude's environment, so a revival's launcher took the pass-through branch —
+// where a binary that could not start came back as a bare exit 1, and the
+// resumer's lastError could say no more than "(exit 1)".
+test('the pass-through branch names a binary it could not start, and exits 127', () => {
+  const r = run({ UNSNOOZE_ACTIVE: '1', UNSNOOZE_CODEX_BIN: join(DIR, 'nowhere', 'codex') },
+    ['_run', 'codex', 'exec', 'resume', '--last', 'hey']);
+  assert.equal(r.status, 127);
+  assert.match(r.stderr, /unsnooze: failed to launch .*codex: spawn(Sync)? .* ENOENT/);
+});

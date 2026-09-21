@@ -296,3 +296,31 @@ test('a spawn that fails rejects with the reason instead of crashing the process
   // Give any stray 'error' a turn of the loop to surface as an uncaught exception.
   await new Promise(resolve => setTimeout(resolve, 50));
 });
+
+// The hook-spawned resumer runs in claude's environment, UNSNOOZE_ACTIVE=1
+// included — the launcher's "nested call, pass straight through" marker. A
+// revival is a fresh launch and must not carry it.
+test('a revival does not inherit the nested-launch marker', async () => {
+  const dir = scratch();
+  let env;
+  const spawner = (file, args, options) => { env = options.env; return { pid: 9200, unref() {}, on() {} }; };
+  const mux = createHeadless({ spawner, alive: () => true, logDir: dir, env: { UNSNOOZE_ACTIVE: '1', PATH: '/usr/bin' } });
+  await mux.newWindow('s', dir, { file: 'node', args: [], env: { UNSNOOZE_MUX: 'headless' } });
+  assert.equal(env.UNSNOOZE_ACTIVE, undefined);
+  assert.equal(env.UNSNOOZE_MUX, 'headless');
+  assert.equal(env.PATH, '/usr/bin');
+});
+
+// Windows hands pids out again quickly. Once our child's exit is on record,
+// another process now holding the pid must not read as our revival running.
+test('a recorded exit wins over a pid that has been reused since', async () => {
+  const dir = scratch();
+  const spawner = scriptedSpawner(9300);
+  const mux = createHeadless({ spawner, alive: () => true, logDir: dir, env: {} });
+  const { pane } = await mux.newWindow('s', dir, { file: 'node', args: [], env: {} });
+  assert.deepEqual(await mux.paneOutcome(pane), { exited: false });
+  spawner.exit(127);
+  const outcome = await mux.paneOutcome(pane);
+  assert.equal(outcome.exited, true);
+  assert.equal(outcome.code, 127);
+});

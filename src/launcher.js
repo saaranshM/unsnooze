@@ -38,7 +38,14 @@ export function resolvePaneOwner(muxName, env = process.env) {
 
 function runUnwatched(agent, args, reason) {
   if (reason) process.stderr.write(`unsnooze: ${reason}\n`);
+  return runPassthrough(agent, args);
+}
+
+// spawnSync reports a binary it could not start as r.error with no status;
+// `r.status ?? 1` alone turned `spawn codex ENOENT` into a silent exit 1.
+function runPassthrough(agent, args) {
   const r = spawnSync(agent.bin, args, { stdio: 'inherit', env: { ...process.env, UNSNOOZE_ACTIVE: '1' } });
+  if (r.error) return launchFailed(agent, r.error);
   return r.status ?? 1;
 }
 
@@ -54,8 +61,7 @@ export function runLauncher(args, agentId = 'claude', { processBirthFn = process
   // or spawning a watcher for `claude --help` flashes the screen and slows down
   // simple queries.
   if (process.env.UNSNOOZE_ACTIVE === '1' || isPassthrough(args) || !getConfig(`agents.${agent.id}`)) {
-    const r = spawnSync(agent.bin, args, { stdio: 'inherit', env: { ...process.env, UNSNOOZE_ACTIVE: '1' } });
-    return r.status ?? 1;
+    return runPassthrough(agent, args);
   }
 
   // Flags the user wants on every session they start (claude's --autocompact
