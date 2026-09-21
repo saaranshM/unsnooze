@@ -340,6 +340,19 @@ test('previousCodexSample: the newest earlier reading of the same rollout, or an
     'an untagged earlier sample (older daemon store) still counts');
 });
 
+// `unsnooze usage` dedupes store + cold-scan samples; the dashboard does not,
+// so the latest reading arrives twice. Its own copy is not an earlier reading.
+test('previousCodexSample skips a duplicate of the latest reading', () => {
+  const mk = (at, pct) => ({ agent: 'codex', at, rollout: 'a',
+    primary: { usedPercent: pct, windowMinutes: 300, resetsAtMs: at + 3_600_000 } });
+  const earlier = mk(1000, 40), latest = mk(61_000, 50), copy = mk(61_000, 50);
+  assert.equal(previousCodexSample([earlier, copy, latest], latest), earlier);
+  const report = buildUsageReport({ now: 61_000, codexSamples: [earlier, latest, copy] });
+  const w = report.agents.find(a => a.agent === 'codex').windows[0];
+  assert.equal(w.burn.idle, false, 'a duplicate made every dashboard burn read idle');
+  assert.ok(Math.abs(w.burn.burnPerMin - 10) < 0.01, `burn was ${w.burn.burnPerMin}`);
+});
+
 test('buildUsageReport: another rollout\'s snapshot is not the previous reading', () => {
   const now = Date.now();
   const mk = (at, pct, rollout) => ({ at, agent: 'codex', rollout,

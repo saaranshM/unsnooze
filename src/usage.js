@@ -520,11 +520,14 @@ export function extractCodexUsage(line, { rollout = null } = {}) {
 // The reading to measure `latest` against: the newest earlier sample from the
 // same rollout. Samples recorded before the rollout was carried (an older
 // daemon's store) fall back to the newest earlier sample of any origin.
+// Strictly earlier: the dashboard hands over the daemon's store and a cold
+// scan of the same files, so `latest`'s own copy sits right before it — and a
+// zero-length interval read as "idle" for as long as the daemon ran.
 export function previousCodexSample(sorted, latest) {
   const idx = sorted.lastIndexOf(latest);
   for (let i = (idx === -1 ? sorted.length : idx) - 1; i >= 0; i--) {
     const s = sorted[i];
-    if (s.at > latest.at) continue;
+    if (s.at >= latest.at) continue;
     if (latest.rollout == null || s.rollout == null || s.rollout === latest.rollout) return s;
   }
   return null;
