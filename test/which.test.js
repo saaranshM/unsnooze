@@ -57,3 +57,19 @@ test('resolveBin on Windows: an .exe anywhere on PATH beats a shim earlier on it
     resolveBin('claude', { env: { PATH: 'C:\\npm;C:\\empty' }, exists, platform: 'win32' }),
     { path: 'C:\\npm\\claude.cmd', launchable: false });
 });
+
+// Two more places spawn's own Windows search (libuv) is more forgiving than a
+// naive lookup: quoted PATH entries, and a path given without its extension.
+test('findOnPath strips quotes from Windows PATH entries', () => {
+  const exists = p => p === 'C:\\Tools\\codex\\codex.exe';
+  assert.deepEqual(
+    findOnPath(['codex.exe'], { env: { PATH: '"C:\\Tools\\codex";C:\\npm' }, exists, platform: 'win32' }),
+    { dir: 'C:\\Tools\\codex', name: 'codex.exe', path: 'C:\\Tools\\codex\\codex.exe' });
+});
+
+test('resolveBin on Windows tries an extensionless path as .com, then .exe', () => {
+  const exists = p => p === 'C:\\Tools\\codex\\codex.exe';
+  assert.deepEqual(resolveBin('C:\\Tools\\codex\\codex', { env: {}, exists, platform: 'win32' }),
+    { path: 'C:\\Tools\\codex\\codex.exe', launchable: true });
+  assert.equal(resolveBin('C:\\Tools\\codex\\nope', { env: {}, exists, platform: 'win32' }), null);
+});

@@ -9,7 +9,10 @@ import { win32, posix } from 'node:path';
 
 export function findOnPath(names, { env = process.env, exists = existsSync, platform = process.platform } = {}) {
   const api = platform === 'win32' ? win32 : posix;
-  for (const dir of (env.PATH || '').split(api.delimiter)) {
+  for (const entry of (env.PATH || '').split(api.delimiter)) {
+    // Windows PATH entries may be quoted ("C:\Program Files\x"); spawn's own
+    // search (libuv) strips the quotes, so this one must too.
+    const dir = platform === 'win32' ? entry.replace(/^(["'])(.*)\1$/, '$2') : entry;
     if (!dir) continue;
     for (const name of names) {
       const path = api.join(dir, name);
@@ -39,6 +42,14 @@ export function resolveBin(bin, { env = process.env, exists = existsSync, platfo
   // (doctor's own tests simulate one platform on another) must not be
   // searched on PATH as if it were a bare name.
   if (win32.isAbsolute(bin) || posix.isAbsolute(bin) || bin.includes('/') || bin.includes('\\')) {
+    // On Windows spawn tries an extensionless path as .com then .exe
+    // (UNSNOOZE_CODEX_BIN=C:\tools\codex runs C:\tools\codex.exe). The literal
+    // path stays the fallback, for a POSIX-shaped path checked under Windows
+    // rules (doctor's tests simulate one platform on the other).
+    if (platform === 'win32' && !win32.extname(bin)) {
+      const hit = [`${bin}.com`, `${bin}.exe`].find(p => exists(p));
+      if (hit) return { path: hit, launchable: true };
+    }
     return exists(bin) ? { path: bin, launchable: !shim(bin) } : null;
   }
   // Two passes, because spawn never tries a .cmd/.bat (libuv only appends
