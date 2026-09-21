@@ -93,6 +93,8 @@ test('at the ceiling, a headless Codex workspace wall is held with the Codex rem
   const saved = readState().sessions[rec.key];
   assert.equal(saved.status, 'failed');
   assert.match(saved.lastError, /model limit/i);
+  assert.match(saved.lastError, /continue the session in Codex/, '`unsnooze status` shows the Codex remedy');
+  assert.doesNotMatch(saved.lastError, /\/model/, 'not the Claude slash command');
 });
 
 test('the Codex adapter names a remedy for a workspace wall that is not Claude\'s', async () => {
@@ -100,7 +102,10 @@ test('the Codex adapter names a remedy for a workspace wall that is not Claude\'
   const { getAgent } = await import('../src/agents/index.js');
   const remedy = modelRemedy(getAgent('codex'));
   assert.match(remedy, /credits/i);
-  assert.match(remedy, /resume-now/);
+  assert.match(remedy, /continue the session/);
+  // The hold leaves the record failed, and resume-now only wakes stopped
+  // records — naming it here sent users to a command that refused.
+  assert.doesNotMatch(remedy, /resume-now/);
   assert.doesNotMatch(remedy, /\/usage-credits|\/model/, 'those are Claude slash commands');
 });
 

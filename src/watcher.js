@@ -259,7 +259,15 @@ export function dispatchCandidate(c) {
     after: calSample ? (state) => applyCalibrationToState(state, calSample) : null,
   });
   log(`limit stop via transcript: agent=${c.agent} session=${c.sessionId || '?'} origin=${c.origin || '?'} resetAt=${new Date(at).toISOString()} (${source})${c.reason ? ` reason=${c.reason}` : ''}`);
-  notify('limit hit 😴', `${c.cwd || c.agent}: tracked — resumes when the limit resets`);
+  // A model limit (a Codex workspace wall, say) is not lifted by waiting, so
+  // "resumes when the limit resets" would be a promise nothing keeps — say
+  // what it needs instead, as the pane monitor does.
+  if (record.limitType === 'model') {
+    const agent = getAgent(c.agent);
+    notify(`${agent.name} hit a model limit — needs you`, `${c.cwd || c.agent}: ${modelRemedy(agent)}`);
+  } else {
+    notify('limit hit 😴', `${c.cwd || c.agent}: tracked — resumes when the limit resets`);
+  }
 }
 
 function loadOffsets(path) {

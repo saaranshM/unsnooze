@@ -162,9 +162,12 @@ export default {
   experimental: false,
   patterns,
   menu: null,                      // no interactive limit menu
-  // What to do about a workspace wall (credits depleted, workspace cap): no
+  // What to do about a workspace wall (credits depleted, a spend cap): no
   // window reset clears it, so the resumer's ceiling notification names this.
-  modelRemedy: 'add credits to the ChatGPT workspace (or ask its owner to), then `unsnooze resume-now`',
+  // Not `unsnooze resume-now`: the hold leaves the record failed, and
+  // resume-now only wakes stopped ones — it would answer "no matching stopped
+  // sessions" to the one command the notification told the user to run.
+  modelRemedy: 'add credits or raise the spend cap in the ChatGPT workspace (or ask its owner to), then continue the session in Codex',
   // Resume takes the prompt in argv — `codex resume <id> "msg"` starts the turn
   // immediately, nothing to type into the TUI.
   //

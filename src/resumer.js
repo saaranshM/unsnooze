@@ -375,13 +375,16 @@ function rescheduleProbe(rec, now = Date.now()) {
     // never by waiting it out. Typing a wake into it would hit the same wall,
     // so make the stall a visible terminal state instead of a futile resume.
     if (rec.limitType === 'model') {
+      // The agent's own remedy: `unsnooze status` shows this line, and
+      // Claude's slash commands mean nothing to a Codex workspace wall.
+      const remedy = modelRemedy(getAgent(rec.agent));
       setStatus(key, 'failed', {
-        lastError: 'model limit still active — switch models (/model) or add credits',
+        lastError: `model limit still active — ${remedy}`,
         probeCount: probeCount + 1,
       }, { expect: ['stopped'] });
       log(`${key}: model limit still active at probe ceiling — needs a human`);
       notify('unsnooze: model limit needs you ⚠️',
-        `${rec.cwd}: still limited after probing — ${modelRemedy(getAgent(rec.agent))}`,
+        `${rec.cwd}: still limited after probing — ${remedy}`,
         { context: ctxOf(rec), priority: 4 });
       return 'held';
     }
