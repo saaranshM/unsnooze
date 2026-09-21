@@ -245,3 +245,52 @@ test('a recycled pid does not inherit the previous process\'s exit', async () =>
   running = false;
   assert.equal(await muxB.paneOutcome(pane), null, 'the old 127 must be gone');
 });
+
+// Staggered revivals share one log: the resumer launches the next one 8s after
+// the last and verifies 20s later, so a revival that died at once is read back
+// after the next has written its own lines. Those lines are not its reason.
+test('a revival launched after another died is not blamed for its death', async () => {
+  const dir = scratch();
+  const log = join(dir, 'unsnooze-resumed.log');
+  const dead = scriptedSpawner(9001);
+  const muxA = createHeadless({ spawner: dead, alive: () => false, logDir: dir, env: {} });
+  const { pane } = await muxA.newWindow('unsnooze-resumed', dir, { file: 'node', args: [], env: {} });
+  appendFileSync(log, 'unsnooze: failed to launch codex: spawn codex ENOENT\n');
+  dead.exit(127);
+
+  const next = scriptedSpawner(9002);
+  const muxB = createHeadless({ spawner: next, alive: () => true, logDir: dir, env: {} });
+  await muxB.newWindow('unsnooze-resumed', dir, { file: 'node', args: [], env: {} });
+  appendFileSync(log, 'next revival: working on the task\n');
+
+  const outcome = await muxA.paneOutcome(pane);
+  assert.equal(outcome.code, 127);
+  assert.match(outcome.output, /spawn codex ENOENT/);
+  assert.doesNotMatch(outcome.output, /next revival/);
+});
+
+// The daemon is long-lived; a log descriptor kept per revival is a leak.
+test('newWindow does not keep the log descriptor open in the parent', async () => {
+  const { fstatSync } = await import('node:fs');
+  const dir = scratch();
+  let fd;
+  const spawner = (file, args, options) => { fd = options.stdio[1]; return { pid: 9100, unref() {}, on() {} }; };
+  const mux = createHeadless({ spawner, alive: () => true, logDir: dir, env: {} });
+  await mux.newWindow('s', dir, { file: 'node', args: [], env: {} });
+  assert.ok(Number.isInteger(fd));
+  assert.throws(() => fstatSync(fd), { code: 'EBADF' });
+});
+
+// A spawn that fails (the session's cwd was a worktree that has since been
+// removed) reports it as an 'error' event after spawn() returns. Nobody used to
+// be listening yet, and an unheard 'error' is an uncaught exception — the
+// whole daemon went down with the one revival.
+test('a spawn that fails rejects with the reason instead of crashing the process', async () => {
+  const dir = scratch();
+  const mux = createHeadless({ logDir: dir, env: {} });
+  await assert.rejects(
+    mux.newWindow('s', join(dir, 'deleted-worktree'), { file: process.execPath, args: ['-e', ''], env: {} }),
+    /produced no pid \(.+\)/);
+  // Give any stray 'error' a turn of the loop to surface as an uncaught exception.
+  await new Promise(resolve => setTimeout(resolve, 50));
+});

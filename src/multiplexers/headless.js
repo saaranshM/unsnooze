@@ -102,17 +102,21 @@ export function createHeadless({
     }
   }
 
-  // The last lines the child wrote to the shared log, read from the offset
-  // its launch recorded so another revival's output is never attributed to it.
+  // The last lines the child wrote to the shared log, read between the offsets
+  // recorded at its launch and at its exit. The upper bound matters: the
+  // resumer staggers revivals 8s apart and verifies 20s later, so a revival
+  // that died at once is read back after the next one has written its own
+  // lines into the same log. (One running alongside it can still interleave.)
   function childOutput(exit) {
     if (!exit.log || !Number.isFinite(exit.from)) return null;
     let fd;
     try {
       const { size } = statSync(exit.log);
-      const start = Math.max(exit.from, size - EXIT_OUTPUT_BYTES);
-      if (size <= start) return null;
+      const end = Number.isFinite(exit.to) ? Math.min(exit.to, size) : size;
+      const start = Math.max(exit.from, end - EXIT_OUTPUT_BYTES);
+      if (end <= start) return null;
       fd = openSync(exit.log, 'r');
-      const buf = Buffer.alloc(size - start);
+      const buf = Buffer.alloc(end - start);
       const n = readSync(fd, buf, 0, buf.length, start);
       const lines = buf.toString('utf-8', 0, n).split(/\r?\n/).map(l => l.trim()).filter(Boolean);
       return lines.length ? lines.slice(-3).join(' | ') : null;
@@ -174,31 +178,57 @@ export function createHeadless({
       // where this child's output starts.
       let from = 0;
       try { from = statSync(logPath).size; } catch { /* just created */ }
-      const child = spawner(launchSpec.file, launchSpec.args || [], {
-        cwd,
-        detached: true,
-        stdio: ['ignore', fd, fd],
-        env: { ...env, ...launchSpec.env },
-        windowsHide: true,
-      });
-      if (typeof child?.unref === 'function') child.unref();
-      if (!child?.pid) {
-        throw new Error(`unsnooze: headless launch of ${launchSpec.file} produced no pid`);
+      let child;
+      try {
+        child = spawner(launchSpec.file, launchSpec.args || [], {
+          cwd,
+          detached: true,
+          stdio: ['ignore', fd, fd],
+          env: { ...env, ...launchSpec.env },
+          windowsHide: true,
+        });
+      } finally {
+        // The child has its own copy; the daemon's would otherwise stay open
+        // for the life of the process, one descriptor per revival.
+        try { closeSync(fd); } catch { /* already closed */ }
       }
-      const pid = child.pid;
+      const pid = child?.pid;
+      const startedAt = Date.now();
+      let spawnError = null;
+      // Listen before anything below can throw. A spawn that fails — the
+      // session's cwd was a worktree that has since been deleted, say — says
+      // so with an 'error' event after spawn() has returned, and an 'error'
+      // nobody listens for is an uncaught exception: the daemon dies with it.
+      if (typeof child?.on === 'function') {
+        const record = (code, signal, error) => {
+          if (!pid) return;
+          // Where this child's output ends in the shared log (childOutput).
+          let to = null;
+          try { to = statSync(logPath).size; } catch { /* gone */ }
+          writeExit(pid, {
+            pid, code, signal: signal ?? null, error: error ?? null,
+            startedAt, at: Date.now(), log: logPath, from, to,
+          });
+        };
+        child.on('exit', (code, signal) => record(code, signal, null));
+        child.on('error', err => {
+          spawnError = err;
+          record(null, null, err?.message || String(err));
+        });
+      }
+      if (typeof child?.unref === 'function') child.unref();
+      if (!pid) {
+        // The reason arrives on the next tick; wait for it so the record's
+        // lastError says why, not just that there was no pid.
+        await new Promise(resolve => setImmediate(resolve));
+        throw new Error(`unsnooze: headless launch of ${launchSpec.file} produced no pid`
+          + (spawnError ? ` (${spawnError.message})` : ''));
+      }
       // A recycled pid must not inherit an old exit. Best-effort, like the
       // pruning: an exit record is evidence, never something a launch needs.
+      // (No event can have fired yet — nothing above has yielded since spawn.)
       try { unlinkSync(exitPath(pid)); } catch { /* none */ }
       pruneExits();
-      const startedAt = Date.now();
-      if (typeof child.on === 'function') {
-        const record = (code, signal, error) => writeExit(pid, {
-          pid, code, signal: signal ?? null, error: error ?? null,
-          startedAt, at: Date.now(), log: logPath, from,
-        });
-        child.on('exit', (code, signal) => record(code, signal, null));
-        child.on('error', err => record(null, null, err?.message || String(err)));
-      }
       return { pane: `${PID_PREFIX}${pid}`, paneOwner: null, session: sessionName };
     },
 
