@@ -131,9 +131,10 @@ test('a headless codex revive runs `exec resume`, not the TUI', async () => {
   const written = await waitForWritten(record);
   assert.ok(written, 'the revive must actually start a process');
   const argv = written.trim().split('\n');
-  assert.deepEqual(argv.slice(0, 5), ['_run', 'codex', 'exec', 'resume', '019f56fe-3508-7f10-8bb2-5e1db403916f'],
+  assert.deepEqual(argv.slice(0, 6),
+    ['_run', 'codex', 'exec', '--skip-git-repo-check', 'resume', '019f56fe-3508-7f10-8bb2-5e1db403916f'],
     `revive argv was ${JSON.stringify(argv)}`);
-  assert.ok(argv[5] && argv[5].length > 0, 'the wake prompt rides in argv');
+  assert.ok(argv[6] && argv[6].length > 0, 'the wake prompt rides in argv');
 });
 
 // #25: the launcher died with `spawn codex ENOENT` (exit 127) and verifyOne

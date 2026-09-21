@@ -174,10 +174,16 @@ export default {
   // headless backend's exact stdio), so `codex exec resume <id> "msg"` carries
   // the same conversation forward non-interactively instead (#25). With
   // --last, codex reads a lone positional as the prompt, not a session id.
+  //
+  // `exec` also refuses any directory that is not a git repository unless
+  // told --skip-git-repo-check ("Not inside a trusted directory…", exit 1),
+  // a guard the TUI never had: without the flag, a session that ran in a
+  // plain folder could never be revived headless. It is the user's own
+  // session, resumed where it already ran, so the flag goes on.
   resumeArgs(sessionId, message, { canType = true } = {}) {
     const tail = sessionId ? [sessionId, message] : ['--last', message];
     return {
-      args: canType ? ['resume', ...tail] : ['exec', 'resume', ...tail],
+      args: canType ? ['resume', ...tail] : ['exec', '--skip-git-repo-check', 'resume', ...tail],
       messageViaPane: false,
     };
   },

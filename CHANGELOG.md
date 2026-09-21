@@ -36,7 +36,9 @@ daemon's Scheduled Task could not find `codex`, every revival died with
   on every OS, since the backend shipped in 1.16.0. Headless Codex revivals
   now run `codex exec resume <id> "<prompt>"`, which continues the same
   conversation non-interactively, the way Claude's headless revival already
-  passed its prompt in argv.
+  passed its prompt in argv. It is given `--skip-git-repo-check`: `exec`
+  refuses any directory that is not a git repository, which the TUI never
+  did, and the session being revived already ran there.
 - **A dead revival is a failed attempt.** With no pane to capture, an empty
   capture used to count as a cleared banner. The headless backend now records
   each revival's exit, and a non-zero one puts the stop back on the ledger

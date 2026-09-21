@@ -104,7 +104,7 @@ test('headless → plan: reopen with the argv dispatch actually uses', async () 
 
   const rec = seed({ pane: null, mux: 'headless', agent: 'codex' });
   const codex = await planFor(rec, { mux });
-  assert.deepEqual(codex.argv.slice(0, 4), ['codex', 'exec', 'resume', rec.sessionId]);
+  assert.deepEqual(codex.argv.slice(0, 5), ['codex', 'exec', '--skip-git-repo-check', 'resume', rec.sessionId]);
 });
 
 test('busy pane → defer, no message shown as pending keystrokes', async () => {

@@ -68,12 +68,16 @@ test('codex resume args carry the message in argv', () => {
 test('codex resumes headless through `exec resume`, never the TUI', () => {
   const id = '0199a213-81c0-7800-8aa1-bbab2a035a53';
   assert.deepEqual(codex.resumeArgs(id, 'continue', { canType: false }).args,
-    ['exec', 'resume', id, 'continue']);
+    ['exec', '--skip-git-repo-check', 'resume', id, 'continue']);
   assert.deepEqual(codex.resumeArgs(null, 'continue', { canType: false }).args,
-    ['exec', 'resume', '--last', 'continue']);
+    ['exec', '--skip-git-repo-check', 'resume', '--last', 'continue']);
   assert.deepEqual(codex.resumeArgs(id, 'continue', { canType: true }).args,
     ['resume', id, 'continue']);
   assert.equal(codex.resumeArgs(id, 'continue', { canType: false }).messageViaPane, false);
+  // `exec` exits 1 outside a git repository ("Not inside a trusted directory
+  // and --skip-git-repo-check was not specified") — the TUI form never did.
+  assert.ok(codex.resumeArgs(id, 'continue', { canType: false }).args.includes('--skip-git-repo-check'));
+  assert.ok(!codex.resumeArgs(id, 'continue', { canType: true }).args.includes('--skip-git-repo-check'));
 });
 
 test('codex foreground command check', () => {
