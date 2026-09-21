@@ -84,3 +84,25 @@ test('a watcher that throws does not kill the daemon', async () => {
   controller.abort();
   await done;
 });
+
+// #25: every revival died with `spawn codex ENOENT`, and each attempt said so
+// in lastError — until the last one, when giving up overwrote it with a bare
+// "max resume attempts exceeded". That is the state the "gave up" notification
+// sends the user to `unsnooze status` to read.
+test('giving up keeps the last attempt\'s reason in lastError', async () => {
+  const { upsertSession } = await import('../src/state.js');
+  const { MAX_RESUME_ATTEMPTS } = await import('../src/config.js');
+  const reason = 'revive died before it could resume (exit 127: unsnooze: failed to launch codex: spawn codex ENOENT)';
+  const state = upsertSession({
+    sessionId: '019f56fe-0000-4000-8000-00000000beef', cwd: '/tmp/proj-gave-up', agent: 'codex',
+    mux: 'headless', pane: null, paneOwner: null, status: 'stopped', limitType: '5h',
+    detectedVia: 'transcript', detectedAt: Date.now() - 3_600_000, resetAt: Date.now() - 1000,
+    resetSource: 'absolute', attempts: MAX_RESUME_ATTEMPTS, lastError: reason,
+  });
+  const key = Object.values(state.sessions).find(s => s.cwd === '/tmp/proj-gave-up').key;
+  assert.equal(await runResumer({ resolveMux: () => ({ }), pollInterval: 10 }), 0);
+  const rec = readState().sessions[key];
+  assert.equal(rec.status, 'failed');
+  assert.match(rec.lastError, /max resume attempts exceeded/);
+  assert.match(rec.lastError, /spawn codex ENOENT/);
+});

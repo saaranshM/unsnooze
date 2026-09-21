@@ -1140,8 +1140,14 @@ export async function runResumer({
       // Anything over the attempts cap is dead — mark failed so we can exit.
       for (const s of dueForDispatch()) {
         if ((s.attempts || 0) >= MAX_RESUME_ATTEMPTS) {
+          // Keep the last attempt's reason: this is the state `unsnooze status`
+          // shows after the "gave up" notification, and "exceeded" alone does
+          // not say that every revival died with `spawn codex ENOENT` (#25).
           const applied = transitionStopEpisode(s, 'failed', {
-            lastError: 'max resume attempts exceeded', verifyRetries: 0,
+            lastError: s.lastError
+              ? `max resume attempts exceeded — last: ${s.lastError}`
+              : 'max resume attempts exceeded',
+            verifyRetries: 0,
             resumeEpisodeAt: null,
           }, { expect: ['stopped'] });
           if (!applied) continue;
