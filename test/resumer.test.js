@@ -521,8 +521,8 @@ test('verifyOne: a pane-less backend whose revive died non-zero → stopped with
   assert.notEqual(after1.bannerCleared, true);
 });
 
-test('verifyOne: a pane-less backend whose revive is running, exited 0, or unknown → resumed', async () => {
-  for (const outcome of [{ exited: false }, { exited: true, code: 0 }, null, new Error('boom')]) {
+test('verifyOne: a pane-less backend whose revive exited 0, or is unknown → resumed', async () => {
+  for (const outcome of [{ exited: true, code: 0 }, null, new Error('boom')]) {
     const rec = seed({ pane: null, mux: 'headless' });
     const headless = {
       name: 'headless',
@@ -535,6 +535,37 @@ test('verifyOne: a pane-less backend whose revive is running, exited 0, or unkno
     assert.equal(await verifyOne(rec.key, { resolveMux: () => headless }), 'resumed', JSON.stringify(outcome));
     assert.equal(readState().sessions[rec.key].status, 'resumed');
   }
+});
+
+// Once a revival counts as resumed nothing reads its exit again — the sweep
+// drops the record as soon as the pid is gone — so one that dies at 25s (an
+// auth refresh giving up, a retry loop) must not be called resumed at 20s.
+test('verifyOne: a young headless revive that is still running stays in flight until it settles', async () => {
+  let outcome = { exited: false };
+  const rec = seed({ pane: null, mux: 'headless', agent: 'codex' });
+  const headless = {
+    name: 'headless',
+    paneAlive: async () => false,
+    capturePane: async () => '',
+    newWindow: async () => ({ pane: 'pid:4444', paneOwner: null }),
+    paneOutcome: async () => outcome,
+  };
+  await dispatchOne(rec, { mux: headless, resolveMux: () => headless });
+  assert.equal(await verifyOne(rec.key, { resolveMux: () => headless }), 'pending');
+  assert.equal(readState().sessions[rec.key].status, 'resuming', 'no wake announced yet');
+
+  // It dies on the next tick: a failed attempt, not a resumed session.
+  outcome = { exited: true, code: 1, signal: null, output: 'error: 401 Unauthorized' };
+  assert.equal(await verifyOne(rec.key, { resolveMux: () => headless }), 'retry');
+  assert.equal(readState().sessions[rec.key].status, 'stopped');
+  assert.match(readState().sessions[rec.key].lastError, /401/);
+
+  // One that is still running once it has settled is a resumed session.
+  const long = seed({ pane: null, mux: 'headless' });
+  outcome = { exited: false };
+  await dispatchOne(long, { mux: headless, resolveMux: () => headless });
+  updateState(s => { s.sessions[long.key].lastAttemptAt = Date.now() - 10 * 60_000; });
+  assert.equal(await verifyOne(long.key, { resolveMux: () => headless }), 'resumed');
 });
 
 test('verifyOne: a newer stop merged before verification is not erased', async () => {

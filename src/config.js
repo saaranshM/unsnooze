@@ -229,6 +229,10 @@ export const PROBE_INTERVAL_MS = envInt('UNSNOOZE_PROBE_INTERVAL_MS', 15 * 60_00
 export const PROBE_MAX_MS = envInt('UNSNOOZE_PROBE_MAX_MS', 60 * 60_000);
 export const STAGGER_MS = envInt('UNSNOOZE_STAGGER_MS', 8_000);
 export const VERIFY_DELAY_MS = envInt('UNSNOOZE_VERIFY_DELAY_MS', 20_000);
+// A headless revival still running at verify time is watched this long before
+// it counts as resumed: the failures worth catching (an auth refresh that gives
+// up, a retry loop on a bad network) take longer than VERIFY_DELAY_MS to exit.
+export const HEADLESS_SETTLE_MS = envInt('UNSNOOZE_HEADLESS_SETTLE_MS', 2 * 60_000);
 export const BUSY_DEFER_MS = envInt('UNSNOOZE_BUSY_DEFER_MS', 60_000);
 export const READY_TIMEOUT_MS = envInt('UNSNOOZE_READY_TIMEOUT_MS', 60_000);
 export const EVENT_MARKER_TTL_MS = envInt('UNSNOOZE_EVENT_MARKER_TTL_MS', 120_000);

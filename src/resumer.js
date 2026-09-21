@@ -9,7 +9,7 @@ import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { getMultiplexer, backendCanType } from './multiplexer.js';
 import {
-  RESUMER_LOCK, POLL_INTERVAL_MS, STAGGER_MS, VERIFY_DELAY_MS, ensureStateDir,
+  RESUMER_LOCK, POLL_INTERVAL_MS, STAGGER_MS, VERIFY_DELAY_MS, HEADLESS_SETTLE_MS, ensureStateDir,
   BUSY_DEFER_MS, MAX_BUSY_DEFERS, MAX_RESUME_ATTEMPTS, READY_TIMEOUT_MS,
   CAPTURE_LINES, PANE_SCAN_LINES, RESUME_SESSION_NAME,
   RESET_MARGIN_MS, FALLBACK_RESET_MS, PROBE_INTERVAL_MS, PROBE_MAX_MS,
@@ -953,10 +953,18 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
   // "stdin is not a terminal") resumed nothing, and marking it resumed would
   // drop a retryable stop from the ledger and announce a wake that never
   // happened (#25). Exit 0 is fine — `claude --resume … "prompt"` runs to
-  // completion and exits before the verify delay — and so is still running.
+  // completion and exits before the verify delay — and so is running on
+  // past HEADLESS_SETTLE_MS. A revival that is still young stays in flight:
+  // the loop verifies every resuming record each tick, and once it counts as
+  // resumed nothing reads its exit again (the sweep drops the record when
+  // the pid goes), so a death at 25s would have been announced as a wake.
   if (typeof mux.paneOutcome === 'function') {
     let outcome = null;
     try { outcome = await mux.paneOutcome(rec.pane); } catch { outcome = null; }
+    if (outcome && outcome.exited === false
+        && Date.now() - (rec.lastAttemptAt || 0) < HEADLESS_SETTLE_MS) {
+      return 'pending';
+    }
     if (outcome?.exited && outcome.code !== 0) {
       const attempts = (rec.attempts || 0) + 1;
       const how = outcome.code != null ? `exit ${outcome.code}`
