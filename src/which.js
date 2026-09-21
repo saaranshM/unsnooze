@@ -41,6 +41,12 @@ export function resolveBin(bin, { env = process.env, exists = existsSync, platfo
   if (win32.isAbsolute(bin) || posix.isAbsolute(bin) || bin.includes('/') || bin.includes('\\')) {
     return exists(bin) ? { path: bin, launchable: !shim(bin) } : null;
   }
-  const hit = findOnPath(candidateNames(bin, platform), { env, exists, platform });
+  // Two passes, because spawn never tries a .cmd/.bat (libuv only appends
+  // .com and .exe): an .exe anywhere on PATH is what runs, even behind a shim
+  // in an earlier directory — the npm shim a native install left behind.
+  // Only when nothing launchable exists is a shim the answer, as the reason.
+  const names = candidateNames(bin, platform);
+  const opts = { env, exists, platform };
+  const hit = findOnPath(names.filter(n => !shim(n)), opts) || findOnPath(names.filter(shim), opts);
   return hit ? { path: hit.path, launchable: !shim(hit.path) } : null;
 }

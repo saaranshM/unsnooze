@@ -42,3 +42,18 @@ test('resolveBin: paths are checked as given, bare names searched, shims marked 
   assert.equal(resolveBin('', { env: {}, exists }), null);
   assert.equal(resolveBin(null, { env: {}, exists }), null);
 });
+
+// spawn (libuv) only ever appends .com/.exe to a bare name, so an .exe later on
+// PATH is what runs even when an npm .cmd shim sits in an earlier directory —
+// doctor must not call that machine broken.
+test('resolveBin on Windows: an .exe anywhere on PATH beats a shim earlier on it', () => {
+  const files = new Set(['C:\\npm\\claude.cmd', 'C:\\Users\\me\\.local\\bin\\claude.exe']);
+  const exists = p => files.has(p);
+  assert.deepEqual(
+    resolveBin('claude', { env: { PATH: 'C:\\npm;C:\\Users\\me\\.local\\bin' }, exists, platform: 'win32' }),
+    { path: 'C:\\Users\\me\\.local\\bin\\claude.exe', launchable: true });
+  // Only the shim: found, as the reason nothing can be launched.
+  assert.deepEqual(
+    resolveBin('claude', { env: { PATH: 'C:\\npm;C:\\empty' }, exists, platform: 'win32' }),
+    { path: 'C:\\npm\\claude.cmd', launchable: false });
+});
