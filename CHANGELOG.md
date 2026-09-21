@@ -41,7 +41,15 @@ daemon's Scheduled Task could not find `codex`, every revival died with
   capture used to count as a cleared banner. The headless backend now records
   each revival's exit, and a non-zero one puts the stop back on the ledger
   with backoff and a `last error` that carries the child's own words — visible
-  in `unsnooze status`. Exit 0 still counts as resumed.
+  in `unsnooze status`, and kept when unsnooze finally gives up on the session.
+  Exit 0 still counts as resumed.
+- **A revival into a deleted directory no longer takes the daemon down.** When
+  a session's directory was gone (a removed worktree, say), the headless
+  launch failed with an error nothing was listening for, and the daemon
+  crashed. It is now an ordinary failed attempt that names the reason.
+- **`unsnooze preview` shows the headless command.** It described a typed
+  resume and the Codex TUI for sessions that dispatch revives through argv
+  and `codex exec resume`.
 - **Windows finds the Codex runtime.** The Desktop/Store install keeps
   `codex.exe` under a versioned directory that changes on update, and a daemon
   started at logon keeps the PATH it was born with. Codex is now resolved at
@@ -52,7 +60,9 @@ daemon's Scheduled Task could not find `codex`, every revival died with
 - **`unsnooze doctor` names each agent's binary** as the launcher would resolve
   it, and reports an agent that cannot be launched as a health problem — on
   Windows with the note that the daemon's environment can lag the shell's and
-  how to refresh it.
+  how to refresh it. Only for agents that have run on the machine: Claude and
+  Codex are both on by default, and a Claude-only machine is not unhealthy for
+  having no `codex`.
 - **Codex stops bind to the right reset.** A `rate_limit_reached` at a reported
   99.x% was scheduled for the *weekly* reset (the latest one), days out; it now
   binds the window nearest exhaustion. A workspace wall — credits depleted or
