@@ -288,9 +288,11 @@ test('newWindow does not keep the log descriptor open in the parent', async () =
 test('a spawn that fails rejects with the reason instead of crashing the process', async () => {
   const dir = scratch();
   const mux = createHeadless({ logDir: dir, env: {} });
-  await assert.rejects(
-    mux.newWindow('s', join(dir, 'deleted-worktree'), { file: process.execPath, args: ['-e', ''], env: {} }),
-    /produced no pid \(.+\)/);
+  const err = await mux.newWindow('s', join(dir, 'deleted-worktree'), { file: process.execPath, args: ['-e', ''], env: {} })
+    .then(() => null, e => e);
+  assert.ok(err, 'a launch that cannot happen must reject');
+  assert.match(err.message, /produced no pid/);
+  if (process.platform !== 'win32') assert.match(err.message, /ENOENT/, 'and say why');
   // Give any stray 'error' a turn of the loop to surface as an uncaught exception.
   await new Promise(resolve => setTimeout(resolve, 50));
 });
