@@ -134,7 +134,9 @@ test('runDoctor flags an enabled agent whose binary cannot be launched', async (
     agents: [{ id: 'codex', bin: 'codex' }],
     rcContent: () => '', profileContent: () => '',
   });
-  assert.match(win.findings.find(f => f.id === 'agent-bin-codex').detail, /schtasks \/end .*schtasks \/run/);
+  const winDetail = win.findings.find(f => f.id === 'agent-bin-codex').detail;
+  assert.match(winDetail, /schtasks \/end \/tn unsnooze\n\s*schtasks \/run \/tn unsnooze/);
+  assert.doesNotMatch(winDetail, /&&/, 'Windows PowerShell 5.1 has no &&');
 
   // A .cmd shim is found but not launchable — a different message.
   const shim = await runDoctor({ ...base, platform: 'win32',

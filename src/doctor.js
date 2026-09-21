@@ -345,9 +345,12 @@ export function agentBinFindings({
 } = {}) {
   const findings = [];
   const envVar = id => `UNSNOOZE_${String(id).toUpperCase()}_BIN`;
+  // Two commands, not `a && b`: && only exists from PowerShell 7, and the
+  // Windows PowerShell 5.1 that ships with the OS is a supported shell.
   const windowsNote = platform === 'win32'
     ? `\n  the daemon's Scheduled Task keeps the PATH it had at logon; after an agent update, run\n`
-      + `  schtasks /end /tn ${WINDOWS_TASK_NAME} && schtasks /run /tn ${WINDOWS_TASK_NAME}  (or sign out and in)`
+      + `  schtasks /end /tn ${WINDOWS_TASK_NAME}\n`
+      + `  schtasks /run /tn ${WINDOWS_TASK_NAME}   (or sign out and in)`
     : '';
   for (const agent of agents) {
     if (!agent?.id || !enabled(agent.id)) continue;
