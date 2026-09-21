@@ -113,6 +113,7 @@ test('runDoctor flags an enabled agent whose binary cannot be launched', async (
     hookInstalled: () => true,
     wrappersInstalled: () => true,
     enabled: id => id !== 'grok',
+    inUse: () => true,
   };
   const missing = await runDoctor({ ...base,
     env: { PATH: join(DIR, 'empty-bin') },
@@ -145,6 +146,39 @@ test('runDoctor flags an enabled agent whose binary cannot be launched', async (
   assert.equal(f.kind, 'health');
   assert.match(f.title, /codex\.cmd, a \.cmd\/\.bat shim/);
   assert.match(f.detail, /UNSNOOZE_CODEX_BIN to the agent's \.exe/);
+});
+
+// claude and codex are both enabled by default. A machine that has only ever
+// run Claude has no codex to find and no codex session to revive — reporting
+// that as unhealthy turned every Claude-only `unsnooze doctor` red (exit 1).
+test('runDoctor: a default-enabled agent that has never run here is info, not a health problem', async () => {
+  const report = await runDoctor({
+    runner: () => ({ status: 0, stdout: '' }),
+    launchAgentsDir: join(DIR, 'no-such-dir'),
+    csgStateDir: join(DIR, 'no-such-state'),
+    csgBinPath: null,
+    mux: { name: 'tmux', available: () => true },
+    hookInstalled: () => true,
+    wrappersInstalled: () => true,
+    env: { PATH: join(DIR, 'empty-bin') },
+    agents: [{ id: 'claude', bin: process.execPath }, { id: 'codex', bin: 'codex' }],
+    enabled: () => true,
+    inUse: id => id === 'claude',
+  });
+  const codex = report.findings.find(f => f.id === 'agent-bin-codex');
+  assert.equal(codex.kind, 'info');
+  assert.match(codex.title, /codex: not installed/);
+  assert.equal(report.healthy, true);
+});
+
+test('agentInUse: claude and codex by their data dirs, opt-in agents by being enabled', async () => {
+  const { agentInUse } = await import('../src/doctor.js');
+  const { CLAUDE_DIR, CODEX_DIR } = await import('../src/config.js');
+  assert.equal(agentInUse('codex', { exists: p => p === CODEX_DIR }), true);
+  assert.equal(agentInUse('codex', { exists: () => false }), false);
+  assert.equal(agentInUse('claude', { exists: p => p === CLAUDE_DIR }), true);
+  assert.equal(agentInUse('claude', { exists: () => false }), false);
+  assert.equal(agentInUse('grok', { exists: () => false }), true);
 });
 
 test('runDoctor flags missing hook / wrappers / multiplexer as health problems', async () => {
