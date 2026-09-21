@@ -91,6 +91,22 @@ test('recycled pane (stamp mismatch) → plan: reopen into the revival session',
   assert.match(plan.target.session, /unsnooze-resumed/);
 });
 
+// reopen() asks the adapter for the argv form when the backend has no pane;
+// preview has to ask the same way, or it narrates a typed resume (claude) and
+// a TUI command (codex) that dispatch will never run.
+test('headless → plan: reopen with the argv dispatch actually uses', async () => {
+  const { createHeadless } = await import('../src/multiplexers/headless.js');
+  const mux = createHeadless({ env: {}, alive: () => false });
+  const claude = await planFor(seed({ pane: null, mux: 'headless' }), { mux });
+  assert.equal(claude.action, 'reopen');
+  assert.equal(claude.messageViaPane, false, 'nothing is typed on headless — the prompt rides in argv');
+  assert.match(claude.argv.at(-1), /Continue where you left off/);
+
+  const rec = seed({ pane: null, mux: 'headless', agent: 'codex' });
+  const codex = await planFor(rec, { mux });
+  assert.deepEqual(codex.argv.slice(0, 4), ['codex', 'exec', 'resume', rec.sessionId]);
+});
+
 test('busy pane → defer, no message shown as pending keystrokes', async () => {
   const rec = seed({});
   const mux = { ...liveClaudePane(), capturePane: async () => 'thinking… esc to interrupt' };

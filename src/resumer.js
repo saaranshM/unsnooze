@@ -585,7 +585,9 @@ export async function planFor(rec, {
     return { ...base, action: 'superseded', target: { key: superseded.key } };
   }
   const target = await reviveTarget(mux, rec);
-  const resume = agent.resumeArgs(rec.sessionId, message);
+  // The same argv reopen() builds: on a backend with no pane the prompt rides
+  // in argv, and for codex the command itself changes (`exec resume`).
+  const resume = agent.resumeArgs(rec.sessionId, message, { canType: backendCanType(mux) });
   return {
     ...base, action: 'reopen', target: { session: target }, message,
     argv: [agent.id, ...resume.args, ...resolveResumeExtraArgs(agent.id)],
