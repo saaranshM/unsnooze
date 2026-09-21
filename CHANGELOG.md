@@ -38,13 +38,20 @@ daemon's Scheduled Task could not find `codex`, every revival died with
   conversation non-interactively, the way Claude's headless revival already
   passed its prompt in argv. It is given `--skip-git-repo-check`: `exec`
   refuses any directory that is not a git repository, which the TUI never
-  did, and the session being revived already ran there.
+  did, and the session being revived already ran there. `resumeExtraArgs.codex`
+  goes right after `exec`, where `-s`, `-p` and `--add-dir` parse; after
+  `resume` they were rejected outright.
 - **A dead revival is a failed attempt.** With no pane to capture, an empty
   capture used to count as a cleared banner. The headless backend now records
   each revival's exit, and a non-zero one puts the stop back on the ledger
   with backoff and a `last error` that carries the child's own words — visible
   in `unsnooze status`, and kept when unsnooze finally gives up on the session.
-  Exit 0 still counts as resumed.
+  A revival still running at the 20-second check is watched for up to two
+  minutes before it counts as resumed, long enough to catch the failures that
+  take a while (an auth refresh giving up, a retry loop); exit 0 counts as
+  resumed. A revival started by a resumer the Claude hook spawned no longer
+  inherits Claude's nested-launch marker, which had made it drop
+  `launchExtraArgs` and fail with a bare "exit 1".
 - **A revival into a deleted directory no longer takes the daemon down.** When
   a session's directory was gone (a removed worktree, say), the headless
   launch failed with an error nothing was listening for, and the daemon
@@ -64,15 +71,25 @@ daemon's Scheduled Task could not find `codex`, every revival died with
   Windows with the note that the daemon's environment can lag the shell's and
   how to refresh it. Only for agents that have run on the machine: Claude and
   Codex are both on by default, and a Claude-only machine is not unhealthy for
-  having no `codex`.
+  having no `codex`. The lookup follows spawn's own Windows rules: an `.exe`
+  anywhere on PATH wins over an npm shim earlier on it, quoted PATH entries
+  count, and a path given without its extension finds the `.exe`.
 - **Codex stops bind to the right reset.** A `rate_limit_reached` at a reported
   99.x% was scheduled for the *weekly* reset (the latest one), days out; it now
   binds the window nearest exhaustion. A workspace wall — credits depleted or
-  a workspace cap, with no window exhausted — has no reset to wait for and is
-  now held for a human with the remedy (add credits, then
-  `unsnooze resume-now`) instead of a blind wake. An exhausted window still
-  governs when a workspace reason rides along, since its reset is what brings
-  the plan allowance back.
+  a spend cap, with no window spent — has no reset to wait for: it is announced
+  as needing you rather than "resumes when the limit resets", probed, and then
+  held with the remedy (add credits or raise the cap, then continue the
+  session in Codex) instead of a blind wake. A spent window (99% or more)
+  still governs when a workspace reason rides along, since its reset is what
+  brings the plan allowance back. `unsnooze status --json` shows the reason as
+  `limitReason`.
+- **A weaker reading no longer undoes an exact reset.** A re-detected stop
+  whose only evidence is a banner ("Try again later.") used to replace the
+  exact reset the rollout snapshot had given, turning a known wake into a
+  15-minute probe; the stronger schedule now stands until it passes, the rule
+  pane detection already followed. `unsnooze usage` in the dashboard also
+  stops reading Codex burn as idle whenever the daemon is running.
 
 The Windows resolution follows the layout in the report and wants a Windows
 run before it is trusted; continuing an open Codex Desktop thread in place
