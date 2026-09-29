@@ -30,9 +30,9 @@
 // it carries no reset time, and the pane path files it under transient
 // overload for the same reason.
 
-import { openSync, readSync, closeSync } from 'node:fs';
+import { openSync, readSync, closeSync, statSync } from 'node:fs';
 import { basename } from 'node:path';
-import { ROLLOUT_RE, patterns as codexPatterns } from '../agents/codex.js';
+import { ROLLOUT_RE, rolloutPathFor, patterns as codexPatterns } from '../agents/codex.js';
 import { detectLimit } from '../patterns.js';
 // Usage extractor lives in usage.js (shared cold path + daemon); re-exported
 // here so the plan's watcher surface is the documented import site.
@@ -350,4 +350,59 @@ export function rolloutMeta(path) {
     if (m) sessionId = m[1];
   }
   return { sessionId, cwd, originator };
+}
+
+// Model output the rollout records only when a request succeeded. A turn the
+// usage limit refuses writes the user message and a task_complete error, never
+// one of these.
+const MODEL_OUTPUT = new Set(['reasoning', 'function_call', 'custom_tool_call', 'local_shell_call', 'web_search_call']);
+function isModelOutput(entry) {
+  if (entry?.type !== 'response_item') return false;
+  const p = entry.payload || {};
+  return (p.type === 'message' && p.role === 'assistant') || MODEL_OUTPUT.has(p.type);
+}
+
+// Durable evidence that a Codex session made progress after a recorded stop:
+// model output in its rollout, newer than the stop and not followed by a newer
+// limit. The Codex counterpart of hasClaudeParentUsageAfter. A banner leaving
+// the pane's scan window is not evidence; a keypress, tab switch or overlay
+// can do that while the session is still stopped.
+export function hasCodexProgressAfter(rec, afterMs, {
+  sessionsRoot,
+  window = 256 * 1024,
+  maxWindow = 4 * 1024 * 1024,
+} = {}) {
+  if (!rec?.sessionId || !Number.isFinite(afterMs)) return false;
+  const path = sessionsRoot ? rolloutPathFor(rec.sessionId, sessionsRoot) : rolloutPathFor(rec.sessionId);
+  if (!path) return false;
+  let fd;
+  try {
+    const { size } = statSync(path);
+    fd = openSync(path, 'r');
+    for (let win = window; ; win = Math.min(win * 2, maxWindow)) {
+      const len = Math.min(win, size);
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, size - len);
+      const lines = buf.toString('utf-8').split('\n');
+      if (len < size) lines.shift();   // the first line may be truncated
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].trim()) continue;
+        let entry;
+        try { entry = JSON.parse(lines[i]); } catch { continue; }
+        const at = Date.parse(entry?.timestamp);
+        if (!Number.isFinite(at)) continue;
+        // Lines are chronological: nothing older can postdate the stop.
+        if (at <= afterMs) return false;
+        // Newest first, so a limit written after the last output means the
+        // session stopped again.
+        if (parseRolloutLine(lines[i])) return false;
+        if (isModelOutput(entry)) return true;
+      }
+      if (len >= size || win >= maxWindow) return false;
+    }
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }

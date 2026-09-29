@@ -185,6 +185,30 @@ export function latestSessionId(cwd, aroundTs = null, sessionsRoot = join(CODEX_
   return null;
 }
 
+// The rollout file a thread is writing to now: the newest of its files. A
+// reverted thread continues in a second `…_<rollout id>` file, which is where
+// a resumed turn lands.
+export function rolloutPathFor(sessionId, sessionsRoot = join(CODEX_DIR, 'sessions')) {
+  if (!sessionId) return null;
+  const want = String(sessionId).toLowerCase();
+  let best = null;
+  const walk = (dir, depth) => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = join(dir, e.name);
+      if (e.isDirectory() && depth < 3) { walk(p, depth + 1); continue; }
+      const m = e.isFile() && e.name.match(ROLLOUT_RE);
+      if (!m || m[1].toLowerCase() !== want) continue;
+      let mtime;
+      try { mtime = statSync(p).mtimeMs; } catch { continue; }
+      if (!best || mtime > best.mtime) best = { path: p, mtime };
+    }
+  };
+  walk(sessionsRoot, 0);
+  return best ? best.path : null;
+}
+
 export default {
   id: 'codex',
   name: 'OpenAI Codex CLI',

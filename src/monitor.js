@@ -25,6 +25,7 @@ import { parseResetTime, resetAtMs, sourceRank } from './time-parser.js';
 import { upsertSession, setStatus, readState, updateState } from './state.js';
 import { prepareCalibrationSample, applyCalibrationToState } from './usage.js';
 import { latestRateLimitFromTranscript } from './watchers/claude.js';
+import { hasCodexProgressAfter } from './watchers/codex.js';
 import { spawnResumerIfNeeded, spawnDetached, monitorSpawnArgs, UNSNOOZE_BIN } from './spawn.js';
 import { restartOnVersionSkew, hasVersionSkew, PKG_VERSION } from './update-check.js';
 import { makeLogger } from './logger.js';
@@ -410,17 +411,20 @@ export function createMonitor({
     }
 
     // A banner leaving the 12-line scan is not evidence of a resume: ordinary
-    // output (including background-agent notices) can scroll it away. Claude
-    // is terminal only after its parent transcript records newer non-error
-    // assistant usage. Other adapters retain their legacy behavior until they
-    // expose an equally authoritative progress signal.
+    // output (including background-agent notices) can scroll it away, and in
+    // Codex a keypress or tab switch can hide it while the session is still
+    // stopped. Claude is terminal only after its parent transcript records
+    // newer non-error assistant usage; Codex only after its rollout records
+    // newer model output. Other adapters retain their legacy behavior until
+    // they expose an equally authoritative progress signal.
     if (trackedKey) {
       const state = readState();
       const rec = state.sessions[trackedKey];
       if (rec && rec.status === 'stopped') {
         const cutoff = rec.bannerAt ?? rec.detectedAt;
-        const progressed = agent.id !== 'claude'
-          || hasClaudeParentUsageAfter(rec, cutoff);
+        const progressed = agent.id === 'claude' ? hasClaudeParentUsageAfter(rec, cutoff)
+          : agent.id === 'codex' ? hasCodexProgressAfter(rec, cutoff)
+            : true;
         if (progressed) {
           const next = setStatus(trackedKey, 'resumed', {
             lastAttemptAt: Date.now(), bannerCleared: true, lastError: null,
