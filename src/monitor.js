@@ -415,15 +415,16 @@ export function createMonitor({
     // Codex a keypress or tab switch can hide it while the session is still
     // stopped. Claude is terminal only after its parent transcript records
     // newer non-error assistant usage; Codex only after its rollout records
-    // newer model output. Other adapters retain their legacy behavior until
-    // they expose an equally authoritative progress signal.
+    // newer model output (or, with no rollout to read, the legacy rule).
+    // Other adapters retain their legacy behavior until they expose an
+    // equally authoritative progress signal.
     if (trackedKey) {
       const state = readState();
       const rec = state.sessions[trackedKey];
       if (rec && rec.status === 'stopped') {
         const cutoff = rec.bannerAt ?? rec.detectedAt;
         const progressed = agent.id === 'claude' ? hasClaudeParentUsageAfter(rec, cutoff)
-          : agent.id === 'codex' ? hasCodexProgressAfter(rec, cutoff)
+          : agent.id === 'codex' ? hasCodexProgressAfter(rec, cutoff) !== false
             : true;
         if (progressed) {
           const next = setStatus(trackedKey, 'resumed', {

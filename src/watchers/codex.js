@@ -366,15 +366,33 @@ function isModelOutput(entry) {
 // model output in its rollout, newer than the stop and not followed by a newer
 // limit. The Codex counterpart of hasClaudeParentUsageAfter. A banner leaving
 // the pane's scan window is not evidence; a keypress, tab switch or overlay
-// can do that while the session is still stopped.
+// can do that while the session is still stopped. Returns null when there is
+// no rollout to read (no session id, file not found, read error), so the
+// caller can fall back instead of holding the stop forever.
+//
+// The monitor asks every scrape tick while the banner is hidden, so the path
+// lookup (a walk of ~/.codex/sessions) is reused for a minute. A reverted
+// thread's newer continuation file is still picked up within that minute.
+const PATH_TTL_MS = 60_000;
+const pathCache = new Map();
+function cachedRolloutPath(sessionId, sessionsRoot) {
+  const key = `${sessionsRoot ?? ''}|${sessionId}`;
+  const hit = pathCache.get(key);
+  if (hit && Date.now() - hit.at < PATH_TTL_MS) return hit.path;
+  const path = sessionsRoot ? rolloutPathFor(sessionId, sessionsRoot) : rolloutPathFor(sessionId);
+  if (path) pathCache.set(key, { path, at: Date.now() });
+  else pathCache.delete(key);
+  return path;
+}
+
 export function hasCodexProgressAfter(rec, afterMs, {
   sessionsRoot,
   window = 256 * 1024,
   maxWindow = 4 * 1024 * 1024,
 } = {}) {
-  if (!rec?.sessionId || !Number.isFinite(afterMs)) return false;
-  const path = sessionsRoot ? rolloutPathFor(rec.sessionId, sessionsRoot) : rolloutPathFor(rec.sessionId);
-  if (!path) return false;
+  if (!rec?.sessionId || !Number.isFinite(afterMs)) return null;
+  const path = cachedRolloutPath(rec.sessionId, sessionsRoot);
+  if (!path) return null;
   let fd;
   try {
     const { size } = statSync(path);
@@ -401,7 +419,7 @@ export function hasCodexProgressAfter(rec, afterMs, {
       if (len >= size || win >= maxWindow) return false;
     }
   } catch {
-    return false;
+    return null;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }

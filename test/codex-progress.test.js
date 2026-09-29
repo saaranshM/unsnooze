@@ -16,7 +16,7 @@ process.env.UNSNOOZE_CLAUDE_DIR = join(DIR, 'claude');
 process.env.UNSNOOZE_CODEX_DIR = join(DIR, 'codex');
 
 const { createMonitor } = await import('../src/monitor.js');
-const { readState } = await import('../src/state.js');
+const { readState, updateState } = await import('../src/state.js');
 const { getAgent } = await import('../src/agents/index.js');
 const { hasCodexProgressAfter } = await import('../src/watchers/codex.js');
 
@@ -101,6 +101,16 @@ test('a retry the limit refuses again is not progress', async () => {
   assert.equal(f.status(), 'stopped');
 });
 
+test('a Codex stop with no rollout to read keeps the legacy banner rule', async () => {
+  // Without a session id there is no evidence either way. Holding the stop
+  // would type into a session the user already resumed by hand at the reset.
+  const f = await stoppedCodexPane('%904');
+  updateState(state => { state.sessions[f.rec.key].sessionId = null; });
+  f.script.text = HIDDEN;
+  await f.monitor._tick();
+  assert.equal(f.status(), 'resumed');
+});
+
 test('hasCodexProgressAfter: newest evidence governs, older lines never count', () => {
   const cwd = join(DIR, 'proj-unit');
   const root = join(DIR, 'codex', 'sessions');
@@ -119,8 +129,8 @@ test('hasCodexProgressAfter: newest evidence governs, older lines never count', 
   appendFileSync(tool.path, userTurn(t + 1000) + line(t + 2000, 'response_item', { type: 'custom_tool_call', name: 'apply_patch' }));
   assert.equal(hasCodexProgressAfter(rec(tool.id), t, { sessionsRoot: root }), true, 'a tool call is model output');
 
-  assert.equal(hasCodexProgressAfter({ cwd }, t, { sessionsRoot: root }), false, 'no session id, no evidence');
-  assert.equal(hasCodexProgressAfter(rec('ffffffff-0000-7000-8000-000000000000'), t, { sessionsRoot: root }), false);
+  assert.equal(hasCodexProgressAfter({ cwd }, t, { sessionsRoot: root }), null, 'no session id, no rollout to read');
+  assert.equal(hasCodexProgressAfter(rec('ffffffff-0000-7000-8000-000000000000'), t, { sessionsRoot: root }), null);
 });
 
 test('a reverted thread is read from its newest rollout file', () => {
