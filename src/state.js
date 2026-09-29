@@ -249,6 +249,10 @@ export function upsertSession(record, { after = null } = {}) {
   const fingerprint = needsFingerprint ? workspaceFingerprint(record.cwd) : undefined;
   return updateState(state => {
     prune(state);
+    // A transcript/GUI detection has no pane, so its address fields are only
+    // defaults (see watcher.js). Taken before the closing branch below, which
+    // nulls the address on purpose and must stay distinguishable from this.
+    const panelessDetection = !record.pane;
     const closing = state.paneClosures.find(c => c.pane && c.leaseId
       && c.mux === record.mux && c.paneOwner === record.paneOwner
       && c.pane === record.pane && c.leaseId === record.leaseId);
@@ -294,6 +298,17 @@ export function upsertSession(record, { after = null } = {}) {
       const merged = {
         ...existing,
         ...record,
+        // A pane-less detection does not know where the session runs. When it
+        // lands on a record that holds a live pane, keep that pane's address:
+        // the defaults would otherwise point the pane id at another
+        // multiplexer, and the resumer would reopen the session beside the
+        // running one instead of waking it.
+        ...(panelessDetection && existing.pane ? {
+          mux: existing.mux,
+          paneOwner: existing.paneOwner,
+          leaseId: existing.leaseId,
+          muxSession: existing.muxSession,
+        } : {}),
         ...(keepReset ? {
           resetAt: existing.resetAt,
           resetSource: existing.resetSource,

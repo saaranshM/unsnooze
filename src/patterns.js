@@ -96,6 +96,25 @@ function quotedLineFlags(lines) {
   return flags;
 }
 
+// A banner the terminal soft-wraps continues on the next rows until its
+// closing punctuation. Codex writes one long line, so at some widths the
+// reset clock lands on a later row than the phrase that introduces it:
+//   "... or try" / "again at 6:02 PM."    "... try again at 6:02" / "PM."
+// Rejoin those rows. Stop at a blank row, at the next TUI glyph, or once the
+// sentence has ended, so a footer hint below the banner is never absorbed.
+const WRAP_MAX_ROWS = 3;
+const NEW_BLOCK = /^\s*[›•■⏺⚠>]/;
+function joinWrapped(lines, idx) {
+  let joined = lines[idx].trim();
+  for (let j = idx + 1; j <= idx + WRAP_MAX_ROWS && j < lines.length; j++) {
+    if (/[.!?]$/.test(joined)) break;
+    const next = lines[j].trim();
+    if (!next || NEW_BLOCK.test(lines[j])) break;
+    joined += ` ${next}`;
+  }
+  return joined;
+}
+
 export function detectLimit(text, tailLines = 12, sets = claudePatterns) {
   const lines = contentLines(text, tailLines);
 
@@ -138,7 +157,10 @@ export function detectLimit(text, tailLines = 12, sets = claudePatterns) {
   // Most recent reset line wins (the TUI never clears old banners from scrollback).
   let resetLine = null;
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (sets.resetPatterns.some(p => p.test(lines[i]))) { resetLine = lines[i].trim(); break; }
+    if (sets.resetPatterns.some(p => p.test(lines[i]))) {
+      resetLine = sets.bannerWraps ? joinWrapped(lines, i) : lines[i].trim();
+      break;
+    }
   }
   if (!resetLine) {
     for (let i = lines.length - 1; i >= 0; i--) {
