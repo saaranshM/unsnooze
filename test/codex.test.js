@@ -35,6 +35,51 @@ for (const banner of VARIANTS) {
   });
 }
 
+// A narrow pane soft-wraps the one-line banner. Every split point around the
+// clock must still yield the time, or the stop degrades to blind probing that
+// an idle pane (banner still on screen) can never clear.
+const WRAP_HEAD = '■ You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or';
+for (const [tailA, tailB] of [
+  ['try again at', '6:02 PM.'],
+  ['try again', 'at 6:02 PM.'],
+  ['try', 'again at 6:02 PM.'],
+  ['try again at 6:02', 'PM.'],
+]) {
+  test(`reads a Codex reset time wrapped as "…${tailA}" / "${tailB}"`, () => {
+    const pane = [
+      '• Viewed image c0-v4-current.png',
+      '',
+      `${WRAP_HEAD} ${tailA}`,
+      tailB,
+      '  Tip: Use /keymap to configure keyboard shortcuts.',
+      '',
+      '› Ask Codex to do anything',
+    ].join('\n');
+    const d = detectLimit(pane, 12, codex.patterns);
+    assert.equal(d.hit, true);
+    const p = parseResetTime(d.resetLine);
+    assert.deepEqual([p?.hour, p?.minute], [18, 2]);
+    assert.doesNotMatch(d.resetLine, /Tip:/, 'a footer below the banner is not part of it');
+  });
+}
+
+test('a banner split over three rows is read whole', () => {
+  const pane = [
+    '■ You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro),',
+    'visit https://chatgpt.com/codex/settings/usage to purchase more credits or try',
+    'again at 6:02 PM.',
+    '',
+    '› Ask Codex to do anything',
+  ].join('\n');
+  const p = parseResetTime(detectLimit(pane, 12, codex.patterns).resetLine);
+  assert.deepEqual([p?.hour, p?.minute], [18, 2]);
+});
+
+test('an unwrapped banner is not joined to the lines below it', () => {
+  const pane = `${VARIANTS[0]}\n  Tip: Use /keymap to configure keyboard shortcuts.\n› \n`;
+  assert.equal(detectLimit(pane, 12, codex.patterns).resetLine, VARIANTS[0]);
+});
+
 test('workspace credit variants detected', () => {
   const d = detectLimit('■ Your workspace is out of credits. Add credits to continue.\n› \n', 12, codex.patterns);
   assert.equal(d.hit, true);

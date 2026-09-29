@@ -84,7 +84,10 @@ export const patterns = {
   limitPatterns: LIMIT_ANCHORS,
   // The whole banner is ONE line, so the anchors double as reset lines — the
   // proximity engine then hands that line to time-parser (which falls back to
-  // the 5h default for "Try again later.").
+  // the 5h default for "Try again later."). A narrow pane soft-wraps that
+  // line, which can strand the clock on a later row; bannerWraps tells the
+  // engine to rejoin the rows before parsing.
+  bannerWraps: true,
   resetPatterns: [
     /try again at/i,
     /try again in \d+/i,
