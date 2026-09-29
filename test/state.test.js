@@ -288,3 +288,65 @@ test('duplicate merge may never push resetAt later for a same-or-worse source', 
   const r3 = Object.values(s3.sessions).find(r => r.pane === '%97');
   assert.equal(r3.resetAt, now + 60_000, 'pulling the wake earlier is allowed');
 });
+
+test('pane-less transcript merge keeps the pane address of a non-tmux record', () => {
+  // A GUI/transcript record carries no pane key. Merging it by sessionId must
+  // not rewrite the address the pane record still holds: mux, paneOwner,
+  // leaseId and muxSession decide whether the wake can be typed into the live
+  // pane or only reopened as a second client. Seen on herdr with a daemon
+  // whose default multiplexer is tmux: the merged record kept pane w1:p1 but
+  // got mux tmux with a null owner and lease, so the resumer could not find the
+  // pane and planned a second `codex resume` instead of a wake. The tmux-shaped
+  // case above cannot show this, because there the default address matches.
+  const t = Date.now();
+  upsertSession({
+    sessionId: 'roll-herdr', agent: 'codex', cwd: '/tmp/proj-herdr', pane: 'w1:p1',
+    mux: 'herdr', paneOwner: 'default', leaseId: 'lease-1', muxSession: 'default',
+    status: 'stopped', limitType: '5h', detectedVia: 'scrape',
+    detectedAt: t, resetAt: t + 3_600_000, resetSource: 'absolute',
+    attempts: 0, lastAttemptAt: null, lastError: null,
+  });
+  upsertSession({
+    sessionId: 'roll-herdr', agent: 'codex', cwd: '/tmp/proj-herdr',
+    mux: 'tmux', paneOwner: null, leaseId: null, muxSession: null,
+    status: 'stopped', limitType: '5h', detectedVia: 'transcript',
+    detectedAt: t + 4_000, resetAt: t + 3_600_000, resetSource: 'absolute',
+    attempts: 0, lastAttemptAt: null, lastError: null,
+  });
+  const rec = Object.values(readState().sessions).find(s => s.sessionId === 'roll-herdr');
+  assert.ok(rec, 'the two detections must be one record');
+  assert.equal(rec.pane, 'w1:p1');
+  assert.equal(rec.mux, 'herdr', 'a pane-less record must not restate the mux');
+  assert.equal(rec.paneOwner, 'default');
+  assert.equal(rec.leaseId, 'lease-1');
+  assert.equal(rec.muxSession, 'default');
+});
+
+test('a closed pane is still detached by the merge, address included', () => {
+  // The counterpart: paneClosures deliberately nulls the address so the stop
+  // reopens instead of attaching to a pane that is going away. That path runs
+  // before the merge and must keep working.
+  const t = Date.now();
+  const first = upsertSession({
+    sessionId: 'roll-closed', agent: 'codex', cwd: '/tmp/proj-closed', pane: 'w9:p9',
+    mux: 'herdr', paneOwner: 'default', leaseId: 'lease-9', muxSession: 'default',
+    status: 'stopped', limitType: '5h', detectedVia: 'scrape',
+    detectedAt: t, resetAt: t + 3_600_000, resetSource: 'absolute',
+    attempts: 0, lastAttemptAt: null, lastError: null,
+  });
+  const key = Object.values(first.sessions).find(s => s.sessionId === 'roll-closed').key;
+  updateState(state => {
+    state.paneClosures = [{ pane: 'w9:p9', mux: 'herdr', paneOwner: 'default', leaseId: 'lease-9', claimedAt: Date.now() }];
+  });
+  upsertSession({
+    sessionId: 'roll-closed', agent: 'codex', cwd: '/tmp/proj-closed', pane: 'w9:p9',
+    mux: 'herdr', paneOwner: 'default', leaseId: 'lease-9', muxSession: 'default',
+    status: 'stopped', limitType: '5h', detectedVia: 'scrape',
+    detectedAt: t + 5_000, resetAt: t + 3_600_000, resetSource: 'absolute',
+    attempts: 0, lastAttemptAt: null, lastError: null,
+  });
+  const rec = readState().sessions[key];
+  assert.equal(rec.pane, null, 'a closing pane must detach');
+  assert.equal(rec.leaseId, null);
+  updateState(state => { state.paneClosures = []; });
+});
