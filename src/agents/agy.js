@@ -35,7 +35,7 @@ export const patterns = {
   resetPatterns: [
     /Refreshes\s+in/i,
     /Resets\s+in/i,
-    /\b(?:Resets?|Refreshes)(?:\s+in)?\b/i,
+    /\b(?:Resets|Refreshes)(?:\s+in)?\s*$/i,
     ...LIMIT_ANCHORS,
   ],
   weeklyPatterns: [
@@ -83,6 +83,7 @@ export function latestSessionId(cwd, aroundTs = null, agyDir = AGY_DIR()) {
   const lines = text.split('\n').filter(l => l.trim());
   const recentIds = new Set();
   let latestId = null;
+  let hasTimestamp = false;
   for (let i = lines.length - 1; i >= 0; i--) {
     let entry;
     try { entry = JSON.parse(lines[i]); } catch { continue; }
@@ -94,10 +95,14 @@ export function latestSessionId(cwd, aroundTs = null, agyDir = AGY_DIR()) {
     const timestamp = typeof entry.timestamp === 'number'
       ? entry.timestamp
       : typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
-    if (Number.isFinite(aroundTs) && Number.isFinite(timestamp)
-      && Math.abs(aroundTs - timestamp) <= SESSION_RECENCY_MS) recentIds.add(id);
+    if (Number.isFinite(timestamp)) {
+      hasTimestamp = true;
+      if (Number.isFinite(aroundTs) && Math.abs(aroundTs - timestamp) <= SESSION_RECENCY_MS) {
+        recentIds.add(id);
+      }
+    }
   }
-  if (!Number.isFinite(aroundTs)) return latestId;
+  if (!Number.isFinite(aroundTs) || !hasTimestamp) return latestId;
   return recentIds.size === 1 ? recentIds.values().next().value : null;
 }
 

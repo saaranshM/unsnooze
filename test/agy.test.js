@@ -162,6 +162,30 @@ test('latestSessionId returns null when multiple recent sessions exist for the w
   assert.equal(latestSessionId('/tmp/proj-agy', null, DIR), 'conv-2');
 });
 
+test('latestSessionId falls back to latest id when history entries have no timestamp', () => {
+  const now = 1790000000000;
+  writeFileSync(join(DIR, 'history.jsonl'), [
+    JSON.stringify({ conversation_id: 'conv-old', cwd: '/tmp/proj-agy' }),
+    JSON.stringify({ conversation_id: 'conv-new', cwd: '/tmp/proj-agy' }),
+  ].join('\n') + '\n');
+  assert.equal(latestSessionId('/tmp/proj-agy', now, DIR), 'conv-new');
+});
+
+test('resetPatterns does not match arbitrary lines containing "reset" (e.g. git reset)', () => {
+  const gitResetLines = [
+    'git reset --hard HEAD',
+    'git reset',
+    'Reset branch to HEAD',
+  ];
+  for (const line of gitResetLines) {
+    assert.equal(
+      agy.patterns.resetPatterns.some(p => p.test(line)),
+      false,
+      `line "${line}" should not match resetPatterns`
+    );
+  }
+});
+
 // --- latestBannerAt: extract newest prompt timestamp for cwd from history.jsonl ---
 
 test('latestBannerAt matches the newest prompt timestamp for the workspace within recency', () => {

@@ -474,6 +474,26 @@ test('verifyOne: banner back → rescheduled as stopped with attempts+1', async 
   assert.ok(after1.resetAt > Date.now());
 });
 
+test('verifyOne: fresh relative banner calculates from now, not old stop bannerAt', async () => {
+  const fiveHoursAgo = Date.now() - 5 * 3600 * 1000;
+  const rec = seed({
+    pane: '%14b',
+    agent: 'claude',
+    status: 'resuming',
+    bannerAt: fiveHoursAgo,
+    detectedAt: fiveHoursAgo,
+  });
+  const tmuxVerify = {
+    capturePane: async () => "⚠ You've hit your 5-hour limit\n· resets in 2 hours\n> ",
+  };
+  await verifyOne(rec.key, { resolveMux: () => tmuxVerify });
+  const after = readState().sessions[rec.key];
+  assert.equal(after.status, 'stopped');
+  // If bannerAt fell back to rec.bannerAt, resetAt would be fiveHoursAgo + 2h = 3h in the past.
+  // It must be scheduled in the future (~2h from now).
+  assert.ok(after.resetAt > Date.now() + 3600 * 1000, `expected future resetAt, got ${after.resetAt}`);
+});
+
 test('verifyOne: clean pane → resumed', async () => {
   const rec = seed({ pane: '%15' });
   const tmuxSend = {
@@ -1260,6 +1280,31 @@ test('probeFallback: custom Claude config transcript upgrades the reset', async 
   const saved = readState().sessions[rec.key];
   assert.notEqual(saved.resetSource, 'fallback');
   assert.equal(saved.probeCount, 0);
+});
+
+test('probeFallback: agy stop with no bannerAt still inspects the pane before waking', async () => {
+  const now = Date.now();
+  const rec = seed({
+    pane: '%205',
+    agent: 'agy',
+    cwd: '/tmp/proj-agy-probe',
+    resetSource: 'fallback',
+    resetAt: now - 1000,
+    detectedAt: now - 60_000,
+    bannerAt: null,
+    probeCount: 0,
+  });
+  let captured = false;
+  const mux = {
+    paneAlive: async () => true,
+    capturePane: async () => {
+      captured = true;
+      return '⚠ Individual quota reached. Please upgrade your subscription to increase your limits.\n> ';
+    },
+  };
+  const result = await probeFallback(rec, { mux, now });
+  assert.equal(captured, true, 'pane must be captured and checked');
+  assert.equal(result, 'probe', 'must reschedule probe rather than wake while limit banner is on screen');
 });
 
 test('dispatchOne on fallback with live banner returns probe (no inject)', async () => {
