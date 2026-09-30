@@ -319,6 +319,8 @@ export async function probeFallback(rec, {
     stillLimited = true;
     resetLine = fromTx.resetLine;
     bannerAt = fromTx.timestampMs;
+  } else if (!bannerAt && typeof agent.latestBannerAt === 'function') {
+    bannerAt = agent.latestBannerAt(rec.cwd, now);
   } else if (rec.pane && await mux.paneAlive(rec.pane)) {
     let text;
     try { text = await mux.capturePane(rec.pane, CAPTURE_LINES); }
@@ -948,13 +950,15 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
     // Prefer a dated transcript entry when present so relative/absolute
     // offsets anchor to the banner's own time.
     let resetLine = d.hit ? d.resetLine : null;
-    let bannerAt = null;
+    let bannerAt = rec.bannerAt ?? null;
     const fromTx = latestRateLimitFromTranscript(rec.cwd, rec.sessionId, {
       claudeDir: rec.env?.CLAUDE_CONFIG_DIR,
     });
     if (fromTx) {
       resetLine = fromTx.resetLine ?? resetLine;
       bannerAt = fromTx.timestampMs;
+    } else if (!bannerAt && typeof agent.latestBannerAt === 'function') {
+      bannerAt = agent.latestBannerAt(rec.cwd, Date.now());
     }
     const { at, source } = resetAtMs(parseResetTime(resetLine), {
       marginMs: RESET_MARGIN_MS,

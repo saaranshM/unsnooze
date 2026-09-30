@@ -10,7 +10,7 @@ import { join } from 'node:path';
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-agy-test-'));
 process.env.UNSNOOZE_AGY_DIR = DIR;
 
-const { default: agy, latestSessionId } = await import('../src/agents/agy.js');
+const { default: agy, latestSessionId, latestBannerAt } = await import('../src/agents/agy.js');
 const { getAgent } = await import('../src/agents/index.js');
 const { detectLimit, overloadMatch } = await import('../src/patterns.js');
 const { parseResetTime } = await import('../src/time-parser.js');
@@ -39,6 +39,65 @@ test('hour-scale refresh stays a 5h-window stop (not weekly)', () => {
   const d = detectLimit(pane, 12, agy.patterns);
   assert.equal(d.hit, true);
   assert.notEqual(d.limitType, 'weekly');
+});
+
+test('detects Antigravity "Individual quota reached" with compact 5h countdown', () => {
+  const pane = '⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h52m46s.\nError ID: 5786f748-3cd2-42e4-9a58-47ca4cdf2ee6-1\n> \n';
+  const d = detectLimit(pane, 12, agy.patterns);
+  assert.equal(d.hit, true);
+  assert.equal(d.limitType, '5h');
+  const p = parseResetTime(d.resetLine);
+  assert.equal(p.relative, true);
+  assert.equal(p.waitMs, (2 * 3600 + 52 * 60 + 46) * 1000);
+});
+
+test('reads a soft-wrapped Antigravity quota banner across lines', () => {
+  // Test wrap between "Resets" and "in", and wrap between "in" and duration
+  const wrappedResetsIn = [
+    '⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets',
+    'in 2h52m46s.',
+    'Error ID: 5786f748-3cd2-42e4-9a58-47ca4cdf2ee6-1',
+    '> ',
+  ].join('\n');
+  const d1 = detectLimit(wrappedResetsIn, 12, agy.patterns);
+  assert.equal(d1.hit, true);
+  assert.equal(d1.limitType, '5h');
+  const p1 = parseResetTime(d1.resetLine);
+  assert.equal(p1.waitMs, (2 * 3600 + 52 * 60 + 46) * 1000);
+
+  const wrappedAfterIn = [
+    '⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in',
+    '2h52m46s.',
+    'Error ID: 5786f748-3cd2-42e4-9a58-47ca4cdf2ee6-1',
+    '> ',
+  ].join('\n');
+  const d2 = detectLimit(wrappedAfterIn, 12, agy.patterns);
+  assert.equal(d2.hit, true);
+  assert.equal(d2.limitType, '5h');
+  const p2 = parseResetTime(d2.resetLine);
+  assert.equal(p2.waitMs, (2 * 3600 + 52 * 60 + 46) * 1000);
+});
+
+test('sub-hour and second-scale resets stay a 5h-window stop', () => {
+  const paneMin = '⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 45m10s.\n> \n';
+  const dMin = detectLimit(paneMin, 12, agy.patterns);
+  assert.equal(dMin.hit, true);
+  assert.equal(dMin.limitType, '5h');
+  assert.equal(parseResetTime(dMin.resetLine).waitMs, (45 * 60 + 10) * 1000);
+
+  const paneSec = '⚠ Individual quota reached. Resets in 30s.\n> \n';
+  const dSec = detectLimit(paneSec, 12, agy.patterns);
+  assert.equal(dSec.hit, true);
+  assert.equal(dSec.limitType, '5h');
+  assert.equal(parseResetTime(dSec.resetLine).waitMs, 30 * 1000);
+});
+
+test('compact multi-day reset is detected as weekly', () => {
+  const pane = '⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 6d18h.\n> \n';
+  const d = detectLimit(pane, 12, agy.patterns);
+  assert.equal(d.hit, true);
+  assert.equal(d.limitType, 'weekly');
+  assert.equal(parseResetTime(d.resetLine).waitMs, (6 * 24 + 18) * 3600 * 1000);
 });
 
 test('detects API-key-mode RESOURCE_EXHAUSTED', () => {
@@ -89,4 +148,32 @@ test('latestSessionId is null when nothing matches or the schema is foreign', ()
   assert.equal(latestSessionId('/nope/never', null, DIR), null);
   writeFileSync(join(DIR, 'history.jsonl'), 'not json at all\n');
   assert.equal(latestSessionId('/tmp/proj-agy', null, DIR), null);
+});
+
+test('latestSessionId returns null when multiple recent sessions exist for the workspace', () => {
+  const now = 1790000000000;
+  writeFileSync(join(DIR, 'history.jsonl'), [
+    JSON.stringify({ conversation_id: 'conv-1', cwd: '/tmp/proj-agy', timestamp: now - 1000 }),
+    JSON.stringify({ conversation_id: 'conv-2', cwd: '/tmp/proj-agy', timestamp: now - 500 }),
+  ].join('\n') + '\n');
+  // With aroundTs supplied, multiple recent sessions are ambiguous: null
+  assert.equal(latestSessionId('/tmp/proj-agy', now, DIR), null);
+  // Without aroundTs, it returns the newest session: conv-2
+  assert.equal(latestSessionId('/tmp/proj-agy', null, DIR), 'conv-2');
+});
+
+// --- latestBannerAt: extract newest prompt timestamp for cwd from history.jsonl ---
+
+test('latestBannerAt matches the newest prompt timestamp for the workspace within recency', () => {
+  const now = 1790000000000;
+  writeFileSync(join(DIR, 'history.jsonl'), [
+    JSON.stringify({ display: 'first prompt', cwd: '/tmp/proj-agy', timestamp: now - 60000 }),
+    JSON.stringify({ display: 'other workspace', cwd: '/tmp/other', timestamp: now - 30000 }),
+    JSON.stringify({ display: 'failing prompt', cwd: '/tmp/proj-agy', timestamp: now - 10000 }),
+  ].join('\n') + '\n');
+  assert.equal(latestBannerAt('/tmp/proj-agy', now, DIR), now - 10000);
+});
+
+test('latestBannerAt returns null when no matching workspace entry exists', () => {
+  assert.equal(latestBannerAt('/not/found', Date.now(), DIR), null);
 });

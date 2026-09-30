@@ -113,10 +113,13 @@ export function createMonitor({
         detectedAt,
       };
     }
+    const bannerAt = typeof agent.latestBannerAt === 'function'
+      ? agent.latestBannerAt(cwd, detectedAt)
+      : null;
     return {
       resetLine: paneResetLine,
       limitType: paneLimitType,
-      bannerAt: null,
+      bannerAt,
       sessionId,
       via: null,   // filled by caller (scrape/hook)
       detectedAt,
@@ -132,6 +135,7 @@ export function createMonitor({
   // "already past → due now" path, which is margin above wall clock only).
   function isCorroborated(resolved, at, source) {
     if (resolved.via === 'transcript' && resolved.bannerAt != null) return true;
+    if (resolved.bannerAt != null && at - RESET_MARGIN_MS > Date.now()) return true;
     if (source === 'absolute' && at - RESET_MARGIN_MS > Date.now()) return true;
     // A model limit carries no time to corroborate — its own remedy hint is
     // the evidence, and the record only ever probes (never blind-wakes), so
