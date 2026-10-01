@@ -9,7 +9,7 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join, dirname } from 'node:path';
+import { join, dirname, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig } from './settings.js';
 import { notify } from './notify.js';
@@ -225,24 +225,59 @@ export async function runUpdateCheck({ fetcher, notifier = notify, now = Date.no
   return 0;
 }
 
-// `unsnooze update` — self-update via npm, then show what changed. npm -g
-// overwrites this install in place, so re-reading package.json/CHANGELOG.md
-// after a successful install yields the NEW version's info.
-export function runSelfUpdate({ runner = spawnSync, print = console.log } = {}) {
-  print(`unsnooze ${PKG_VERSION} — updating via npm install -g unsnooze@latest …`);
-  const r = runner('npm', ['install', '-g', 'unsnooze@latest'], { stdio: 'inherit' });
+// The npm prefix this copy was installed into, so `unsnooze update` replaces
+// the copy that is running. With two npm prefixes on one machine (nvm's npm
+// first on PATH while unsnooze lives under ~/.local, or Homebrew's npm next
+// to nvm), a bare `npm install -g` writes into npm's own prefix and leaves
+// the copy the wrappers, the StopFailure hook and the daemon unit exec as it
+// was. npm's global layout is <prefix>/lib/node_modules/unsnooze plus a
+// <prefix>/bin/unsnooze link on POSIX, <prefix>\node_modules\unsnooze plus
+// <prefix>\unsnooze.cmd on Windows. Anything else (a checkout or `npm link`,
+// npx, a pnpm/yarn/bun global, a project dependency) is null: npm's default
+// prefix, as before.
+export function installPrefix({ root = ROOT, platform = process.platform, exists = existsSync } = {}) {
+  const win = platform === 'win32';
+  const path = win ? win32 : posix;
+  const modules = path.dirname(root);
+  if (path.basename(root) !== 'unsnooze' || path.basename(modules) !== 'node_modules') return null;
+  const parent = path.dirname(modules);
+  if (win) return exists(path.join(parent, 'unsnooze.cmd')) ? parent : null;
+  if (path.basename(parent) !== 'lib') return null;
+  const prefix = path.dirname(parent);
+  return exists(path.join(prefix, 'bin', 'unsnooze')) ? prefix : null;
+}
+
+// `unsnooze update` — self-update via npm, then show what changed. With
+// --prefix pointed at this copy's own prefix, npm -g overwrites this install
+// in place, so re-reading package.json/CHANGELOG.md after a successful
+// install yields the NEW version's info.
+export function runSelfUpdate({ runner = spawnSync, print = console.log, root = ROOT, current = PKG_VERSION } = {}) {
+  const prefix = installPrefix({ root });
+  const args = ['install', '-g', ...(prefix ? ['--prefix', prefix] : []), 'unsnooze@latest'];
+  const command = ['npm', ...args].map(a => (/\s/.test(a) ? `"${a}"` : a)).join(' ');
+  print(`unsnooze ${current} — updating via ${command} …`);
+  const r = runner('npm', args, { stdio: 'inherit' });
   if (r.error || r.status !== 0) {
     print(`unsnooze: update failed (${r.error ? r.error.message : `npm exited ${r.status}`}).`);
-    print('unsnooze: try it manually: npm install -g unsnooze@latest');
+    print(`unsnooze: try it manually: ${command}`);
     print('unsnooze: (permission errors usually mean your npm prefix needs sudo or a user-writable prefix)');
     return r.status || 1;
   }
-  let newVersion = PKG_VERSION;
+  let newVersion;
   try {
-    newVersion = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8')).version;
+    newVersion = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8')).version;
   } catch { /* moved install dir — the generic message below still holds */ }
-  if (newVersion === PKG_VERSION) {
-    print(`unsnooze: already up to date (${PKG_VERSION}).`);
+  // npm exited 0 but this copy is unchanged, while the registry check already
+  // knows a newer release: most likely npm installed it into another prefix.
+  const { latest } = readCache();
+  if (newVersion === current && isNewer(latest, current)) {
+    print(`unsnooze: npm finished, but this copy is still ${current} and ${latest} is out.`);
+    print(`unsnooze: npm may have installed it into its own prefix (\`npm prefix -g\`) instead of ${root}.`);
+    return 1;
+  }
+  newVersion ??= current;
+  if (newVersion === current) {
+    print(`unsnooze: already up to date (${current}).`);
   } else {
     const section = changelogSection(newVersion);
     print(`unsnooze: updated to ${newVersion}.${section ? ` What's new:\n${section}` : ''}`);
