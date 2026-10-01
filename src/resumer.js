@@ -342,10 +342,6 @@ export async function probeFallback(rec, {
     return null;
   }
 
-  if (!bannerAt && typeof agent.latestBannerAt === 'function') {
-    bannerAt = agent.latestBannerAt(rec.cwd, now);
-  }
-
   // Banner still present. If it now parses to a real time, upgrade off fallback.
   if (resetLine) {
     const { at, source } = resetAtMs(parseResetTime(resetLine), {
@@ -959,8 +955,6 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
     if (fromTx) {
       resetLine = fromTx.resetLine ?? resetLine;
       bannerAt = fromTx.timestampMs;
-    } else if (typeof agent.latestBannerAt === 'function') {
-      bannerAt = agent.latestBannerAt(rec.cwd, Date.now());
     }
     const { at, source } = resetAtMs(parseResetTime(resetLine), {
       marginMs: RESET_MARGIN_MS,

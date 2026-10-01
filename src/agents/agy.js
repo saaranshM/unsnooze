@@ -12,6 +12,10 @@
 // Deferred by design: the hooks.json channel (schema drifted between builds)
 // and the loopback RetrieveUserQuotaSummary endpoint (authoritative per-meter
 // resetTime) — the latter is the natural future resetProbe seam.
+//
+// No latestBannerAt: history.jsonl only records prompts, never banners, so its
+// newest timestamp can predate the banner by hours. Anchoring a relative
+// "Resets in 3h" to it fires the wake early. Countdowns anchor to scrape time.
 
 import { openSync, readSync, closeSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -106,28 +110,6 @@ export function latestSessionId(cwd, aroundTs = null, agyDir = AGY_DIR()) {
   return recentIds.size === 1 ? recentIds.values().next().value : null;
 }
 
-export function latestBannerAt(cwd, aroundTs = null, agyDir = AGY_DIR()) {
-  const text = tailBytes(join(agyDir, 'history.jsonl'));
-  if (!text) return null;
-  const lines = text.split('\n').filter(l => l.trim());
-  for (let i = lines.length - 1; i >= 0; i--) {
-    let entry;
-    try { entry = JSON.parse(lines[i]); } catch { continue; }
-    if (!entry || typeof entry !== 'object') continue;
-    if (!Object.values(entry).some(v => v === cwd)) continue;
-    const timestamp = typeof entry.timestamp === 'number'
-      ? entry.timestamp
-      : typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
-    if (Number.isFinite(timestamp)) {
-      if (!Number.isFinite(aroundTs)) return timestamp;
-      if (timestamp <= (aroundTs + 5000) && (aroundTs - timestamp) <= SESSION_RECENCY_MS) {
-        return timestamp;
-      }
-    }
-  }
-  return null;
-}
-
 export default {
   id: 'agy',
   name: 'Antigravity CLI (Google)',
@@ -143,7 +125,6 @@ export default {
   // v1: every agent launches the bare TUI and gets the prompt typed once idle.
   launchArgs(message) { return { args: [], messageViaPane: true }; },
   latestSessionId,
-  latestBannerAt,
   isForegroundCommand(cmd) {
     return cmd === 'agy' || cmd === 'node' || cmd === 'unsnooze';
   },

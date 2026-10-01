@@ -113,13 +113,10 @@ export function createMonitor({
         detectedAt,
       };
     }
-    const bannerAt = typeof agent.latestBannerAt === 'function'
-      ? agent.latestBannerAt(cwd, detectedAt)
-      : null;
     return {
       resetLine: paneResetLine,
       limitType: paneLimitType,
-      bannerAt,
+      bannerAt: null,
       sessionId,
       via: null,   // filled by caller (scrape/hook)
       detectedAt,

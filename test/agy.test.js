@@ -10,7 +10,7 @@ import { join } from 'node:path';
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-agy-test-'));
 process.env.UNSNOOZE_AGY_DIR = DIR;
 
-const { default: agy, latestSessionId, latestBannerAt } = await import('../src/agents/agy.js');
+const { default: agy, latestSessionId } = await import('../src/agents/agy.js');
 const { getAgent } = await import('../src/agents/index.js');
 const { detectLimit, overloadMatch } = await import('../src/patterns.js');
 const { parseResetTime } = await import('../src/time-parser.js');
@@ -186,18 +186,10 @@ test('resetPatterns does not match arbitrary lines containing "reset" (e.g. git 
   }
 });
 
-// --- latestBannerAt: extract newest prompt timestamp for cwd from history.jsonl ---
+// --- no history-derived banner anchor ---
 
-test('latestBannerAt matches the newest prompt timestamp for the workspace within recency', () => {
-  const now = 1790000000000;
-  writeFileSync(join(DIR, 'history.jsonl'), [
-    JSON.stringify({ display: 'first prompt', cwd: '/tmp/proj-agy', timestamp: now - 60000 }),
-    JSON.stringify({ display: 'other workspace', cwd: '/tmp/other', timestamp: now - 30000 }),
-    JSON.stringify({ display: 'failing prompt', cwd: '/tmp/proj-agy', timestamp: now - 10000 }),
-  ].join('\n') + '\n');
-  assert.equal(latestBannerAt('/tmp/proj-agy', now, DIR), now - 10000);
-});
-
-test('latestBannerAt returns null when no matching workspace entry exists', () => {
-  assert.equal(latestBannerAt('/not/found', Date.now(), DIR), null);
+test('agy exposes no latestBannerAt: prompt timestamps must not anchor countdowns', () => {
+  // history.jsonl only holds prompts; using its newest entry as the banner time
+  // would fire "Resets in 3h" hours early.
+  assert.equal(agy.latestBannerAt, undefined);
 });
