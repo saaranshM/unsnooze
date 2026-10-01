@@ -1,8 +1,8 @@
 import { test, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
 const DIR = mkdtempSync(join(tmpdir(), 'unsnooze-update-test-'));
 process.env.UNSNOOZE_STATE_DIR = DIR;
@@ -11,7 +11,7 @@ process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 const {
   isNewer, updateNotice, whatsNewNotice, changelogSection,
   fetchLatest, runUpdateCheck, runSelfUpdate, readCache, writeCache, PKG_VERSION,
-  launchExitNotice,
+  launchExitNotice, installPrefix,
 } = await import('../src/update-check.js');
 
 after(() => rmSync(DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
@@ -109,6 +109,86 @@ test('runSelfUpdate: surfaces npm failure with a hint, non-zero exit', () => {
   });
   assert.notEqual(code, 0);
   assert.match(lines.join('\n'), /npm install -g unsnooze/);
+});
+
+// --- which install `unsnooze update` replaces (see installPrefix) ---
+
+const writePkg = (root, version) => {
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'unsnooze', version }));
+  return root;
+};
+const versionAt = root => JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8')).version;
+
+// npm's own global layout under `prefix`, bin link included.
+function npmGlobalInstall(prefix, version) {
+  const win = process.platform === 'win32';
+  const bin = win ? join(prefix, 'unsnooze.cmd') : join(prefix, 'bin', 'unsnooze');
+  mkdirSync(dirname(bin), { recursive: true });
+  writeFileSync(bin, '');
+  return writePkg(join(prefix, win ? '' : 'lib', 'node_modules', 'unsnooze'), version);
+}
+
+// Stands in for npm: installs under --prefix when given, else its own prefix.
+const fakeNpm = (ownPrefix, version) => (cmd, args) => {
+  const at = args.indexOf('--prefix');
+  npmGlobalInstall(at === -1 ? ownPrefix : args[at + 1], version);
+  return { status: 0 };
+};
+
+test('runSelfUpdate: replaces the running copy, not the one in npm\'s default prefix', () => {
+  const running = npmGlobalInstall(join(DIR, 'two-prefixes', 'local'), '1.0.0');
+  const lines = [];
+  const code = runSelfUpdate({
+    runner: fakeNpm(join(DIR, 'two-prefixes', 'nvm'), '1.1.0'),
+    print: l => lines.push(l), root: running, current: '1.0.0',
+  });
+  assert.equal(code, 0);
+  assert.equal(versionAt(running), '1.1.0', 'the copy that is running must be the one updated');
+  assert.match(lines.join('\n'), /updated to 1\.1\.0/);
+});
+
+test('runSelfUpdate: a copy npm did not install globally keeps npm\'s default prefix', () => {
+  // A git checkout, npm link, npx or a pnpm global: no prefix to name.
+  const calls = [];
+  runSelfUpdate({
+    runner: (cmd, args) => { calls.push([cmd, ...args]); return { status: 0 }; },
+    print: () => {}, root: writePkg(join(DIR, 'checkout', 'unsnooze'), '1.0.0'), current: '1.0.0',
+  });
+  assert.deepEqual(calls, [['npm', 'install', '-g', 'unsnooze@latest']]);
+});
+
+test('runSelfUpdate: never says "already up to date" when a newer version is known and this copy did not change', () => {
+  writeCache({ lastCheckedAt: Date.now(), latest: '1.1.0' });
+  const lines = [];
+  const code = runSelfUpdate({
+    runner: fakeNpm(join(DIR, 'stale', 'elsewhere'), '1.1.0'),
+    print: l => lines.push(l), root: writePkg(join(DIR, 'stale', 'unsnooze'), '1.0.0'), current: '1.0.0',
+  });
+  const out = lines.join('\n');
+  assert.notEqual(code, 0, 'an update that did not reach this copy is not a success');
+  assert.doesNotMatch(out, /already up to date/);
+  assert.match(out, /still 1\.0\.0 and 1\.1\.0 is out/);
+});
+
+test('installPrefix: names the prefix only for an npm global install', () => {
+  const have = paths => p => paths.includes(p);
+  assert.equal(
+    installPrefix({ root: '/home/u/.local/lib/node_modules/unsnooze', platform: 'linux',
+      exists: have(['/home/u/.local/bin/unsnooze']) }),
+    '/home/u/.local');
+  assert.equal(
+    installPrefix({ root: 'C:\\Users\\U\\AppData\\Roaming\\npm\\node_modules\\unsnooze', platform: 'win32',
+      exists: have(['C:\\Users\\U\\AppData\\Roaming\\npm\\unsnooze.cmd']) }),
+    'C:\\Users\\U\\AppData\\Roaming\\npm');
+  // Same layout but npm never linked a bin there: not npm's global install.
+  assert.equal(installPrefix({ root: '/home/u/.local/lib/node_modules/unsnooze', platform: 'linux',
+    exists: () => false }), null);
+  // A git checkout, a project dependency, an npx cache and a pnpm global.
+  for (const root of ['/home/u/src/unsnooze', '/home/u/app/node_modules/unsnooze',
+    '/home/u/.npm/_npx/0a1b/node_modules/unsnooze', '/home/u/.local/share/pnpm/global/5/node_modules/unsnooze']) {
+    assert.equal(installPrefix({ root, platform: 'linux', exists: () => true }), null, root);
+  }
 });
 
 // --- post-session-exit notice (wrapper-only users never run `unsnooze status`,
