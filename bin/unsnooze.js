@@ -49,7 +49,7 @@ function runAgentFallback(agentId, args) {
 
 // Only human-facing commands may print update notices — never the wrapper
 // passthrough, hooks, or daemons (their output lands in agent panes/logs).
-const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'doctor', 'preview', 'usage', 'dashboard', 'hosts', 'fleet', 'prompt', 'design', 'help', '-h', '--help', '--help-unsnooze']);
+const USER_FACING = new Set(['status', 'resume-now', 'cancel', 'message', 'config', 'logs', 'report', 'sessions', 'reap', 'doctor', 'preview', 'usage', 'cliproxy', 'dashboard', 'hosts', 'fleet', 'prompt', 'design', 'help', '-h', '--help', '--help-unsnooze']);
 
 // Every named subcommand; anything else (or no args) is an agent launch.
 const NAMED_COMMANDS = new Set([
@@ -158,6 +158,10 @@ async function main() {
     case 'usage': {
       const { cmdUsage } = await import('../src/usage.js');
       return cmdUsage(rest);
+    }
+    case 'cliproxy': {
+      const { cmdCliproxy } = await import('../src/cliproxy.js');
+      return cmdCliproxy(rest);
     }
     case 'hosts': {
       const { cmdHosts } = await import('../src/fleet.js');
@@ -341,6 +345,9 @@ Usage:
   unsnooze sessions                list unsnooze-owned mux sessions + panes
   unsnooze reap [--dry-run|--yes]  close terminal-record panes / empty sessions
                                    (default: dry-run; pass --yes to apply)
+  unsnooze cliproxy                Codex accounts in CLIProxyAPI: usable now / next reset
+                                   (needs: unsnooze config set cliproxyUrl http://127.0.0.1:8317
+                                    and cliproxyKey <management key>)
   unsnooze doctor [--fix]          check install health; find (and with --fix
                                    retire) leftovers of the old
                                    claude-session-guard install

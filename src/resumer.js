@@ -33,6 +33,7 @@ import { makeLogger } from './logger.js';
 import { createLeaseId, leaseMatches, paneOwnedByRecord } from './lease.js';
 import { autoReapIfEnabled, attachHint } from './reap.js';
 import { tickUsageWarnings } from './usage.js';
+import { reconcileCodexStops } from './cliproxy.js';
 
 const log = makeLogger('resumer');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -1185,6 +1186,14 @@ export async function runResumer({
       if (stopped.length === 0 && resuming.length === 0 && !queuePending && !persistent) {
         log('no pending sessions — resumer exiting');
         return 0;
+      }
+
+      // CLIProxyAPI: re-time Codex stops from the proxy's account pool, so they
+      // wake when ANY account has quota again (no-op unless cliproxyUrl is set).
+      try {
+        await reconcileCodexStops({ backoffMs: retryBackoffMs });
+      } catch (err) {
+        log(`cliproxy tick failed: ${err.message}`);
       }
 
       const due = dueForDispatch().filter(s => (s.attempts || 0) < MAX_RESUME_ATTEMPTS);

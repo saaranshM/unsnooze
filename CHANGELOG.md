@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Codex behind CLIProxyAPI
+
+- When every account is spent, CLIProxyAPI answers 429 "All credentials …
+  are cooling down", and Codex shows `exceeded retry limit, last status: 429`.
+  With `cliproxyUrl` set, that line now counts as a limit stop instead of a
+  temporary server error.
+- Stopped Codex sessions wake as soon as any Codex account in the proxy has
+  quota again. unsnooze reads each account's 5-hour and weekly windows through
+  the proxy's management API, and falls back to the proxy's own cooldown if
+  that fails. Stale proxy cooldowns are cleared (`cliproxyResetStale`).
+- New `unsnooze cliproxy` command lists each account as usable or spent, with
+  its reset time.
+- New settings: `cliproxyUrl`, `cliproxyKey`, `cliproxyResetStale`.
+
 ## 1.19.4 — 2026-09-30
 
 Antigravity's new quota banner, and a shorter README.

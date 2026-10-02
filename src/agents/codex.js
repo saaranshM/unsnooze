@@ -14,6 +14,7 @@ import { openSync, readSync, closeSync, readdirSync, statSync, existsSync } from
 import { join, basename } from 'node:path';
 import { CODEX_DIR } from '../config.js';
 import { findOnPath } from '../which.js';
+import { getConfig } from '../settings.js';
 import { stripVTControlCharacters } from 'node:util';
 
 // Since the 2026 unified ChatGPT desktop app absorbed the Codex app, the codex
@@ -107,6 +108,22 @@ export const patterns = {
   overloadPatterns: [/stream error/i, /exceeded retry limit/i],
   transientPatterns: [/stream error/i, /exceeded retry limit/i],
 };
+
+// Behind CLIProxyAPI (cliproxyUrl set) Codex never sees an OpenAI limit
+// banner: once every account is spent the proxy answers 429 "All credentials
+// for model … are cooling down" (code model_cooldown), which Codex retries and
+// then renders as "exceeded retry limit, last status: 429 Too Many Requests".
+// Only there is that line a limit stop — the reset time comes from the proxy
+// (src/cliproxy.js), not the banner. Without a proxy it stays transient.
+export const CLIPROXY_LIMIT_ANCHORS = [
+  /All credentials for model .* are cooling down/i,
+  /\bmodel_cooldown\b/,
+  /exceeded retry limit,? last status:? 429/i,
+];
+if (String(getConfig('cliproxyUrl') || '').trim()) {
+  patterns.limitPatterns.push(...CLIPROXY_LIMIT_ANCHORS);
+  patterns.resetPatterns.push(...CLIPROXY_LIMIT_ANCHORS);
+}
 
 // A submitted user turn uses the same › glyph as the composer. Only accept
 // the LAST prompt, followed directly by a blank line and Codex's status footer.

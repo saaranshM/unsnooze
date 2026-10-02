@@ -81,6 +81,7 @@ Usage:
   unsnooze usage [--json]          account burn rate & time-to-limit forecast
                                    (--install-statusline for exact Claude %,
                                     --uninstall-statusline to remove it)
+  unsnooze cliproxy                Codex accounts in CLIProxyAPI: usable now / next reset
   unsnooze design [setup]          Claude Design from the terminal: check whether
                                    the claude-design MCP server is registered and
                                    signed in, or register it with setup

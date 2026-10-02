@@ -135,6 +135,38 @@ export default function AgentsDocsPage() {
               <Shell title="headroom">{`$ headroom install apply --scope provider --providers manual --target claude --target codex`}</Shell>
             </section>
 
+            <section className="doc-sec" id="cliproxy">
+              <h2>Codex behind CLIProxyAPI</h2>
+              <p>With Codex pointed at <a href="https://github.com/router-for-me/CLIProxyAPI">CLIProxyAPI</a>{' '}
+                (or a launcher for it, such as CLIProxyAPI Tray on Windows), one spent account is
+                invisible: the proxy routes to the next one. Codex only stops when{' '}
+                <em>every</em> account is spent, and then it never sees OpenAI's limit banner. The
+                proxy answers 429 <C>All credentials for model … are cooling down</C>, which Codex
+                shows as <C>exceeded retry limit, last status: 429 Too Many Requests</C>. That
+                line normally counts as a temporary server error, so nothing gets scheduled.</p>
+              <p>Set <C>cliproxyUrl</C> and unsnooze treats that line as a limit stop. It also
+                times the wake from the proxy's account pool instead of the banner. Every 30
+                seconds while a Codex session is stopped, it reads each Codex account through the
+                proxy's management API: the proxy's own cooldown, plus the account's real 5-hour
+                and weekly windows from ChatGPT. The proxy makes that request with the account's
+                token, so the token never leaves the proxy. If any account has quota, the session
+                wakes now. Otherwise it wakes at the earliest account reset.</p>
+              <Shell title="cliproxy">{`$ unsnooze config set cliproxyUrl http://127.0.0.1:8317
+$ unsnooze config set cliproxyKey <management key>   # remote-management.secret-key, as you typed it
+$ unsnooze cliproxy                                  # check: each account, usable or spent
+CLIProxyAPI http://127.0.0.1:8317 — 1/3 Codex accounts usable
+  a@example.com: spent — resets 10/2/2026, 3:12:00 PM  [upstream]
+  b@example.com: usable  [upstream]
+  c@example.com: spent — resets 10/6/2026, 9:00:00 AM  [upstream]`}</Shell>
+              <p>Restart the daemon after setting <C>cliproxyUrl</C>; detection reads it at
+                start-up. If ChatGPT reports an account as usable while the proxy is still cooling
+                it down, unsnooze clears that cooldown (<C>POST /v0/management/reset-quota</C>) so
+                the woken session is routed to it. Turn that off with{' '}
+                <C>cliproxyResetStale off</C>. While <C>cliproxyUrl</C> is set, any Codex
+                retry-exhausted 429 counts as a stop. A short one wakes again within about 30
+                seconds, because the pool still has a usable account.</p>
+            </section>
+
             <section className="doc-sec" id="design">
               <h2>Claude Design</h2>
               <p>Claude Design shares your 5-hour and weekly limits with chat, Cowork and Claude

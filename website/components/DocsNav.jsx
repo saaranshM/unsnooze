@@ -16,6 +16,7 @@ export const DOC_PAGES = [
     sections: [
       ['agents', 'Agents'],
       ['gateways', 'OpenRouter & proxies'],
+      ['cliproxy', 'Codex via CLIProxyAPI'],
       ['design', 'Claude Design'],
     ],
   },

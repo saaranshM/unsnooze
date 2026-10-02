@@ -44,6 +44,15 @@ export const DEFAULTS = {
   // THIS host — the one being controlled — not the controller); a forced
   // command that answers 'disabled' still returns a valid framed envelope.
   remoteQueue: true,
+  // CLIProxyAPI (router-for-me/CLIProxyAPI) in front of Codex: when set, a
+  // Codex session stopped by the proxy's "all credentials cooling down" 429
+  // counts as a limit stop, and it wakes as soon as ANY Codex account in the
+  // proxy has quota again (read via the proxy's management API).
+  cliproxyUrl: '',         // '' = off; e.g. http://127.0.0.1:8317
+  cliproxyKey: '',         // management key (remote-management.secret-key, as typed)
+  // Clear the proxy's own cooldown on an account the upstream already reports
+  // usable again, so the woken session is routed to it immediately.
+  cliproxyResetStale: true,
   resumeMessage: 'Continue where you left off. The session was interrupted by a usage limit which has now reset — pick up the task you were working on and finish it.',
   resumeMessages: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '', cursor: '' },  // per-agent override; '' = use resumeMessage
   // Extra argv appended when unsnooze itself launches the agent binary (dead-pane
@@ -82,6 +91,9 @@ const ENV_NAMES = {
   reapResumed: 'UNSNOOZE_REAP_RESUMED',
   reapIdleAfter: 'UNSNOOZE_REAP_IDLE_AFTER',
   remoteQueue: 'UNSNOOZE_REMOTE_QUEUE',
+  cliproxyUrl: 'UNSNOOZE_CLIPROXY_URL',
+  cliproxyKey: 'UNSNOOZE_CLIPROXY_KEY',
+  cliproxyResetStale: 'UNSNOOZE_CLIPROXY_RESET_STALE',
   resumeMessage: 'UNSNOOZE_RESUME_MESSAGE',
   'resumeMessages.claude': 'UNSNOOZE_RESUME_MESSAGE_CLAUDE',
   'resumeMessages.codex': 'UNSNOOZE_RESUME_MESSAGE_CODEX',
@@ -272,7 +284,7 @@ export function setConfigValue(key, rawValue) {
 export function writeConfig(config) {
   const path = CONFIG_FILE();
   ensureStateDir(dirname(path));
-  // Owner-only: ntfyToken is a Bearer credential, and config.json was
+  // Owner-only: ntfyToken and cliproxyKey are credentials, and config.json was
   // world-readable before 1.17.0.
   writePrivateFile(path, join(dirname(path), `.config.tmp.${process.pid}`),
     JSON.stringify(config, null, 2) + '\n');

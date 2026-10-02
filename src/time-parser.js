@@ -365,6 +365,9 @@ export function nextProbeDelayMs(probeCount = 0, {
 }
 
 export function sourceRank(source) {
+  // Re-timed from CLIProxyAPI's account pool (src/cliproxy.js): one account's
+  // banner time says nothing about the others, so it never wins over the pool.
+  if (source === 'cliproxy') return 3;
   if (source === 'absolute') return 2;
   if (source === 'relative') return 1;
   return 0; // fallback / unknown

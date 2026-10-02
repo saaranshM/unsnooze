@@ -84,6 +84,11 @@ Claude desktop) are watched through the files they already write, by the optiona
 daemon. Per-agent details, OpenRouter, proxy launchers like Headroom, and Claude
 Design: [supported agents](https://unsnooze.dev/docs/agents/).
 
+**Codex behind [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)** (multi-account
+pool): set `cliproxyUrl` and `cliproxyKey`, and a stopped Codex session wakes as soon as
+*any* account in the proxy has quota again. Check it with `unsnooze cliproxy`. Details:
+[Codex behind CLIProxyAPI](https://unsnooze.dev/docs/agents/#cliproxy).
+
 ## How it works
 
 <div align="center">

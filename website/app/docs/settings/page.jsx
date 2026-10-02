@@ -69,6 +69,8 @@ export default function SettingsDocsPage() {
                     <tr><td><C>reapIdleAfter</C></td><td><C>604800000</C> (7d)</td><td>Idle age (ms) before an opt-in auto-reap closes a resumed pane.</td></tr>
                     <tr><td><C>updateCheck</C></td><td><C>true</C></td><td>Daily new-version check — a plain GET to the npm registry, nothing identifying.</td></tr>
                     <tr><td><C>ntfyTopic</C> / <C>ntfyServer</C> / <C>ntfyToken</C> / <C>ntfyPrivacy</C></td><td><C>""</C> / ntfy.sh / <C>""</C> / <C>full</C></td><td>Phone push via <a href="https://ntfy.sh">ntfy</a> — off until a topic is set. See <a href="#notifications">Notifications</a>.</td></tr>
+                    <tr><td><C>cliproxyUrl</C> / <C>cliproxyKey</C></td><td><C>""</C> / <C>""</C></td><td>CLIProxyAPI in front of Codex: the proxy URL (e.g. <C>http://127.0.0.1:8317</C>) and its management key. When set, Codex stops wake as soon as any account in the proxy has quota again. See <a href="/docs/agents/#cliproxy">Codex behind CLIProxyAPI</a>.</td></tr>
+                    <tr><td><C>cliproxyResetStale</C></td><td><C>true</C></td><td>Clear the proxy's cooldown on an account that ChatGPT already reports as usable, so the woken session is routed to it.</td></tr>
                     <tr><td><C>remoteQueue</C></td><td><C>true</C></td><td>Set <strong>on the host being controlled</strong>: may other hosts queue prompts on this one (<C>prompt add --host &lt;this&gt;</C>)? Off = the queue verbs answer a typed <C>disabled</C> instead of silently dropping. See <a href="/docs/commands/#prompts">Queued prompts</a>.</td></tr>
                   </tbody>
                 </table>
