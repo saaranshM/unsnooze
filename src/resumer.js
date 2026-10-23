@@ -14,7 +14,7 @@ import {
   CAPTURE_LINES, PANE_SCAN_LINES, RESUME_SESSION_NAME,
   RESET_MARGIN_MS, FALLBACK_RESET_MS, PROBE_INTERVAL_MS, PROBE_MAX_MS,
 } from './config.js';
-import { detectLimit, isBusy, modelRemedy } from './patterns.js';
+import { detectLimit, detectAgentLimit, isBusy, modelRemedy } from './patterns.js';
 import { getAgent } from './agents/index.js';
 import { pendingCodexPrompt } from './agents/codex.js';
 import { parseResetTime, resetAtMs, nextProbeDelayMs } from './time-parser.js';
@@ -137,9 +137,10 @@ const stopEpisodeAt = rec => rec?.bannerAt ?? rec?.detectedAt;
 
 // Newer non-error parent-context Claude usage proves that a user/provider retry
 // already made progress after this stop. Banner absence alone does not.
-function claudeProgressedAfterStop(rec, agent) {
+function agentProgressedAfterStop(rec, agent) {
   const cutoff = stopEpisodeAt(rec);
-  return agent.id === 'claude' && hasClaudeParentUsageAfter(rec, cutoff);
+  return agent.hasProgressAfter ? agent.hasProgressAfter(rec, cutoff) === true
+    : agent.id === 'claude' && hasClaudeParentUsageAfter(rec, cutoff);
 }
 
 // Compare-and-set for one stop episode, with an applied result for callers
@@ -164,8 +165,8 @@ function transitionStopEpisode(rec, status, extra = {}, {
 // Reconcile durable progress without letting a stale snapshot clear a newer
 // stop episode. A false return means no progress was observed; true means this
 // dispatch must stop, whether the transition applied or the snapshot went stale.
-function finishIfClaudeProgressed(rec, agent) {
-  if (!claudeProgressedAfterStop(rec, agent)) return false;
+function finishIfAgentProgressed(rec, agent) {
+  if (!agentProgressedAfterStop(rec, agent)) return false;
   const cutoff = stopEpisodeAt(rec);
   let applied = false;
   updateState(state => {
@@ -251,7 +252,7 @@ function claimStopForResume(rec, pendingPrompt = null) {
       Object.assign(current, {
         status: 'resuming', lastAttemptAt: now, lastError: null, verifyRetries: 0,
         resumeEpisodeAt: cutoff,
-        // The counterpart to finishIfClaudeProgressed's 'native': this is the
+        // The counterpart to finishIfAgentProgressed's 'native': this is the
         // single point where unsnooze takes ownership of a stop, whether the
         // wake is typed, driven through the menu, or reopened.
         resumedBy: 'unsnooze',
@@ -312,9 +313,9 @@ export async function probeFallback(rec, {
   let bannerAt = rec.bannerAt ?? null;
 
   // Prefer a fresh transcript entry when available (claude).
-  const fromTx = latestRateLimitFromTranscript(rec.cwd, rec.sessionId, {
+  const fromTx = agent.id === 'claude' ? latestRateLimitFromTranscript(rec.cwd, rec.sessionId, {
     now, claudeDir: rec.env?.CLAUDE_CONFIG_DIR,
-  });
+  }) : null;
   if (fromTx) {
     stillLimited = true;
     resetLine = fromTx.resetLine;
@@ -326,10 +327,11 @@ export async function probeFallback(rec, {
       log(`${key}: probe capture failed: ${err.message}`);
       return rescheduleProbe(rec, now);
     }
-    const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
+    const d = detectAgentLimit(text, PANE_SCAN_LINES, agent, rec);
     const menu = !!(agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES));
     stillLimited = d.hit || menu;
     resetLine = d.hit ? d.resetLine : null;
+    bannerAt = d.bannerAt ?? bannerAt;
   } else {
     // No live signal — treat as still unknown and probe again (or give up
     // at the hard ceiling and let reopen try).
@@ -464,8 +466,8 @@ export async function assessPane(rec, agent, { mux, matchesLease = leaseMatches 
   let text;
   try { text = await mux.capturePane(rec.pane, CAPTURE_LINES); }
   catch (err) { return { alive: true, captureError: err.message }; }
-  const busy = isBusy(text, agent.patterns.busyPatterns);
-  const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
+  const busy = isBusy(text, agent.patterns.busyPatterns) || !!agent.isBusy?.(text, rec);
+  const d = detectAgentLimit(text, PANE_SCAN_LINES, agent, rec);
   const menu = !!(agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES));
   let cmd = null;
   try { cmd = await mux.paneCurrentCommand?.(rec.pane); }
@@ -501,7 +503,7 @@ export async function planFor(rec, {
     gates.push(`status ${rec.status} — nothing to dispatch`);
     return { ...base, action: 'none' };
   }
-  if (claudeProgressedAfterStop(rec, agent)) {
+  if (agentProgressedAfterStop(rec, agent)) {
     gates.push('newer non-error parent-context usage shows that the session already resumed');
     return { ...base, action: 'none' };
   }
@@ -601,7 +603,7 @@ export async function planFor(rec, {
   const target = await reviveTarget(mux, rec);
   // The same argv reopen() builds: on a backend with no pane the prompt rides
   // in argv, and for codex the command itself changes (`exec resume`).
-  const resume = agent.resumeArgs(rec.sessionId, message, { canType: backendCanType(mux) });
+  const resume = agent.resumeArgs(rec.sessionId, message, { canType: backendCanType(mux), cwd: rec.cwd });
   return {
     ...base, action: 'reopen', target: { session: target }, message,
     argv: [agent.id, ...withResumeExtraArgs(resume, agent.id)],
@@ -621,7 +623,7 @@ export async function dispatchOne(rec, {
   const agent = getAgent(rec.agent);
   // Cheap early reconciliation; this is repeated after asynchronous pane or
   // multiplexer inspection, immediately before any keystroke/window launch.
-  if (finishIfClaudeProgressed(rec, agent)) return 'already-resumed';
+  if (finishIfAgentProgressed(rec, agent)) return 'already-resumed';
   // Wake-message precedence: per-session (`unsnooze message <id> "..."`) →
   // explicit option → per-agent (`resumeMessages.<id>`) → global. Applies to
   // both the live-pane sendText and the argv reopen path.
@@ -692,7 +694,7 @@ export async function dispatchOne(rec, {
     }
     if (a.busy) return 'busy';
     if (a.menu) {
-      if (finishIfClaudeProgressed(rec, agent)) return 'already-resumed';
+      if (finishIfAgentProgressed(rec, agent)) return 'already-resumed';
       if (!a.authorized) return reopenGuarded();
       if (!getConfig('menuAutoAnswer')) return 'held';
       // Menu navigation is an irreversible pane action too. Claim the exact
@@ -714,7 +716,7 @@ export async function dispatchOne(rec, {
     if (a.authorized) {
       // assessPane is asynchronous. Close the final human/provider-resume race
       // after assessment and immediately before the keystroke.
-      if (finishIfClaudeProgressed(rec, agent)) return 'already-resumed';
+      if (finishIfAgentProgressed(rec, agent)) return 'already-resumed';
       if (!claimStopForResume(rec, agent.id === 'codex' ? resumeMessage : null)) return 'stale';
       await mux.sendText(rec.pane, resumeMessage);
       log(`${key}: sent continue via ${rec.mux} ${rec.paneOwner ?? '-'}:${rec.pane}`);
@@ -770,7 +772,7 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
   }
   // A backend with no pane cannot be typed into, so the prompt has to ride in
   // argv instead. Adapters that already do that (codex, kimi) ignore the flag.
-  const resume = agent.resumeArgs(rec.sessionId, resumeMessage, { canType: backendCanType(mux) });
+  const resume = agent.resumeArgs(rec.sessionId, resumeMessage, { canType: backendCanType(mux), cwd: rec.cwd });
   const leaseId = createLeaseId();
   const target = await reviveTarget(mux, rec);
   const launchSpec = {
@@ -779,7 +781,7 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
   };
   // reviveTarget can await a multiplexer query. Recheck after it and claim the
   // exact episode immediately before opening a new pane.
-  if (finishIfClaudeProgressed(rec, agent)) return 'already-resumed';
+  if (finishIfAgentProgressed(rec, agent)) return 'already-resumed';
   if (!claimStopForResume(rec)) return 'stale';
   let address;
   try {
@@ -828,7 +830,7 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
   if (!resume.messageViaPane) { onDelivered(); return 'reopen'; }
 
   // Wait for the TUI to be ready (input prompt visible), then send the message.
-  const outcome = await awaitReadyAndSend(mux, address.pane, agent, resumeMessage);
+  const outcome = await awaitReadyAndSend(mux, address.pane, agent, resumeMessage, { context: rebound });
   if (outcome === 'limit') {
     // Limit hadn't actually reset — the fresh session hit it immediately.
     return 'reopen';
@@ -852,6 +854,7 @@ async function reopen(rec, { mux, resolveMux, agent, resumeMessage, selfCmd, onD
 // capturePane-throws-continue, same limit/idle detection.
 export async function awaitReadyAndSend(mux, pane, agent, message, {
   timeoutMs = READY_TIMEOUT_MS,
+  context = null, limitAfterMs = Date.now(),
 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -859,11 +862,17 @@ export async function awaitReadyAndSend(mux, pane, agent, message, {
     let text;
     try { text = await mux.capturePane(pane, CAPTURE_LINES); }
     catch { continue; }
-    if ((agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES)) || detectLimit(text, PANE_SCAN_LINES, agent.patterns).hit) {
+    const d = context ? detectAgentLimit(text, PANE_SCAN_LINES, agent, context)
+      : detectLimit(text, PANE_SCAN_LINES, agent.patterns);
+    // Restoring a Code conversation restores its old failed turn too. Only
+    // an error after opening the new pane can veto the initial wake prompt.
+    if ((agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES))
+      || (d.hit && (d.bannerAt == null || d.bannerAt > limitAfterMs))) {
       return 'limit';
     }
     // The idle input box: a prompt glyph with no busy footer.
-    if (!isBusy(text, agent.patterns.busyPatterns) && agent.patterns.idleRegex.test(text)) {
+    if (!isBusy(text, agent.patterns.busyPatterns) && !agent.isBusy?.(text, context || {})
+      && agent.patterns.idleRegex.test(text)) {
       await mux.sendText(pane, message);
       return 'sent';
     }
@@ -942,16 +951,23 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
     catch (err) { log(`${key}: submit retry failed: ${err.message}`); }
     return 'pending';
   }
-  const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
+  const d = detectAgentLimit(text, PANE_SCAN_LINES, agent, rec);
+  // An old error in the wire is not a fresh rejection, and a hidden banner
+  // is not success. Kimi must produce new model output or a new failed turn.
+  if (agent.hasProgressAfter && agent.hasProgressAfter(rec, rec.lastAttemptAt) === false
+    && !(d.hit && d.bannerAt > rec.lastAttemptAt)) {
+    if (agent.isBusy?.(text, rec)) return 'pending';
+    return recordVerifyRetry(rec, 'waiting for model output after wake');
+  }
   if (d.hit || (agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES))) {
     // Limit not actually reset — reschedule from the fresh banner.
     // Prefer a dated transcript entry when present so relative/absolute
     // offsets anchor to the banner's own time.
     let resetLine = d.hit ? d.resetLine : null;
-    let bannerAt = null;
-    const fromTx = latestRateLimitFromTranscript(rec.cwd, rec.sessionId, {
+    let bannerAt = d.bannerAt ?? null;
+    const fromTx = agent.id === 'claude' ? latestRateLimitFromTranscript(rec.cwd, rec.sessionId, {
       claudeDir: rec.env?.CLAUDE_CONFIG_DIR,
-    });
+    }) : null;
     if (fromTx) {
       resetLine = fromTx.resetLine ?? resetLine;
       bannerAt = fromTx.timestampMs;
@@ -1173,7 +1189,7 @@ export async function runResumer({
       // Reconcile manual/provider retries before waiting/attempt-cap decisions.
       // dispatchOne repeats this immediately before acting to close the race.
       for (const rec of activeStopped()) {
-        finishIfClaudeProgressed(rec, getAgent(rec.agent));
+        finishIfAgentProgressed(rec, getAgent(rec.agent));
       }
 
       const stopped = activeStopped();

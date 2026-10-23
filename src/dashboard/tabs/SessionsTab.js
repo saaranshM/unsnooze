@@ -23,6 +23,9 @@ export function SessionsTab({ data, selected = 0, onSelect } = {}) {
         ),
         h(Text, { color: theme.muted }, `    panes: ${s.panes?.length ? s.panes.join(', ') : '(none)'}`),
         s.attach ? h(Text, { color: theme.info }, `    attach: ${s.attach}`) : null,
+        ...(s.liveAgents || []).map(a =>
+          h(Text, { key: `live-${a.pane}`, color: theme.ok }, `    · watching ${a.agent} pane ${a.pane}`),
+        ),
         ...(s.records || []).map((r, j) =>
           h(Text, { key: j, color: theme.muted, dimColor: true },
             `    · ${r.status} ${(r.agent || '?').padEnd(6)} ${(r.cwd || '?').slice(0, 48)} pane ${r.pane ?? '-'}`),

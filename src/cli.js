@@ -427,6 +427,9 @@ export async function cmdSessions() {
     const panes = s.panes.length ? s.panes.join(', ') : '(none)';
     console.log(`  [${flag.padEnd(6)}] ${s.mux}  ${s.name}  panes: ${panes}`);
     if (s.attach) console.log(`              attach: ${s.attach}`);
+    for (const a of s.liveAgents || []) {
+      console.log(`              · watching ${a.agent} pane ${a.pane}`);
+    }
     for (const r of s.records) {
       console.log(`              · ${r.status} ${(r.agent || '?').padEnd(6)} ${r.cwd || '?'} pane ${r.pane ?? '-'}`);
     }

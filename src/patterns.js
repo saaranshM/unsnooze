@@ -170,6 +170,13 @@ export function detectLimit(text, tailLines = 12, sets = claudePatterns) {
   return { hit: true, limitType, resetLine };
 }
 
+// An adapter may supply durable evidence that a pane overlay cannot hide.
+// Null means unavailable (use the existing pane detector); hit:false is an
+// authoritative negative, e.g. model output newer than a scrollback error.
+export function detectAgentLimit(text, tailLines, agent, context = {}) {
+  return agent.detectLimit?.(text, context) ?? detectLimit(text, tailLines, agent.patterns);
+}
+
 // What a user can actually do about a model limit. There is no reset time to
 // wait for, so the notification must name a real remedy — and the remedy is
 // per-CLI (claude has /usage-credits, cursor does not).

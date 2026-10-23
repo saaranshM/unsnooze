@@ -361,6 +361,8 @@ function findDuplicate(state, record) {
     // still see the banner for a few hundred ms — that must not fork a second
     // record (it would double-resume the session).
     if (s.pane && record.pane && addressHash(s) === addressHash(record)
+      && (s.agent || 'claude') === (record.agent || 'claude')
+      && !(s.leaseId && record.leaseId && s.leaseId !== record.leaseId)
       && (s.status === 'stopped' || s.status === 'resuming'
         || (s.status === 'resumed' && !s.bannerCleared))
       && Math.abs((s.detectedAt || 0) - record.detectedAt) < DEDUPE_WINDOW_MS) {
