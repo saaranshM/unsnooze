@@ -153,6 +153,8 @@ export function createMonitor({
   // Same-or-worse source may only pull the wake earlier, never push it later.
   function maybeUpgrade(existing, at, source, bannerAt, limitType, via) {
     if (!existing || existing.status !== 'stopped') return false;
+    // A fresh provider clock outranks the same old banner's time-less fallback.
+    if (existing.resetDetail === 'kimi-usage-api' && source === 'fallback') return false;
     const oldRank = sourceRank(existing.resetSource);
     const newRank = sourceRank(source);
     const betterSource = newRank > oldRank;
@@ -202,6 +204,7 @@ export function createMonitor({
       bannerAt: resolved.bannerAt,
       resetAt: at, resetSource: source,
       attempts: 0, lastAttemptAt: null, lastError: null,
+      ...(agent.quotaReset ? { resetDetail: null, quotaResetAt: null, quotaCheckedAt: null } : {}),
       ...(recordEnv ? { env: recordEnv } : {}),
       ...(source === 'fallback' ? { probeCount: 0 } : {}),
     }, {

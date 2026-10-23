@@ -61,7 +61,9 @@ export function parseCodeEvent(entry) {
     } : null };
   }
   if (entry.type === 'usage.record' && Number(entry.usage?.output) > 0) return { at, kind: 'progress' };
-  if (entry.type === 'llm.request' || entry.type === 'turn.step.retrying') return { at, kind: 'busy' };
+  if (entry.type === 'llm.request' || entry.type === 'turn.step.retrying') {
+    return { at, kind: 'busy', modelAlias: entry.type === 'llm.request' ? entry.modelAlias : null };
+  }
   return null;
 }
 
@@ -76,7 +78,7 @@ export function readCodeState(context = {}) {
     const cached = cache.get(path);
     if (cached?.size === size && cached.mtimeMs === mtimeMs) return cached.value;
     fd = openSync(path, 'r');
-    let outcome = null, progressAt = null, activity = null;
+    let outcome = null, progressAt = null, activity = null, model = null;
     // Bounded reads, including a second window when a tool result crosses
     // the initial boundary. No full rereads of multi-day transcripts.
     for (let window = 256 * 1024; window <= 4 * 1024 * 1024; window *= 2) {
@@ -89,6 +91,7 @@ export function readCodeState(context = {}) {
         let event;
         try { event = parseCodeEvent(JSON.parse(line)); } catch { continue; }
         if (!event) continue;
+        if (typeof event.modelAlias === 'string' && (!model || event.at > model.at)) model = event;
         if (!activity || event.at >= activity.at) activity = event;
         if (event.kind === 'end' && (!outcome || event.at >= outcome.at)) outcome = event;
         if (event.kind === 'progress' && (progressAt == null || event.at > progressAt)) progressAt = event.at;
@@ -96,7 +99,7 @@ export function readCodeState(context = {}) {
       if (outcome || progressAt != null || len >= size) break;
     }
     const limit = outcome?.limit && (progressAt == null || outcome.at > progressAt) ? outcome.limit : null;
-    const value = { sessionId: session.id, limit, progressAt, busy: activity?.kind === 'busy' };
+    const value = { sessionId: session.id, limit, progressAt, busy: activity?.kind === 'busy', modelAlias: model?.modelAlias ?? null };
     if (cache.size >= 128) cache.clear();
     cache.set(path, { size, mtimeMs, value });
     return value;

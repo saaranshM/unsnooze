@@ -18,6 +18,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { codeSession, codeDetection, hasCodeProgressAfter, readCodeState } from './kimi-code.js';
+import { quotaReset } from './kimi-quota.js';
 
 const KIMI_DIR = () => process.env.UNSNOOZE_KIMI_DIR || join(homedir(), '.kimi');
 
@@ -117,6 +118,7 @@ export default {
   patterns,
   detectLimit: codeDetection,
   hasProgressAfter: hasCodeProgressAfter,
+  quotaReset,
   isBusy(_text, rec) { return readCodeState(rec)?.busy || false; },
   menu: null,
   // `kimi -r <id> -p "<msg>"` carries the prompt in argv. Guard: a missing id

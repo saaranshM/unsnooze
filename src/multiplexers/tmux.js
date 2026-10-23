@@ -3,6 +3,7 @@ import { constants as osConstants } from 'node:os';
 import { promisify } from 'node:util';
 
 import { resolveSessionName, SessionCreateError } from './session-name.js';
+import { ownsSession, recordOwnedSession } from '../mux-sessions.js';
 
 const execFileAsync = promisify(execFileCb);
 
@@ -72,7 +73,9 @@ export function tmuxPaneFromEnv(env = process.env) {
   return env.PSMUX_SESSION ? `${env.PSMUX_SESSION}:${env.TMUX_PANE}` : env.TMUX_PANE;
 }
 
-export function createTmux({ spawner = defaultSpawner, env = process.env, platform = process.platform } = {}) {
+export function createTmux({ spawner = defaultSpawner, env = process.env, platform = process.platform,
+  ownsSessionFn = ownsSession, recordSessionFn = recordOwnedSession,
+} = {}) {
   const run = (...args) => spawner('tmux', args);
   const psmux = platform === 'win32';
   const PANE_FMT = psmux ? '#{session_name}:#{pane_id}' : '#{pane_id}';
@@ -109,12 +112,39 @@ export function createTmux({ spawner = defaultSpawner, env = process.env, platfo
       return tmuxPaneFromEnv(env);
     },
 
+    // Called inside the wrapper, before the interactive agent starts. Mouse
+    // mode makes the wheel enter tmux scrollback for regular-screen CLIs,
+    // instead of terminal alternate-scroll translating it into Up/Down keys.
+    // Only sessions we created get a default; explicit session settings and
+    // borrowed tmux sessions retain the user's choices. Never set -g or replace
+    // wheel bindings: mouse-aware apps must still receive their mouse events.
+    configureManagedPane(pane) {
+      try {
+        const info = spawner('tmux', ['display-message', '-t', pane, '-p', '#{session_id}\t#{session_name}'],
+          { sync: true, encoding: 'utf8' });
+        if (info.status !== 0) return false;
+        const [id, ...parts] = String(info.stdout || '').trim().split('\t');
+        const name = parts.join('\t');
+        if (!/^\$\d+$/.test(id) || !name || !ownsSessionFn('tmux', name)) return false;
+        const current = spawner('tmux', ['show-options', '-qv', '-t', id, 'mouse'],
+          { sync: true, encoding: 'utf8' });
+        if (current.status !== 0 || String(current.stdout || '').trim()) return false;
+        return spawner('tmux', ['set-option', '-t', id, 'mouse', 'on'],
+          { sync: true, stdio: 'ignore' }).status === 0;
+      } catch { return false; } // optional UX; never prevent an agent launch
+    },
+
     async capturePane(pane, lines = 200) {
       return onPane(pane, 'capture-pane', '-p', '-S', `-${lines}`);
     },
 
     async capturePaneVisible(pane) {
       return onPane(pane, 'capture-pane', '-p');
+    },
+
+    async paneInMode(pane) {
+      try { return (await onPane(pane, 'display-message', '-p', '#{pane_in_mode}')).trim() === '1'; }
+      catch { return true; } // uncertain input destination: defer a wake
     },
 
     async sendText(pane, text) {
@@ -277,12 +307,14 @@ export function createTmux({ spawner = defaultSpawner, env = process.env, platfo
       // revival opens its own session — resumer and prompt-queue persist it.
       if (psmux) {
         const session = resolveSessionName(sessionName, sessionTaken);
+        recordSessionFn({ mux: 'tmux', name: session });
         const pane = await run('new-session', '-d', '-s', session, '-c', cwd,
           '-P', '-F', PANE_FMT, ...launch);
         return { pane: pane.trim(), paneOwner: null, session };
       }
       let pane;
       if (!(await backend.sessionExists(sessionName))) {
+        recordSessionFn({ mux: 'tmux', name: sessionName });
         pane = await run('new-session', '-d', '-s', sessionName, '-c', cwd,
           '-P', '-F', '#{pane_id}', ...launch);
       } else {

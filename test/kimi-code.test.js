@@ -16,7 +16,7 @@ const { codeSession, readCodeState, hasCodeProgressAfter, parseCodeEvent } = awa
 const { detectLimit, detectAgentLimit } = await import('../src/patterns.js');
 const { createMonitor } = await import('../src/monitor.js');
 const { readState, upsertSession, setStatus } = await import('../src/state.js');
-const { planFor, dispatchOne, verifyOne, awaitReadyAndSend } = await import('../src/resumer.js');
+const { planFor, dispatchOne, verifyOne, awaitReadyAndSend, refreshProviderReset } = await import('../src/resumer.js');
 const { transcriptPath } = await import('../src/sessions.js');
 after(() => rmSync(DIR, { recursive: true, force: true }));
 
@@ -211,4 +211,22 @@ test('session display names the current leased agent and excludes recycled owner
     records: [{ agent: 'claude', pane: '%gone', status: 'stopped', cwd: '/tmp/old' }] }], { color: false });
   assert.match(rendered, /watching kimi in unsnooze pane %display/);
   assert.match(rendered, /claude.*pane %gone/);
+});
+
+test('the old time-less banner cannot replace a provider-confirmed reset with fallback probes', async () => {
+  const f = fixture();
+  const at = Date.now() - 1000;
+  f.append({ type: 'llm.request', time: at - 1000, modelAlias: 'kimi-code/test' });
+  f.stop(at);
+  assert.equal(readCodeState({ cwd: f.cwd, sessionId: f.id }).modelAlias, 'kimi-code/test');
+  const mux = { paneAlive: async () => true, capturePane: async () => HIDDEN };
+  const monitor = createMonitor({ pane: f.pane, cwd: f.cwd, agent: kimi, mux,
+    notifier: () => {}, versionSkewed: () => false });
+  await monitor._tick();
+  const rec = readState().sessions[f.id];
+  const reset = Date.now() + 4 * 3600000;
+  await refreshProviderReset(rec, { marginMs: 0, reader: async () => ({ available: false, resetAt: reset }) });
+  await monitor._tick();
+  assert.equal(readState().sessions[f.id].resetSource, 'absolute');
+  assert.equal(readState().sessions[f.id].resetAt, reset);
 });

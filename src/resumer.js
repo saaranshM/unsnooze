@@ -367,6 +367,25 @@ export async function probeFallback(rec, {
   return rescheduleProbe(rec, now);
 }
 
+// Refresh provider clocks before checking whether a stop is due. Waiting for
+// the old fallback probe first would retain the very 15/30/60-minute drift
+// this information is meant to eliminate. Preview stays read-only/offline.
+export async function refreshProviderReset(rec, {
+  reader = getAgent(rec.agent).quotaReset, now = Date.now(), marginMs = RESET_MARGIN_MS,
+} = {}) {
+  if (!reader || rec.status !== 'stopped' || rec.manual) return false;
+  let quota;
+  try { quota = await reader(rec); } catch { return false; }
+  if (!quota || typeof quota.available !== 'boolean' || !Number.isFinite(quota.resetAt)) return false;
+  const resetAt = quota.available ? now : quota.resetAt + marginMs;
+  return transitionStopEpisode(rec, 'stopped', {
+    resetAt, resetSource: 'absolute', resetDetail: 'kimi-usage-api',
+    quotaResetAt: quota.available ? null : quota.resetAt,
+    quotaCheckedAt: quota.observedAt ?? now,
+    limitType: quota.limitType || rec.limitType, probeCount: 0,
+  }, { expect: ['stopped'] });
+}
+
 function rescheduleProbe(rec, now = Date.now()) {
   const key = rec.key;
   const probeCount = rec.probeCount || 0;
@@ -466,7 +485,8 @@ export async function assessPane(rec, agent, { mux, matchesLease = leaseMatches 
   let text;
   try { text = await mux.capturePane(rec.pane, CAPTURE_LINES); }
   catch (err) { return { alive: true, captureError: err.message }; }
-  const busy = isBusy(text, agent.patterns.busyPatterns) || !!agent.isBusy?.(text, rec);
+  const inMode = !!(await mux.paneInMode?.(rec.pane));
+  const busy = inMode || isBusy(text, agent.patterns.busyPatterns) || !!agent.isBusy?.(text, rec);
   const d = detectAgentLimit(text, PANE_SCAN_LINES, agent, rec);
   const menu = !!(agent.menu && agent.menu.isPrompt(text, PANE_SCAN_LINES));
   let cmd = null;
@@ -482,7 +502,7 @@ export async function assessPane(rec, agent, { mux, matchesLease = leaseMatches 
   const leased = await matchesLease(rec, { mux });
   const owned = identity !== false && (leased || agent.isForegroundCommand(cmd));
   const authorized = owned && contentOwned;
-  return { alive: true, text, busy, d, menu, cmd, contentOwned, identity, leased, owned, authorized };
+  return { alive: true, text, busy, inMode, d, menu, cmd, contentOwned, identity, leased, owned, authorized };
 }
 
 // Dry-run: what WOULD dispatch do with this record right now, and why.
@@ -525,6 +545,7 @@ export async function planFor(rec, {
     return { ...base, action: 'held' };
   }
   const isProbe = rec.resetSource === 'fallback' && !rec.manual;
+  if (rec.resetDetail === 'kimi-usage-api') gates.push('reset checked against the Kimi usage API');
   if ((rec.resetAt || 0) > now) {
     gates.push(`not due — ${isProbe ? 'next probe' : 'resets'} ${new Date(rec.resetAt).toLocaleString()}`);
     if (isProbe) gates.push('reset time unknown — cheap pane probes stand in for a schedule');
@@ -569,7 +590,8 @@ export async function planFor(rec, {
       return { ...base, action: 'retry', target: { pane: rec.pane } };
     }
     if (a.busy) {
-      gates.push('agent is mid-work (busy footer) — dispatch defers, never interrupts');
+      gates.push(a.inMode ? 'pane is in scrollback — leave copy mode (q) before resuming'
+        : 'agent is mid-work (busy footer) — dispatch defers, never interrupts');
       return { ...base, action: 'busy', target: { pane: rec.pane } };
     }
     if (a.menu && a.authorized) {
@@ -871,7 +893,7 @@ export async function awaitReadyAndSend(mux, pane, agent, message, {
       return 'limit';
     }
     // The idle input box: a prompt glyph with no busy footer.
-    if (!isBusy(text, agent.patterns.busyPatterns) && !agent.isBusy?.(text, context || {})
+    if (!(await mux.paneInMode?.(pane)) && !isBusy(text, agent.patterns.busyPatterns) && !agent.isBusy?.(text, context || {})
       && agent.patterns.idleRegex.test(text)) {
       await mux.sendText(pane, message);
       return 'sent';
@@ -1189,7 +1211,8 @@ export async function runResumer({
       // Reconcile manual/provider retries before waiting/attempt-cap decisions.
       // dispatchOne repeats this immediately before acting to close the race.
       for (const rec of activeStopped()) {
-        finishIfAgentProgressed(rec, getAgent(rec.agent));
+        const agent = getAgent(rec.agent);
+        if (!finishIfAgentProgressed(rec, agent)) await refreshProviderReset(rec, { reader: agent.quotaReset });
       }
 
       const stopped = activeStopped();

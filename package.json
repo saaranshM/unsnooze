@@ -82,6 +82,7 @@
     "@clack/prompts": "^1.7.0",
     "ink": "^7.1.1",
     "picocolors": "^1.1.1",
-    "react": "^19.2.7"
+    "react": "^19.2.7",
+    "smol-toml": "1.9.1"
   }
 }

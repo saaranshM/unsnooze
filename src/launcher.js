@@ -158,6 +158,7 @@ export function runLauncher(args, agentId = 'claude', {
   const pane = addressable ? rawPane : null;
   const leaseId = process.env.UNSNOOZE_LEASE_ID || createLeaseId();
   if (pane) {
+    mux.configureManagedPane?.(pane);
     // Stamp our own pane (best-effort, tmux only): the identity every later
     // close/inject decision verifies against — pane ids get recycled.
     // Bind to the pane's session first: herdr addresses panes through
