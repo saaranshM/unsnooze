@@ -276,16 +276,14 @@ export function createZellij({ spawner = defaultSpawner, env = process.env } = {
       },
 
       launchWrapped(launchSpec) {
-        // The layout contains exactly one auto-closing pane, avoiding the
-        // lingering default shell created by attach -b. The foreground client
-        // owns the terminal, so Ctrl-C reaches zellij and its active pane.
+        // Run the agent as the initial pane in the named session. Starting a
+        // default session first would leave a shell pane beside the agent.
         const live = liveSessionNames();
         const name = resolveSessionName(wrappedSessionName(env), c => live.has(c));
         launchSpec.onSessionCreated?.(name);
-        // Session name is discovered live via sessionForPane at record-write
-        // time — do NOT inject UNSNOOZE_SESSION_NAME into the layout env.
         const result = spawner('zellij', [
-          '--session', name, '--layout-string', wrappedLayout(launchSpec),
+          'attach', '--create', '--close-on-exit', name, '--',
+          ...launchArgv(launchSpec),
         ], {
           sync: true, stdio: 'inherit', env: childEnv(),
         });

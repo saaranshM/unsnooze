@@ -327,10 +327,10 @@ test('launchWrapped names the session, preserves structured argv/env, and return
   assert.equal(zellij.launchWrapped({ file: 'node', args: ['agent.js'], env: { TOKEN: 'x' } }), 17);
   // calls[0] is the list-sessions probe that keeps the name free of collisions.
   const launch = zellijSpawner.calls.at(-1);
-  assert.deepEqual(launch.args.slice(0, 3), ['--session', 'wrapped', '--layout-string']);
-  assert.match(launch.args[3], /close_on_exit=true/);
-  assert.match(launch.args[3], /TOKEN=x/);
-  assert.equal(launch.args[3].includes('UNSNOOZE_SESSION_NAME'), false);
+  assert.deepEqual(launch.args, [
+    'attach', '--create', '--close-on-exit', 'wrapped', '--',
+    '/usr/bin/env', 'TOKEN=x', 'node', 'agent.js',
+  ]);
   assert.equal(Object.keys(launch.options.env).some(key => key.startsWith('ZELLIJ')), false);
 });
 
@@ -361,8 +361,10 @@ test('launchWrapped sidesteps a taken session name instead of dying on a duplica
 
   assert.equal(zellij.launchWrapped({ file: 'node', args: ['agent.js'], env: {} }), 0);
   const zellijLaunch = zellijSpawner.calls.at(-1).args;
-  assert.deepEqual(zellijLaunch.slice(0, 2), ['--session', 'unsnooze-2']);
-  assert.equal(zellijLaunch[3].includes('UNSNOOZE_SESSION_NAME'), false);
+  assert.deepEqual(zellijLaunch, [
+    'attach', '--create', '--close-on-exit', 'unsnooze-2', '--',
+    '/usr/bin/env', 'node', 'agent.js',
+  ]);
 });
 
 test('launchWrapped keeps the base name when nothing holds it', () => {
