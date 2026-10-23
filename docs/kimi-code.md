@@ -1,7 +1,7 @@
 # Kimi Code compatibility
 
-The local `fix/kimi-code-adapter` branch supports Kimi Code 2.3.0 alongside
-the legacy Python `kimi-cli`. Both executables are named `kimi`, but their
+The Kimi adapter supports Kimi Code 2.3.0 alongside the legacy Python
+`kimi-cli`. Both executables are named `kimi`, but their
 session formats and resume arguments differ.
 
 Kimi Code stores workspace mappings in `~/.kimi-code/workspaces.json`, session
@@ -39,28 +39,13 @@ stopped; new parent model output is required before reporting success.
 Code override, it suppresses Code discovery. Do not change these for a normal
 installation.
 
-## Run from this checkout
+## Development checks
 
 ```sh
 npm ci
 npm test
 UNSNOOZE_TEST_TMUX=1 node --test test/kimi-code-tmux.test.js
-npm uninstall -g unsnooze
-npm link
-node bin/unsnooze.js install --yes --daemon
 ```
-
-`npm link` exposes this checkout as the `unsnooze` command. The install step
-refreshes shell wrappers, enabled hooks, and the existing daemon service.
-Already-running monitors must be restarted on this checkout while retaining
-their mux, pane, agent, lease ID, and working directory. Do not restart the
-agents or kill their tmux sessions. An old interactive shell's wrapper path
-continues to work through the npm link; new shells use the source path.
-
-To return to the published build, stop the Unsnooze daemon/monitors, unlink the
-local package, install the desired published version, rerun its install step,
-and restart the monitors with their original pane/lease arguments. Preserve
-`~/.unsnooze`; uninstalling an npm package does not require purging session data.
 
 ## Validation
 
