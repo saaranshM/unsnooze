@@ -1,9 +1,10 @@
 import { execFile as execFileCb, spawnSync } from 'node:child_process';
-import { constants as osConstants } from 'node:os';
-import { basename } from 'node:path';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { constants as osConstants, tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
 
-import { resolveSessionName, SessionCreateError } from './session-name.js';
+import { AgentDispatchedError, resolveSessionName, SessionCreateError } from './session-name.js';
 
 const execFileAsync = promisify(execFileCb);
 
@@ -47,8 +48,18 @@ function kdlString(value) {
 
 function wrappedLayout(launchSpec) {
   const argv = launchArgv(launchSpec);
-  return `layout { pane command=${kdlString(argv[0])} close_on_exit=true { args ${argv.slice(1).map(kdlString).join(' ')} } }`;
+  return [
+    'layout {',
+    `  pane command=${kdlString(argv[0])} close_on_exit=true {`,
+    `    args ${argv.slice(1).map(kdlString).join(' ')}`,
+    '  }',
+    '}',
+    '',
+  ].join('\n');
 }
+
+const SESSION_NAME_TAKEN_RE = /Session with name .+ already exists\./i;
+const SESSION_START_ERROR_RE = /Failed to parse Zellij configuration|invalid value .*--session|session name must be less than|Session .+ not found/i;
 
 // Parse `zellij list-sessions -s` rows: strip ANSI, keep leading name token,
 // detect an "(EXITED …)" suffix. Rows that fail to parse are dropped.
@@ -276,24 +287,90 @@ export function createZellij({ spawner = defaultSpawner, env = process.env } = {
       },
 
       launchWrapped(launchSpec) {
-        // Run the agent as the initial pane in the named session. Starting a
-        // default session first would leave a shell pane beside the agent.
-        const live = liveSessionNames();
-        const name = resolveSessionName(wrappedSessionName(env), c => live.has(c));
-        launchSpec.onSessionCreated?.(name);
-        const result = spawner('zellij', [
-          'attach', '--create', '--close-on-exit', name, '--',
-          ...launchArgv(launchSpec),
-        ], {
-          sync: true, stdio: 'inherit', env: childEnv(),
-        });
-        if (result?.error) {
-          throw new SessionCreateError(
-            `failed to start zellij session "${name}": ${result.error.message}`,
-            result.error,
-          );
+        // Use an exclusive named session with its own one-pane layout. `attach
+        // --create` only runs its initial command when it wins creation and is
+        // new in Zellij 0.45.1; the older root layout API can target a named
+        // session, but needs --new-session-with-layout to create one.
+        const base = wrappedSessionName(env);
+        const taken = liveSessionNames();
+        const attempted = new Set();
+        let name = resolveSessionName(base, candidate => taken.has(candidate));
+        let layoutDir;
+
+        try {
+          layoutDir = mkdtempSync(join(tmpdir(), 'unsnooze-zellij-'));
+          const layoutPath = join(layoutDir, 'wrapped.kdl');
+          writeFileSync(layoutPath, wrappedLayout(launchSpec), { mode: 0o600 });
+
+          while (!attempted.has(name)) {
+            attempted.add(name);
+            const result = spawner('zellij', [
+              '--session', name, '--new-session-with-layout', layoutPath,
+            ], {
+              sync: true, stdio: ['inherit', 'inherit', 'pipe'], env: childEnv(),
+            });
+            if (result?.error) {
+              throw new SessionCreateError(
+                `failed to start zellij session "${name}": ${result.error.message}`,
+                result.error,
+              );
+            }
+
+            const status = exitStatus(result);
+            const stderr = result?.stderr == null ? '' : String(result.stderr);
+            const nameTaken = status !== 0 && SESSION_NAME_TAKEN_RE.test(stderr);
+            if (nameTaken) {
+              taken.add(name);
+              const next = resolveSessionName(base, candidate =>
+                taken.has(candidate) || attempted.has(candidate));
+              if (attempted.has(next)) {
+                throw new SessionCreateError(
+                  `could not find an unused zellij session name for "${base}": ${stderr.trim()}`,
+                );
+              }
+              name = next;
+              continue;
+            }
+
+            if (status !== 0 && SESSION_START_ERROR_RE.test(stderr)) {
+              throw new SessionCreateError(
+                `failed to start zellij session "${name}": ${stderr.trim()}`,
+              );
+            }
+
+            if (status !== 0) {
+              // A foreground client can fail after the pane command has been
+              // dispatched, leaving the session live. Since stdout must stay
+              // attached for the Zellij UI, a duplicate-name error printed
+              // there cannot be distinguished from a post-dispatch failure.
+              // Never retry an ambiguous live session: that could start the
+              // agent twice.
+              if (!taken.has(name) && liveSessionNames().has(name)) {
+                if (stderr.trim()) process.stderr.write(stderr);
+                throw new AgentDispatchedError(
+                  `zellij exited with status ${status} while session "${name}" remained live; `
+                  + 'the agent may already be running, so unsnooze did not retry it',
+                  { mux: 'zellij' },
+                );
+              }
+              if (stderr.trim()) process.stderr.write(stderr);
+              return status;
+            }
+
+            // This callback writes ownership proof. Invoke it only if the
+            // exclusive create succeeded and its session survived the
+            // foreground client, never for a colliding or already-closed one.
+            if (liveSessionNames().has(name)) launchSpec.onSessionCreated?.(name);
+            if (stderr.trim()) process.stderr.write(stderr);
+            return status;
+          }
+
+          throw new SessionCreateError(`could not find an unused zellij session name for "${base}"`);
+        } finally {
+          if (layoutDir) {
+            try { rmSync(layoutDir, { recursive: true, force: true }); } catch { /* best effort */ }
+          }
         }
-        return exitStatus(result);
       },
 
       bind(nextOwner) { return build(nextOwner); },
