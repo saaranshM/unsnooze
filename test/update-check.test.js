@@ -88,13 +88,17 @@ test('runUpdateCheck: updateCheck=off never fetches', async () => {
   assert.equal(fetched, false);
 });
 
+// The argv assertions in these tests are about npm's arguments, not how Windows
+// launches it (covered by the npmCommand tests).
+const POSIX_NPM = npmCommand({ platform: 'linux' });
+
 test('runSelfUpdate: runs npm install -g and reports the new version', () => {
   const calls = [];
   const lines = [];
   const code = runSelfUpdate({
+    npm: POSIX_NPM,
     runner: (cmd, args) => { calls.push([cmd, ...args].join(' ')); return { status: 0 }; },
     print: l => lines.push(l),
-    npm: npmCommand({ platform: 'linux' }),
   });
   assert.equal(code, 0);
   assert.equal(calls.length, 1);
@@ -105,6 +109,7 @@ test('runSelfUpdate: runs npm install -g and reports the new version', () => {
 test('runSelfUpdate: surfaces npm failure with a hint, non-zero exit', () => {
   const lines = [];
   const code = runSelfUpdate({
+    npm: POSIX_NPM,
     runner: () => ({ status: 243 }),
     print: l => lines.push(l),
   });
@@ -141,6 +146,7 @@ test('runSelfUpdate: replaces the running copy, not the one in npm\'s default pr
   const running = npmGlobalInstall(join(DIR, 'two-prefixes', 'local'), '1.0.0');
   const lines = [];
   const code = runSelfUpdate({
+    npm: POSIX_NPM,
     runner: fakeNpm(join(DIR, 'two-prefixes', 'nvm'), '1.1.0'),
     print: l => lines.push(l), root: running, current: '1.0.0',
   });
@@ -153,6 +159,7 @@ test('runSelfUpdate: a copy npm did not install globally keeps npm\'s default pr
   // A git checkout, npm link, npx or a pnpm global: no prefix to name.
   const calls = [];
   runSelfUpdate({
+    npm: POSIX_NPM,
     runner: (cmd, args) => { calls.push([cmd, ...args]); return { status: 0 }; },
     print: () => {}, root: writePkg(join(DIR, 'checkout', 'unsnooze'), '1.0.0'), current: '1.0.0',
   });
@@ -163,6 +170,7 @@ test('runSelfUpdate: never says "already up to date" when a newer version is kno
   writeCache({ lastCheckedAt: Date.now(), latest: '1.1.0' });
   const lines = [];
   const code = runSelfUpdate({
+    npm: POSIX_NPM,
     runner: fakeNpm(join(DIR, 'stale', 'elsewhere'), '1.1.0'),
     print: l => lines.push(l), root: writePkg(join(DIR, 'stale', 'unsnooze'), '1.0.0'), current: '1.0.0',
   });
