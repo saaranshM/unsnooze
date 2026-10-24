@@ -247,16 +247,33 @@ export function installPrefix({ root = ROOT, platform = process.platform, exists
   return exists(path.join(prefix, 'bin', 'unsnooze')) ? prefix : null;
 }
 
+// How to run npm. On Windows `npm` is `npm.cmd`, which spawnSync cannot run
+// without a shell (bare `npm` is ENOENT, `npm.cmd` is EINVAL since Node's
+// CVE-2024-27980 fix, #49). Run the npm-cli.js that ships beside node.exe
+// directly instead: no shell, so a prefix with spaces needs no quoting. A
+// node without a bundled npm falls back to `npm.cmd` through the shell.
+export function npmCommand({ platform = process.platform, execPath = process.execPath, exists = existsSync } = {}) {
+  if (platform !== 'win32') return { file: 'npm', pre: [], opts: {} };
+  const cli = win32.join(win32.dirname(execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (exists(cli)) return { file: execPath, pre: [cli], opts: {} };
+  return { file: 'npm.cmd', pre: [], opts: { shell: true }, quote: true };
+}
+
+export function runNpm(args, opts = {}, { runner = spawnSync, npm = npmCommand() } = {}) {
+  const argv = npm.quote ? args.map(a => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)) : args;
+  return runner(npm.file, [...npm.pre, ...argv], { ...npm.opts, ...opts });
+}
+
 // `unsnooze update` — self-update via npm, then show what changed. With
 // --prefix pointed at this copy's own prefix, npm -g overwrites this install
 // in place, so re-reading package.json/CHANGELOG.md after a successful
 // install yields the NEW version's info.
-export function runSelfUpdate({ runner = spawnSync, print = console.log, root = ROOT, current = PKG_VERSION } = {}) {
+export function runSelfUpdate({ runner = spawnSync, print = console.log, root = ROOT, current = PKG_VERSION, npm = npmCommand() } = {}) {
   const prefix = installPrefix({ root });
   const args = ['install', '-g', ...(prefix ? ['--prefix', prefix] : []), 'unsnooze@latest'];
   const command = ['npm', ...args].map(a => (/\s/.test(a) ? `"${a}"` : a)).join(' ');
   print(`unsnooze ${current} — updating via ${command} …`);
-  const r = runner('npm', args, { stdio: 'inherit' });
+  const r = runNpm(args, { stdio: 'inherit' }, { runner, npm });
   if (r.error || r.status !== 0) {
     print(`unsnooze: update failed (${r.error ? r.error.message : `npm exited ${r.status}`}).`);
     print(`unsnooze: try it manually: ${command}`);

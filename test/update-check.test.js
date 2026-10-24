@@ -10,7 +10,7 @@ process.env.UNSNOOZE_NOTIFICATIONS = 'off';
 
 const {
   isNewer, updateNotice, whatsNewNotice, changelogSection,
-  fetchLatest, runUpdateCheck, runSelfUpdate, readCache, writeCache, PKG_VERSION,
+  fetchLatest, runUpdateCheck, runSelfUpdate, npmCommand, runNpm, readCache, writeCache, PKG_VERSION,
   launchExitNotice, installPrefix,
 } = await import('../src/update-check.js');
 
@@ -94,6 +94,7 @@ test('runSelfUpdate: runs npm install -g and reports the new version', () => {
   const code = runSelfUpdate({
     runner: (cmd, args) => { calls.push([cmd, ...args].join(' ')); return { status: 0 }; },
     print: l => lines.push(l),
+    npm: npmCommand({ platform: 'linux' }),
   });
   assert.equal(code, 0);
   assert.equal(calls.length, 1);
@@ -217,4 +218,30 @@ test('launchExitNotice: silent when current, unchecked, or updateCheck is off', 
   writeCache({ latest: '999.0.0' });
   process.env.UNSNOOZE_UPDATE_CHECK = 'off';
   assert.equal(launchExitNotice(), null, 'updateCheck off → silent');
+});
+
+// #49: on Windows `npm` is npm.cmd, which spawnSync can't run without a shell
+// (bare `npm` → ENOENT, `npm.cmd` → EINVAL). The npm-cli.js beside node.exe
+// runs directly, so a prefix with spaces needs no shell quoting.
+test('npmCommand runs npm-cli.js through node on Windows, no shell', () => {
+  const execPath = 'C:\\Program Files\\nodejs\\node.exe';
+  const npm = npmCommand({ platform: 'win32', execPath, exists: () => true });
+  const calls = [];
+  runNpm(['install', '-g', '--prefix', 'C:\\Users\\A B\\AppData\\Roaming\\npm', 'unsnooze@latest'], { stdio: 'inherit' },
+    { npm, runner: (file, args, opts) => { calls.push({ file, args, opts }); return { status: 0 }; } });
+  assert.equal(calls[0].file, execPath);
+  assert.equal(calls[0].args[0], 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js');
+  assert.equal(calls[0].args[4], 'C:\\Users\\A B\\AppData\\Roaming\\npm', 'no quoting without a shell');
+  assert.equal(calls[0].opts.shell, undefined);
+  assert.equal(calls[0].opts.stdio, 'inherit');
+});
+
+test('npmCommand falls back to npm.cmd through a shell, quoting spaced args', () => {
+  const npm = npmCommand({ platform: 'win32', execPath: 'C:\\n\\node.exe', exists: () => false });
+  const calls = [];
+  runNpm(['install', '--prefix', 'C:\\A B'], {}, { npm, runner: (file, args, opts) => { calls.push({ file, args, opts }); return { status: 0 }; } });
+  assert.equal(calls[0].file, 'npm.cmd');
+  assert.equal(calls[0].opts.shell, true);
+  assert.deepEqual(calls[0].args, ['install', '--prefix', '"C:\\A B"']);
+  assert.deepEqual(npmCommand({ platform: 'darwin' }), { file: 'npm', pre: [], opts: {} });
 });

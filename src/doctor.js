@@ -20,6 +20,7 @@ import { fishConfigPath } from './fish.js';
 import { listAgents } from './agents/index.js';
 import { getConfig } from './settings.js';
 import { resolveBin } from './which.js';
+import { runNpm } from './update-check.js';
 import { CLAUDE_DIR, CODEX_DIR } from './config.js';
 
 const log = makeLogger('doctor');
@@ -35,9 +36,9 @@ function isCsgUnit(content) {
   return /claude-session-guard/.test(content) && !/unsnooze\.js|com\.unsnooze/.test(content);
 }
 
-function defaultRunner(cmd, args) {
+function defaultRunner(cmd, args, opts = {}) {
   try {
-    return spawnSync(cmd, args, { encoding: 'utf-8' });
+    return spawnSync(cmd, args, { encoding: 'utf-8', ...opts });
   } catch (err) {
     return { status: 1, stdout: '', error: err };
   }
@@ -90,7 +91,7 @@ export function defaultCsgPackagePath({
   execPathRoots = [join(dirname(dirname(process.execPath)), 'lib', 'node_modules')],
 } = {}) {
   const roots = [];
-  const r = runner('npm', ['root', '-g']);
+  const r = runNpm(['root', '-g'], {}, { runner });
   if (!r.error && r.status === 0 && r.stdout) roots.push(String(r.stdout).trim());
   roots.push(...execPathRoots);   // nvm/unix prefix layout fallback when npm is slow/absent
   for (const root of roots) {
