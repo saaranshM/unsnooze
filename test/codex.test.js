@@ -3,7 +3,10 @@
 // that changes them should fail here, loudly.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import codex, { ROLLOUT_RE } from '../src/agents/codex.js';
+import codex, { ROLLOUT_RE, latestSessionId } from '../src/agents/codex.js';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { getAgent } from '../src/agents/index.js';
 import { detectLimit, isBusy, overloadMatch } from '../src/patterns.js';
 import { parseResetTime, resetAtMs } from '../src/time-parser.js';
@@ -275,5 +278,25 @@ test('windowsBundledCodex picks the newest <hash>/codex.exe under the Desktop in
     assert.equal(windowsBundledCodex({ env: {} }), null);
   } finally {
     rmSync(local, { recursive: true, force: true });
+  }
+});
+
+test('latestSessionId names the parent thread when the newest rollout is a sub-agent (#50)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'unsnooze-codex-latest-'));
+  try {
+    const day = join(root, '2026', '10', '16');
+    mkdirSync(day, { recursive: true });
+    const parent = '01a12f81-52a5-78f1-99cc-a7a8d58d18e5';
+    const child = '01a1438c-8e5f-7871-b785-aaa3362fffc9';
+    const write = (id, payload, mtime) => {
+      const p = join(day, `rollout-2026-10-16T09-10-00-${id}.jsonl`);
+      writeFileSync(p, JSON.stringify({ type: 'session_meta', payload: { id, cwd: '/tmp/proj-sub', ...payload } }) + '\n');
+      utimesSync(p, mtime, mtime);
+    };
+    write(parent, {}, 1000);
+    write(child, { parent_thread_id: parent }, 2000);
+    assert.equal(latestSessionId('/tmp/proj-sub', null, root), parent);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

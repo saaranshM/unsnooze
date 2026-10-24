@@ -32,7 +32,7 @@
 
 import { openSync, readSync, closeSync, statSync } from 'node:fs';
 import { basename } from 'node:path';
-import { ROLLOUT_RE, rolloutPathFor, patterns as codexPatterns } from '../agents/codex.js';
+import { ROLLOUT_RE, rolloutPathFor, subagentParent, patterns as codexPatterns } from '../agents/codex.js';
 import { detectLimit } from '../patterns.js';
 // Usage extractor lives in usage.js (shared cold path + daemon); re-exported
 // here so the plan's watcher surface is the documented import site.
@@ -332,7 +332,9 @@ function readFirstLine(path, maxBytes = 256 * 1024) {
 }
 
 // Session identity for a rollout file: the session_meta head line when
-// parseable, else the uuid embedded in the filename.
+// parseable, else the uuid embedded in the filename. A sub-agent's rollout
+// resolves to its parent thread, so its stop merges with the conversation's
+// own record instead of tracking a second, unresumable one (#50).
 export function rolloutMeta(path) {
   let sessionId = null;
   let cwd = null;
@@ -340,7 +342,7 @@ export function rolloutMeta(path) {
   try {
     const meta = JSON.parse(readFirstLine(path));
     if (meta?.type === 'session_meta') {
-      sessionId = meta.payload?.id || null;
+      sessionId = subagentParent(meta.payload) || meta.payload?.id || null;
       cwd = meta.payload?.cwd || null;
       originator = meta.payload?.originator || null;
     }

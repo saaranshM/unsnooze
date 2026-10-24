@@ -152,6 +152,19 @@ export function rolloutId(path) {
   return m ? m[1].toLowerCase() : null;
 }
 
+// A multi-agent v2 sub-agent writes its own rollout, in the same cwd, whose
+// session_meta names the thread that spawned it (top-level parent_thread_id,
+// and source.subagent.thread_spawn.parent_thread_id). Codex refuses to resume
+// a sub-agent on its own ("resume the parent first"), so the conversation's
+// resumable id is the parent's (#49, #50).
+export function subagentParent(payload) {
+  const id = payload?.parent_thread_id
+    ?? payload?.source?.subagent?.thread_spawn?.parent_thread_id;
+  return typeof id === 'string' && id ? id : null;
+}
+
+const PARENT_IN_HEAD_RE = new RegExp(`"parent_thread_id"\\s*:\\s*"(${UUID})"`, 'i');
+
 function fileHead(path, bytes = 4096) {
   let fd;
   try {
@@ -187,7 +200,11 @@ export function latestSessionId(cwd, aroundTs = null, sessionsRoot = join(CODEX_
   // JSON-escape the cwd the way it appears inside the meta line.
   const needle = cwd ? JSON.stringify(cwd).slice(1, -1) : null;
   for (const f of files.slice(0, 20)) {
-    if (!needle || fileHead(f.path).includes(needle)) return f.id;
+    const head = fileHead(f.path);
+    if (needle && !head.includes(needle)) continue;
+    // A sub-agent's rollout is usually the newest in the cwd; it names the
+    // pane's conversation through its parent.
+    return head.match(PARENT_IN_HEAD_RE)?.[1] ?? f.id;
   }
   return null;
 }
@@ -229,6 +246,16 @@ export default {
   // resume-now only wakes stopped ones — it would answer "no matching stopped
   // sessions" to the one command the notification told the user to run.
   modelRemedy: 'add credits or raise the spend cap in the ChatGPT workspace (or ask its owner to), then continue the session in Codex',
+  // Revival refusals no retry can fix (codex-cli 0.158–0.163 wording, #49):
+  // another Codex process, usually the Desktop app's app-server, owns the
+  // thread; or the id is a multi-agent v2 sub-agent, resumable only through
+  // its parent.
+  reviveRefusals: [
+    { pattern: /already has an active writer/i,
+      reason: 'the thread is still open in another Codex process (usually Codex Desktop) — continue it there, or close it there so unsnooze can resume it' },
+    { pattern: /cannot resume an unloaded multi-agent v2 sub-agent/i,
+      reason: 'this is a Codex sub-agent thread; it continues when its parent session does' },
+  ],
   // Resume takes the prompt in argv — `codex resume <id> "msg"` starts the turn
   // immediately, nothing to type into the TUI.
   //

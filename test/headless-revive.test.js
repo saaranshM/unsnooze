@@ -181,3 +181,24 @@ test('a headless revive that ran to completion (exit 0) still verifies as resume
   assert.equal(await verifyOne(rec.key, { resolveMux: () => mux }), 'resumed');
   assert.equal(readState().sessions[rec.key].status, 'resumed');
 });
+
+// #49: Codex Desktop's app-server still owns the thread, so every headless
+// `exec resume` fails the same way. That is not worth five attempts and a
+// vague give-up: fail once, with the reason the user can act on.
+test('a codex revive refused because Desktop owns the thread fails at once, with the reason', async () => {
+  const shim = join(DIR, 'writer-conflict-launcher.sh');
+  writeFileSync(shim, '#!/bin/sh\necho "Error: thread/resume: thread/resume failed: thread 01a1 already has an active writer (code -32600)" >&2\nexit 1\n');
+  chmodSync(shim, 0o755);
+  const rec = seed({ agent: 'codex', sessionId: '01a12f81-0000-4000-8000-00000000a11e', detectedVia: 'transcript' });
+  const mux = createHeadless({ logDir: join(DIR, 'logs'), env: {} });
+
+  assert.equal(await dispatchOne(rec, { mux, resolveMux: () => mux, selfCmd: [shim] }), 'reopen');
+  const outcome = await waitForOutcome(mux, readState().sessions[rec.key].pane);
+  assert.equal(outcome?.code, 1, `outcome was ${JSON.stringify(outcome)}`);
+
+  assert.equal(await verifyOne(rec.key, { resolveMux: () => mux }), 'held');
+  const cur = readState().sessions[rec.key];
+  assert.equal(cur.status, 'failed', 'a structural refusal is not retried');
+  assert.equal(cur.attempts, 1);
+  assert.match(cur.lastError, /open in another Codex process/);
+});

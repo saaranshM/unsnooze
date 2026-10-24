@@ -999,6 +999,22 @@ export async function verifyOne(key, { resolveMux = resolveRecordMux } = {}) {
         : outcome.signal ? `killed by ${outcome.signal}` : 'failed to start';
       const why = outcome.output || outcome.error || '';
       const lastError = `revive died before it could resume (${how}${why ? `: ${why}` : ''})`;
+      // Some refusals are structural: the same launch fails the same way on
+      // every attempt (Codex Desktop still holding the thread, #49). Retrying
+      // them only burns the attempts and ends in a vague give-up, so stop now
+      // and say what the user has to do.
+      const refusal = (agent.reviveRefusals || []).find(r => r.pattern.test(why));
+      if (refusal) {
+        if (!transitionStopEpisode(rec, 'failed', {
+          attempts, lastError: `${refusal.reason} (${how})`, verifyRetries: 0, resumeEpisodeAt: null,
+        }, { expect: ['resuming'] })) {
+          releaseSupersededResume(key);
+          return 'stale';
+        }
+        log(`${key}: ${lastError} — not retrying: ${refusal.reason}`);
+        notify('unsnooze can\'t resume this one ⚠️', `${rec.cwd}: ${refusal.reason}`, { context: ctxOf(rec), priority: 4 });
+        return 'held';
+      }
       const applied = transitionStopEpisode(rec, 'stopped', {
         attempts,
         // Same backoff (and same manual exemption) as every other retry.

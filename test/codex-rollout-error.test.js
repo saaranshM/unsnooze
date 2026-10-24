@@ -116,3 +116,38 @@ test('a workspace wall and its limit error land as one probed model-limit stop',
   assert.equal(record.resetSource, 'fallback', 'probed, never scheduled against a reset that clears nothing');
   assert.equal(record.limitReason, 'workspace_member_credits_depleted');
 });
+
+// #50/#49: a multi-agent v2 sub-agent writes its own rollout, whose
+// session_meta names the parent thread. Codex refuses to resume the
+// sub-agent ("resume the parent first"), so its stop must land on the
+// parent's record, never as a second, unresumable one.
+test('a sub-agent rollout stop is tracked under its parent thread, merged with the parent stop', async () => {
+  const parent = '01a12f81-52a5-78f1-99cc-a7a8d58d18e5';
+  const child = '01a1438c-8e5f-7871-b785-aaa3362fffc9';
+  const nested = '01a1438c-0000-7871-b785-00000000c0de';
+  const root = join(DIR, 'subagent');
+  mkdirSync(root);
+  const parentFile = join(root, `rollout-2026-10-16T09-10-00-${parent}.jsonl`);
+  const childFile = join(root, `rollout-2026-10-16T09-10-47-${child}.jsonl`);
+  const nestedFile = join(root, `rollout-2026-10-16T09-11-02-${nested}.jsonl`);
+  const metaLine = payload => JSON.stringify({ timestamp: new Date(STOPPED - 5000).toISOString(),
+    type: 'session_meta', payload: { cwd: root, originator: 'codex-tui', ...payload } }) + '\n';
+  writeFileSync(parentFile, metaLine({ id: parent, session_id: parent }));
+  // Top-level parent_thread_id (codex-tui 0.163), and the Desktop shape that
+  // only carries it under source.subagent.thread_spawn.
+  writeFileSync(childFile, metaLine({ id: child, session_id: parent, parent_thread_id: parent }));
+  writeFileSync(nestedFile, metaLine({ id: nested,
+    source: { subagent: { thread_spawn: { parent_thread_id: parent, depth: 1 } } } }));
+  const watcher = createWatcher({
+    sources: [codexSource({ roots: [root] })], offsetsPath: join(root, 'offsets.json'), now: () => STOPPED + 5000,
+  });
+  await watcher.tick();
+  appendFileSync(childFile, limitError);
+  appendFileSync(nestedFile, limitError);
+  appendFileSync(parentFile, limitError);
+  await watcher.tick();
+  const tracked = Object.values(readState().sessions).filter(s => s.cwd === root);
+  assert.equal(tracked.length, 1, 'one record for one conversation');
+  assert.equal(tracked[0].sessionId, parent);
+  assert.ok(!tracked.some(s => [child, nested].includes(s.sessionId)));
+});

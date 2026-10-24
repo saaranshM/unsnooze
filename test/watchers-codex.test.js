@@ -429,3 +429,15 @@ test('a limit error in the same turn as a workspace wall stays a wall', () => {
   assert.equal(last.resetLine, null, 'nothing to schedule — probe, then hold for a human');
   assert.equal(last.reachedType, 'workspace_member_credits_depleted');
 });
+
+test('rolloutMeta resolves a multi-agent sub-agent rollout to its parent thread (#50)', () => {
+  const parent = '01a12f81-52a5-78f1-99cc-a7a8d58d18e5';
+  const child = '01a1438c-8e5f-7871-b785-aaa3362fffc9';
+  const path = join(DIR, `rollout-2026-10-16T09-10-47-${child}.jsonl`);
+  writeFileSync(path, JSON.stringify({ timestamp: TS, type: 'session_meta', payload: {
+    id: child, session_id: parent, parent_thread_id: parent, originator: 'codex-tui', cwd: '/tmp/proj-sub',
+  } }) + '\n');
+  const info = rolloutMeta(path);
+  assert.equal(info.sessionId, parent);
+  assert.equal(info.cwd, '/tmp/proj-sub');
+});
