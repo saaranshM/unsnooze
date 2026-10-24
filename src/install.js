@@ -638,7 +638,7 @@ function qwenSettingsPath() {
 export function installQwenHooks() {
   const path = qwenSettingsPath();
   if (existsSync(path)) {
-    copyFileSync(path, `${path}.unsnooze-bak`);
+    copyFileSync(path, `${resolveWriteTarget(path)}.unsnooze-bak`);   // beside the file a symlink points at, like backupOnce
     atomicWrite(path, mergeHookIntoSettings(readFileSync(path, 'utf-8'), QWEN_HOOK_OPTS));
   } else {
     atomicWrite(path, mergeHookIntoSettings('{}', QWEN_HOOK_OPTS));
