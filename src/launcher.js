@@ -103,10 +103,10 @@ export function runLauncher(args, agentId = 'claude', {
         file: process.execPath,
         args: [process.argv[1], '_run', agent.id, ...args],
         env: process.env,
-        // Written before the session is used, not after: a launch that dies
-        // halfway still leaves the evidence reap needs to clean up after it.
-        // Without this, reap has no proof of ownership and (correctly) refuses
-        // to delete anything.
+        // Gives the backend proof for reap's named-session sweep. Most backends
+        // write this before startup; Zellij calls it after its foreground
+        // client returns and confirms the session still exists, so a name
+        // collision or already-closed session cannot claim a pre-existing one.
         onSessionCreated: name => recordOwnedSession({ mux: mux.name, name }),
       });
     } catch (err) {

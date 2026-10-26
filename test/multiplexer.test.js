@@ -1,13 +1,14 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createTmux as createAnyTmux, tmuxPaneFromEnv } from '../src/multiplexers/tmux.js';
-import { createZellij } from '../src/multiplexers/zellij.js';
+import { createZellij, SessionCreateError } from '../src/multiplexers/zellij.js';
 import { createCmux } from '../src/multiplexers/cmux.js';
 import { createMultiplexerFactory } from '../src/multiplexer.js';
+import { AgentDispatchedError } from '../src/multiplexers/session-name.js';
 import { DEFAULTS, getConfig, setConfigValue } from '../src/settings.js';
 import { MUX_NAMES } from '../src/config.js';
 
@@ -319,18 +320,32 @@ test('launchWrapped names the session, preserves structured argv/env, and return
   assert.deepEqual(tmuxSpawner.calls.at(-1).args,
     ['new-session', '-s', 'wrapped', '-e', 'TOKEN=x', 'node', 'agent.js']);
 
-  const zellijSpawner = fakeSpawner(() => ({ status: 17 }));
-  const zellij = createZellij({
-    spawner: zellijSpawner,
+  let layoutPath;
+  let layoutText;
+  const createdNames = [];
+  const inspectingSpawner = fakeSpawner((_file, args) => {
+    if (args[0] === '--session') {
+      layoutPath = args[3];
+      layoutText = readFileSync(layoutPath, 'utf8');
+      return { status: 17, stderr: Buffer.alloc(0) };
+    }
+    return { status: 0, stdout: '', stderr: Buffer.alloc(0) };
+  });
+  const inspectingZellij = createZellij({
+    spawner: inspectingSpawner,
     env: { PATH: '/bin', ZELLIJ_SESSION_NAME: 'stale', UNSNOOZE_SESSION_NAME: 'wrapped' },
   });
-  assert.equal(zellij.launchWrapped({ file: 'node', args: ['agent.js'], env: { TOKEN: 'x' } }), 17);
-  // calls[0] is the list-sessions probe that keeps the name free of collisions.
-  const launch = zellijSpawner.calls.at(-1);
-  assert.deepEqual(launch.args.slice(0, 3), ['--session', 'wrapped', '--layout-string']);
-  assert.match(launch.args[3], /close_on_exit=true/);
-  assert.match(launch.args[3], /TOKEN=x/);
-  assert.equal(launch.args[3].includes('UNSNOOZE_SESSION_NAME'), false);
+  assert.equal(inspectingZellij.launchWrapped({
+    file: 'node', args: ['agent.js'], env: { TOKEN: 'x' },
+    onSessionCreated: name => createdNames.push(name),
+  }), 17);
+  const launch = inspectingSpawner.calls.findLast(call => call.args[0] === '--session');
+  assert.deepEqual(launch.args.slice(0, 3), ['--session', 'wrapped', '--new-session-with-layout']);
+  assert.match(layoutText, /pane command="\/usr\/bin\/env" close_on_exit=true/);
+  assert.match(layoutText, /args "TOKEN=x" "node" "agent\.js"/);
+  assert.doesNotMatch(layoutText, /UNSNOOZE_SESSION_NAME/);
+  assert.equal(existsSync(layoutPath), false);
+  assert.deepEqual(createdNames, []);
   assert.equal(Object.keys(launch.options.env).some(key => key.startsWith('ZELLIJ')), false);
 });
 
@@ -355,14 +370,113 @@ test('launchWrapped sidesteps a taken session name instead of dying on a duplica
     if (args[0] === 'list-sessions') {
       return options.sync ? { status: 0, stdout: 'unsnooze\nother\n' } : 'unsnooze\nother\n';
     }
-    return { status: 0 };
+    return { status: 0, stderr: Buffer.alloc(0) };
   });
   const zellij = createZellij({ spawner: zellijSpawner, env: { PATH: '/bin' } });
 
   assert.equal(zellij.launchWrapped({ file: 'node', args: ['agent.js'], env: {} }), 0);
-  const zellijLaunch = zellijSpawner.calls.at(-1).args;
-  assert.deepEqual(zellijLaunch.slice(0, 2), ['--session', 'unsnooze-2']);
-  assert.equal(zellijLaunch[3].includes('UNSNOOZE_SESSION_NAME'), false);
+  const zellijLaunch = zellijSpawner.calls.findLast(call => call.args[0] === '--session').args;
+  assert.deepEqual(zellijLaunch.slice(0, 3), ['--session', 'unsnooze-2', '--new-session-with-layout']);
+});
+
+test('launchWrapped does not retry an ambiguous Zellij failure with a live session', () => {
+  let sessionListCalls = 0;
+  const spawner = fakeSpawner((_file, args, options) => {
+    if (args[0] === 'list-sessions') {
+      sessionListCalls += 1;
+      const stdout = sessionListCalls === 1
+        ? 'unsnooze\n'
+        : sessionListCalls === 2
+          ? 'unsnooze\nunsnooze-2\n'
+          : 'unsnooze\nunsnooze-2\nunsnooze-3\n';
+      return options.sync ? { status: 0, stdout } : stdout;
+    }
+    if (args[1] === 'unsnooze-2') {
+      // Zellij prints its duplicate-name error to the inherited stdout, so it
+      // is not available in spawnSync's captured stderr.
+      return { status: 1, stderr: Buffer.alloc(0) };
+    }
+    return { status: 0, stderr: Buffer.alloc(0) };
+  });
+  const createdNames = [];
+  const mux = createZellij({ spawner, env: { PATH: '/bin' } });
+
+  assert.throws(() => mux.launchWrapped({
+    file: 'node', args: ['agent.js'], env: {},
+    onSessionCreated: name => createdNames.push(name),
+  }), err => err instanceof AgentDispatchedError
+    && err.session === null
+    && /may already be running/.test(err.message));
+
+  const launches = spawner.calls.filter(call => call.args[0] === '--session');
+  assert.equal(launches.length, 1);
+  assert.equal(launches[0].args[1], 'unsnooze-2');
+  assert.deepEqual(createdNames, []);
+});
+
+test('launchWrapped retries only when Zellij explicitly reports a name collision', () => {
+  let sessionListCalls = 0;
+  const spawner = fakeSpawner((_file, args, options) => {
+    if (args[0] === 'list-sessions') {
+      sessionListCalls += 1;
+      const stdout = sessionListCalls === 1
+        ? 'unsnooze\n'
+        : 'unsnooze\nunsnooze-2\nunsnooze-3\n';
+      return options.sync ? { status: 0, stdout } : stdout;
+    }
+    if (args[1] === 'unsnooze-2') {
+      return {
+        status: 1,
+        stderr: Buffer.from('Session with name unsnooze-2 already exists.'),
+      };
+    }
+    return { status: 0, stderr: Buffer.alloc(0) };
+  });
+  const createdNames = [];
+  const mux = createZellij({ spawner, env: { PATH: '/bin' } });
+
+  assert.equal(mux.launchWrapped({
+    file: 'node', args: ['agent.js'], env: {},
+    onSessionCreated: name => createdNames.push(name),
+  }), 0);
+
+  const launches = spawner.calls.filter(call => call.args[0] === '--session');
+  assert.equal(launches.length, 2);
+  assert.equal(launches[0].args[1], 'unsnooze-2');
+  assert.equal(launches[1].args[1], 'unsnooze-3');
+  assert.deepEqual(createdNames, ['unsnooze-3']);
+});
+
+test('launchWrapped does not record a Zellij session when its layout is rejected', () => {
+  const spawner = fakeSpawner((_file, args) => (
+    args[0] === 'list-sessions'
+      ? { status: 0, stdout: '' }
+      : { status: 1, stderr: Buffer.from('Failed to parse Zellij configuration') }
+  ));
+  const createdNames = [];
+  const mux = createZellij({ spawner, env: { PATH: '/bin' } });
+
+  assert.throws(() => mux.launchWrapped({
+    file: 'node', args: ['agent.js'], env: {},
+    onSessionCreated: name => createdNames.push(name),
+  }), SessionCreateError);
+  assert.deepEqual(createdNames, []);
+});
+
+test('launchWrapped does not record a Zellij session that already closed', () => {
+  const spawner = fakeSpawner((_file, args) => (
+    args[0] === 'list-sessions'
+      ? { status: 0, stdout: '' }
+      : { status: 0, stderr: Buffer.alloc(0) }
+  ));
+  const createdNames = [];
+  const mux = createZellij({ spawner, env: { PATH: '/bin' } });
+
+  assert.equal(mux.launchWrapped({
+    file: 'node', args: ['agent.js'], env: {},
+    onSessionCreated: name => createdNames.push(name),
+  }), 0);
+  assert.deepEqual(createdNames, []);
 });
 
 test('launchWrapped keeps the base name when nothing holds it', () => {
