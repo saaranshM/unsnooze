@@ -12,7 +12,7 @@ import { DEFAULTS, getConfig, setConfigValue } from '../src/settings.js';
 import { MUX_NAMES } from '../src/config.js';
 
 // Real tmux semantics on every host (native Windows would select psmux's).
-const createTmux = opts => createAnyTmux({ platform: 'linux', ...opts });
+const createTmux = opts => createAnyTmux({ platform: 'linux', recordSessionFn: () => {}, ...opts });
 
 const originalEnv = { ...process.env };
 
@@ -271,7 +271,7 @@ test('psmux revives into its own session with raw argv and a session-qualified p
     if (args[0] === 'new-session') return 'unsnooze-resumed-2:%1\r\n';
     return '';
   });
-  const mux = createAnyTmux({ spawner, env: {}, platform: 'win32' });
+  const mux = createAnyTmux({ spawner, env: {}, platform: 'win32', recordSessionFn: () => {} });
   const node = 'C:\\Program Files\\nodejs\\node.exe';
   assert.deepEqual(await mux.newWindow('unsnooze-resumed', 'C:\\work', {
     file: node, args: ['unsnooze.js', '_run', 'codex', 'resume', 'id', 'Continue where you left off.'], env: { TOKEN: 'v' },

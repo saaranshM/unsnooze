@@ -78,7 +78,7 @@ catches and resumes stops. Every command: [command reference](https://unsnooze.d
 | **Codex CLI** / ChatGPT app | pane banner + rollout files (exact reset time) | `codex resume <id>` |
 | Grok Build *(experimental)* | hook + pane | `grok --resume <id>` |
 | Qwen Code *(experimental)* | hook + pane | `qwen --resume <id>` |
-| Kimi CLI *(experimental)* | pane | `kimi -r <id>` |
+| Kimi Code 2.x / legacy Kimi CLI *(experimental)* | Code: main-agent wire events + pane fallback; legacy: pane | Code: `kimi --session <id>`; legacy: `kimi -r <id>` |
 | OpenCode *(experimental)* | pane (it retries by itself; unsnooze revives it if it dies) | `opencode -s <id>` |
 | Antigravity `agy` *(experimental)* | pane | `agy --conversation=<id>` |
 | Cursor `cursor-agent` *(experimental)* | pane; billing-cycle limit, so it probes instead of scheduling | `cursor-agent --resume=<id>` |

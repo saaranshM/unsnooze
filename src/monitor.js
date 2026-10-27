@@ -16,7 +16,7 @@ import {
   EVENT_MARKER_TTL_MS, OVERLOAD_BACKOFF_S, OVERLOAD_JITTER,
   PROBE_INTERVAL_MS, RESET_MARGIN_MS, LEASE_GRACE_MS,
 } from './config.js';
-import { detectLimit, isBusy, overloadMatch, modelRemedy } from './patterns.js';
+import { detectLimit, detectAgentLimit, isBusy, overloadMatch, modelRemedy } from './patterns.js';
 import { getAgent } from './agents/index.js';
 import { pendingCodexPrompt } from './agents/codex.js';
 import { getConfig } from './settings.js';
@@ -99,10 +99,16 @@ export function createMonitor({
   }
 
   // Prefer a dated transcript entry when the agent keeps one (claude).
-  function resolveBanner(paneResetLine, paneLimitType) {
+  function resolveBanner(paneResetLine, paneLimitType, evidence = null) {
     const detectedAt = Date.now();
+    if (evidence?.bannerAt != null && evidence.sessionId) {
+      return { resetLine: paneResetLine, limitType: paneLimitType,
+        bannerAt: evidence.bannerAt, sessionId: evidence.sessionId,
+        via: 'transcript', detectedAt };
+    }
     const sessionId = agent.latestSessionId?.(cwd, detectedAt) || null;
-    const fromTx = latestRateLimitFromTranscript(cwd, sessionId, { now: detectedAt });
+    const fromTx = agent.id === 'claude'
+      ? latestRateLimitFromTranscript(cwd, sessionId, { now: detectedAt }) : null;
     if (fromTx) {
       return {
         resetLine: fromTx.resetLine ?? paneResetLine,
@@ -147,6 +153,8 @@ export function createMonitor({
   // Same-or-worse source may only pull the wake earlier, never push it later.
   function maybeUpgrade(existing, at, source, bannerAt, limitType, via) {
     if (!existing || existing.status !== 'stopped') return false;
+    // A fresh provider clock outranks the same old banner's time-less fallback.
+    if (existing.resetDetail === 'kimi-usage-api' && source === 'fallback') return false;
     const oldRank = sourceRank(existing.resetSource);
     const newRank = sourceRank(source);
     const betterSource = newRank > oldRank;
@@ -167,8 +175,8 @@ export function createMonitor({
     return true;
   }
 
-  async function recordLimit(resetLine, limitType, via) {
-    const resolved = resolveBanner(resetLine, limitType);
+  async function recordLimit(resetLine, limitType, via, evidence = null) {
+    const resolved = resolveBanner(resetLine, limitType, evidence);
     const detectedVia = resolved.via || via;
     const { at, source } = computeReset(resolved.resetLine, resolved.bannerAt, resolved.detectedAt, resolved.limitType);
     let muxSession = null;
@@ -196,6 +204,7 @@ export function createMonitor({
       bannerAt: resolved.bannerAt,
       resetAt: at, resetSource: source,
       attempts: 0, lastAttemptAt: null, lastError: null,
+      ...(agent.quotaReset ? { resetDetail: null, quotaResetAt: null, quotaCheckedAt: null } : {}),
       ...(recordEnv ? { env: recordEnv } : {}),
       ...(source === 'fallback' ? { probeCount: 0 } : {}),
     }, {
@@ -359,14 +368,15 @@ export function createMonitor({
       return;
     }
 
-    const d = detectLimit(text, PANE_SCAN_LINES, agent.patterns);
+    const lease = leaseId ? readLease({ mux: muxName, paneOwner, pane }, leaseId) : null;
+    const d = detectAgentLimit(text, PANE_SCAN_LINES, agent, { cwd, pid: lease?.pid });
     if (d.hit) {
       const state = readState();
       const existing = trackedKey && state.sessions[trackedKey];
 
       // §7: still-stopped records can upgrade a weak estimate.
       if (existing && existing.status === 'stopped') {
-        const resolved = resolveBanner(d.resetLine, d.limitType);
+        const resolved = resolveBanner(d.resetLine, d.limitType, d);
         const via = resolved.via || (marker ? 'hook' : 'scrape');
         const { at, source } = computeReset(resolved.resetLine, resolved.bannerAt, resolved.detectedAt, resolved.limitType);
         maybeUpgrade(existing, at, source, resolved.bannerAt, resolved.limitType, via);
@@ -378,7 +388,7 @@ export function createMonitor({
         const via = marker ? 'hook' : 'scrape';
         // §6: first tick needs corroboration so we don't inherit a leftover banner.
         if (firstTick) {
-          const resolved = resolveBanner(d.resetLine, d.limitType);
+          const resolved = resolveBanner(d.resetLine, d.limitType, d);
           const detectedVia = resolved.via || via;
           const { at, source } = computeReset(resolved.resetLine, resolved.bannerAt, resolved.detectedAt, resolved.limitType);
           if (!isCorroborated({ ...resolved, via: detectedVia }, at, source)) {
@@ -387,11 +397,11 @@ export function createMonitor({
             return;
           }
           // Reuse recordLimit path; resolveBanner is idempotent enough.
-          await recordLimit(d.resetLine, d.limitType, via);
+          await recordLimit(d.resetLine, d.limitType, via, d);
           firstTick = false;
           return;
         }
-        await recordLimit(d.resetLine, d.limitType, via);
+        await recordLimit(d.resetLine, d.limitType, via, d);
       }
       firstTick = false;
       return;
@@ -424,9 +434,10 @@ export function createMonitor({
       const rec = state.sessions[trackedKey];
       if (rec && rec.status === 'stopped') {
         const cutoff = rec.bannerAt ?? rec.detectedAt;
-        const progressed = agent.id === 'claude' ? hasClaudeParentUsageAfter(rec, cutoff)
+        const adapterProgress = agent.hasProgressAfter?.(rec, cutoff);
+        const progressed = adapterProgress ?? (agent.id === 'claude' ? hasClaudeParentUsageAfter(rec, cutoff)
           : agent.id === 'codex' ? hasCodexProgressAfter(rec, cutoff) !== false
-            : true;
+            : true);
         if (progressed) {
           const next = setStatus(trackedKey, 'resumed', {
             lastAttemptAt: Date.now(), bannerCleared: true, lastError: null,

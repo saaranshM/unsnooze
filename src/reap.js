@@ -5,7 +5,7 @@ import { MUX_NAMES, MUX_SESSION_NAME, RESUME_SESSION_NAME } from './config.js';
 import { getMultiplexer } from './multiplexer.js';
 import { readState, updateState } from './state.js';
 import { getConfig } from './settings.js';
-import { paneOwnedByRecord } from './lease.js';
+import { paneOwnedByRecord, livePaneAgents } from './lease.js';
 import { ownsSession, forgetSession } from './mux-sessions.js';
 import { attachHint } from './multiplexers/session-name.js';
 import { makeLogger } from './logger.js';
@@ -125,8 +125,8 @@ export async function listOwnedSessions({ muxName = null } = {}) {
     for (const row of sessions) {
       if (!isUnsnoozeSessionName(row.name)) continue;
       let panes = [];
+      const bound = mux.bind ? mux.bind(row.name) : mux;
       try {
-        const bound = mux.bind ? mux.bind(row.name) : mux;
         panes = typeof bound.listSessionPanes === 'function'
           ? await bound.listSessionPanes(row.name)
           : [];
@@ -140,6 +140,7 @@ export async function listOwnedSessions({ muxName = null } = {}) {
         name: row.name,
         exited: !!row.exited,
         panes,
+        liveAgents: await livePaneAgents(name, panes, { mux: bound, sessionName: row.name }),
         records: records.map(r => ({
           key: r.key,
           status: r.status,

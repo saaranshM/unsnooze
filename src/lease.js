@@ -1,5 +1,5 @@
 import {
-  mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync,
+  mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync,
 } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { randomUUID, createHash } from 'node:crypto';
@@ -120,4 +120,23 @@ export async function paneOwnedByRecord(rec, { mux, matchesLease = leaseMatches 
   }
   if (await matchesLease(rec, { mux })) return true;
   return rec.leaseId ? false : null;
+}
+
+// Display the agent actually running in each pane, separately from historical
+// recovery records that may still point at the containing tmux session.
+export async function livePaneAgents(muxName, panes, { mux, sessionName, dir = LEASES_DIR } = {}) {
+  let files;
+  try { files = readdirSync(dir); } catch { return []; }
+  const agents = [];
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    let lease;
+    try { lease = JSON.parse(readFileSync(join(dir, file), 'utf8')); } catch { continue; }
+    if (lease?.mux !== muxName || !panes.includes(lease.pane)) continue;
+    if (lease.paneOwner && lease.paneOwner !== sessionName) continue;
+    if (!(await leaseMatches(lease, { mux }))) continue;
+    if (await paneOwnedByRecord(lease, { mux }) === false) continue;
+    agents.push({ agent: lease.agent, pane: lease.pane });
+  }
+  return agents;
 }

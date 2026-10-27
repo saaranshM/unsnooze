@@ -9,14 +9,16 @@
 // gives up (a future resetProbe against GET api.kimi.com/coding/v1/usages
 // would fix that).
 //
-// kimi-cli is Python today (pane_current_command may be python3); its
-// kimi-code successor is TypeScript (node) with the same `kimi` command and
-// auto-migrated ~/.kimi state — both are covered.
+// Kimi Code 2.x uses ~/.kimi-code, session_<uuid> ids and --session, unlike
+// the Python CLI below. Its main-agent wire provides durable stop/progress
+// evidence, even when the error scrolls behind the /usage panel.
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { codeSession, codeDetection, hasCodeProgressAfter, readCodeState } from './kimi-code.js';
+import { quotaReset } from './kimi-quota.js';
 
 const KIMI_DIR = () => process.env.UNSNOOZE_KIMI_DIR || join(homedir(), '.kimi');
 
@@ -24,6 +26,7 @@ const LIMIT_ANCHORS = [
   /rate_limit_reached_error/i,
   /LLM provider error:.*429/i,
   /receiving too many requests at the moment/i,
+  /^\s*(?:Error: \[provider\.api_error\]|[●•]?\s*Goal paused after provider API error:)\s*429\s+You['’]ve reached your (?:5[- ]hour|weekly|monthly) usage limit/i,
 ];
 
 export const patterns = {
@@ -31,8 +34,8 @@ export const patterns = {
   // The 429 render is one line with no reset text — anchors double as reset
   // lines and time-parser falls back to the 5h default.
   resetPatterns: [...LIMIT_ANCHORS],
-  weeklyPatterns: [],
-  fiveHourPatterns: [],
+  weeklyPatterns: [/weekly usage limit/i],
+  fiveHourPatterns: [/5[- ]hour usage limit/i],
   // Fast in-CLI retries ("Retrying after rate limit · attempt 2/3 · 1.2s")
   // resolve within seconds — never inject keys during them.
   busyPatterns: [
@@ -85,6 +88,11 @@ function sessionFromKimiJson(cwd, kimiDir) {
 }
 
 export function latestSessionId(cwd, aroundTs = null, kimiDir = KIMI_DIR()) {
+  // An explicit legacy directory is authoritative for existing installs/tests.
+  if ((!process.env.UNSNOOZE_KIMI_DIR || process.env.UNSNOOZE_KIMI_CODE_DIR) && arguments.length < 3) {
+    const code = codeSession({ cwd });
+    if (code) return code.id;
+  }
   const fromMeta = sessionFromKimiJson(cwd, kimiDir);
   if (fromMeta) return fromMeta;
 
@@ -108,11 +116,24 @@ export default {
   bin: process.env.UNSNOOZE_KIMI_BIN || 'kimi',
   experimental: true,
   patterns,
+  detectLimit: codeDetection,
+  hasProgressAfter: hasCodeProgressAfter,
+  quotaReset,
+  isBusy(_text, rec) { return readCodeState(rec)?.busy || false; },
   menu: null,
   // `kimi -r <id> -p "<msg>"` carries the prompt in argv. Guard: a missing id
   // makes kimi silently create a NEW session, so verify it exists on disk and
   // otherwise use --continue (kimi scopes that to the cwd itself).
-  resumeArgs(sessionId, message) {
+  resumeArgs(sessionId, message, { canType = false, cwd } = {}) {
+    const code = codeSession({ cwd, sessionId });
+    if (code) {
+      return {
+        args: ['--session', code.id, ...(canType ? [] : ['--prompt', message])],
+        messageViaPane: canType,
+      };
+    }
+    // Never silently continue a different conversation for a missing Code id.
+    if (sessionId?.startsWith('session_')) throw new Error('Kimi Code session not found; refusing to resume another conversation');
     const valid = sessionId && sessionExists(sessionId, KIMI_DIR());
     return {
       args: valid ? ['-r', sessionId, '-p', message] : ['--continue', '-p', message],

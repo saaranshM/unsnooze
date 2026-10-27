@@ -317,6 +317,9 @@ export function formatSessionsTui(owned, { color = true } = {}) {
   });
   lines.push(makeTable(['state', 'mux', 'name', 'panes', 'attach'], rows, { color }));
   for (const s of owned) {
+    for (const a of s.liveAgents || []) {
+      lines.push(c.green(`  watching ${a.agent} in ${s.name} pane ${a.pane}`));
+    }
     if (!s.records?.length) continue;
     lines.push('');
     lines.push(c.dim(`  records in ${s.name}:`));
