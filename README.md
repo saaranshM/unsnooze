@@ -13,7 +13,7 @@
 
 [Website](https://unsnooze.dev) · [Documentation](https://unsnooze.dev/docs/) · [Changelog](https://unsnooze.dev/changelog/) · [Feedback](https://unsnooze.dev/feedback/)
 
-**Claude Code · Codex CLI · Grok · Qwen · Kimi · OpenCode · Antigravity · Cursor** — when they hit the 5-hour or weekly usage limit
+**Claude Code · Codex CLI · Grok · Qwen · Kimi · OpenCode · Antigravity · Cursor · Hermes Agent** — when they hit the 5-hour or weekly usage limit
 ("You've hit your usage limit"), your session just… stops.<br/>
 unsnooze auto-resumes them: it tracks **every** limit-stopped session across all
 your projects and **wakes each one up the moment the usage limit resets** — in
@@ -35,7 +35,7 @@ existing tool solves only a slice of it:
 
 | | **unsnooze** | claude-auto-retry | autoclaude | hydra |
 |---|:---:|:---:|:---:|:---:|
-| Multi-CLI (Claude · Codex · Grok · Qwen · Kimi · OpenCode · Antigravity · Cursor) | ✅ | ❌ Claude only | ❌ Claude only | partial |
+| Multi-CLI (Claude · Codex · Grok · Qwen · Kimi · OpenCode · Antigravity · Cursor · Hermes) | ✅ | ❌ Claude only | ❌ Claude only | partial |
 | GUI sessions (VS Code ext, desktop apps) | ✅ watcher daemon | ❌ | ❌ | ❌ |
 | Waits for reset & resumes the **same** session | ✅ | ✅ | ✅ | ❌ switches provider |
 | All sessions at once (shared ledger + one daemon) | ✅ | ❌ one pane | ✅ | ✅ |
@@ -82,6 +82,7 @@ catches and resumes stops. Every command: [command reference](https://unsnooze.d
 | OpenCode *(experimental)* | pane (it retries by itself; unsnooze revives it if it dies) | `opencode -s <id>` |
 | Antigravity `agy` *(experimental)* | pane | `agy --conversation=<id>` |
 | Cursor `cursor-agent` *(experimental)* | pane; billing-cycle limit, so it probes instead of scheduling | `cursor-agent --resume=<id>` |
+| Hermes Agent *(experimental)* | pane + `state.db` (HTTP 429, RateLimitError, quota reset countdown) | `hermes --resume <id>` |
 
 GUI sessions (Claude Code's VS Code extension, the ChatGPT/Codex desktop app,
 Claude desktop) are watched through the files they already write, by the optional

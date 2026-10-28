@@ -27,6 +27,7 @@ const AGENT_FALLBACK_BINS = {
   opencode: () => process.env.UNSNOOZE_OPENCODE_BIN || 'opencode',
   agy: () => process.env.UNSNOOZE_AGY_BIN || 'agy',
   cursor: () => process.env.UNSNOOZE_CURSOR_BIN || 'cursor-agent',
+  hermes: () => process.env.UNSNOOZE_HERMES_BIN || 'hermes',
 };
 
 async function safeImport(specifier) {
