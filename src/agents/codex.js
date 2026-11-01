@@ -109,6 +109,8 @@ export const patterns = {
   transientPatterns: [/stream error/i, /exceeded retry limit/i, /model is at capacity/i],
 };
 
+const FOOTER_RE = /\s·\s|\d+% context left|\? for shortcuts/;
+
 // A submitted user turn uses the same › glyph as the composer. Only accept
 // the LAST prompt, followed directly by a blank line and Codex's status footer.
 // ponytail: truncated/collapsed pastes cannot be proved; leave those for the user.
@@ -118,11 +120,10 @@ export function pendingCodexPrompt(text, message) {
   const start = lines.findLastIndex(line => /^\s*›/.test(line));
   if (start < 0) return false;
   const tail = lines.slice(start + 1);
-  const footer = tail.findIndex((line, i) => i > 0 && !tail[i - 1].trim()
-    && (/\s·\s/.test(line) || /(?:\d+% context left|\? for shortcuts)/.test(line)));
+  const footer = tail.findIndex((line, i) => i > 0 && !tail[i - 1].trim() && FOOTER_RE.test(line));
   if (footer < 0) return false;
-  if (tail.slice(footer + 1).some(line => line.trim()
-    && !/(?:\d+% context left|\? for shortcuts)/.test(line))) return false;
+  // The footer can span rows ("⚠ 9 warnings · f2 to view" under the status bar, #62).
+  if (tail.slice(footer + 1).some(line => line.trim() && !FOOTER_RE.test(line))) return false;
   // Ignore wrapping and the extra newline swallowed by paste-burst handling.
   const compact = value => value.replace(/\s/g, '');
   const draft = [lines[start].replace(/^\s*›\s?/, ''), ...tail.slice(0, footer)].join('\n');

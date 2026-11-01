@@ -32,6 +32,23 @@ test('only the exact unsubmitted Codex composer authorizes a submit retry', () =
   ]) assert.equal(pendingCodexPrompt(text, message), false, text);
 });
 
+// #62: a second footer row under the status bar must not hide the unsent draft.
+test('a multi-row Codex footer still counts as an unsent composer', () => {
+  const wake = 'Continue where you left off. The session was interrupted by a usage limit which has now reset — pick up the task you were working on and finish it.\n\nHeads up: this workspace changed while the session was stopped (HEAD 804701f → 01ace88; uncommitted changes differ). Re-read the current state of the repo before continuing.';
+  const pane = [
+    '■ You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more',
+    'credits or try again at 3:12 AM.', '', '',
+    '› Continue where you left off. The session was interrupted by a usage limit which has now reset — pick up the task you were working on and',
+    '  finish it.', '',
+    '  Heads up: this workspace changed while the session was stopped (HEAD 804701f → 01ace88; uncommitted changes differ). Re-read the current',
+    '  state of the repo before continuing.', '', '',
+    '  GPT-6-Luna max · /tmp/project · 5h 100% left · weekly 84% left · Context … Goal paused (/goal resume)',
+    '                                                                                    ⚠ 9 warnings · f2 to view',
+  ].join('\n');
+  assert.ok(pendingCodexPrompt(pane, wake));
+  assert.equal(pendingCodexPrompt(pane + '\n• response after the footer', wake), false);
+});
+
 let nextPane = 700;
 async function sentDraft() {
   const pane = `%${nextPane++}`;
