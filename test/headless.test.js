@@ -10,7 +10,8 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createHeadless } from '../src/multiplexers/headless.js';
+import { createHeadless, defaultKill } from '../src/multiplexers/headless.js';
+import { spawn } from 'node:child_process';
 import { createMultiplexerFactory } from '../src/multiplexer.js';
 import { MUX_NAMES } from '../src/config.js';
 
@@ -105,6 +106,30 @@ test('paneAlive tracks the real process behind a pid address', async () => {
   assert.equal(await mux.paneAlive('pid:2147483646'), false);
   assert.equal(await mux.paneAlive('nonsense'), false);
   assert.equal(await mux.paneAlive(null), false);
+});
+
+test('defaultKill signals the process group on POSIX and the pid on Windows', () => {
+  const calls = [];
+  defaultKill(42, { platform: 'linux', killer: (pid, sig) => calls.push([pid, sig]) });
+  defaultKill(42, { platform: 'win32', killer: (pid, sig) => calls.push([pid, sig]) });
+  defaultKill(42, { platform: 'darwin', killer: (pid, sig) => { calls.push([pid, sig]); if (pid < 0) throw new Error('ESRCH'); } });
+  assert.deepEqual(calls, [[-42, 'SIGTERM'], [42, 'SIGTERM'], [-42, 'SIGTERM'], [42, 'SIGTERM']]);
+});
+
+// #55: killing only the detached launcher left its agent child running.
+test('defaultKill takes the agent child down with its launcher', { skip: process.platform === 'win32' }, async () => {
+  const leader = spawn('sh', ['-c', 'sleep 30 & echo $!; wait'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const childPid = Number(await new Promise(r => leader.stdout.once('data', d => r(String(d).trim()))));
+  const gone = new Promise(r => leader.once('exit', r));
+  defaultKill(leader.pid);
+  await gone;
+  const deadline = Date.now() + 2000;
+  let alive = true;
+  while (alive && Date.now() < deadline) {
+    try { process.kill(childPid, 0); await new Promise(r => setTimeout(r, 25)); } catch { alive = false; }
+  }
+  if (alive) process.kill(childPid, 'SIGKILL');
+  assert.equal(alive, false, 'the agent child must not outlive its launcher');
 });
 
 test('closePane kills the process the address names', async () => {
