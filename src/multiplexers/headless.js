@@ -46,8 +46,13 @@ function defaultSpawner(file, args, options) {
   return spawn(file, args, options);
 }
 
-function defaultKill(pid) {
-  try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+// Each revival is spawned detached, so on POSIX it leads its own process
+// group: signal the group, or the agent outlives the `_run` launcher (#55).
+export function defaultKill(pid, { platform = process.platform, killer = process.kill.bind(process) } = {}) {
+  if (platform !== 'win32') {
+    try { killer(-pid, 'SIGTERM'); return; } catch { /* no such group — fall back */ }
+  }
+  try { killer(pid, 'SIGTERM'); } catch { /* already gone */ }
 }
 
 function defaultAlive(pid) {
