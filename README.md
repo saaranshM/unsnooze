@@ -82,7 +82,7 @@ catches and resumes stops. Every command: [command reference](https://unsnooze.d
 | OpenCode *(experimental)* | pane (it retries by itself; unsnooze revives it if it dies) | `opencode -s <id>` |
 | Antigravity `agy` *(experimental)* | pane | `agy --conversation=<id>` |
 | Cursor `cursor-agent` *(experimental)* | pane; billing-cycle limit, so it probes instead of scheduling | `cursor-agent --resume=<id>` |
-| Hermes Agent *(experimental)* | pane + `state.db` (HTTP 429, RateLimitError, quota reset countdown) | `hermes --resume <id>` |
+| Hermes Agent *(experimental)* | pane + `state.db` (rate limits, quota reset countdown, retries) | `hermes --resume <id>` |
 
 GUI sessions (Claude Code's VS Code extension, the ChatGPT/Codex desktop app,
 Claude desktop) are watched through the files they already write, by the optional
