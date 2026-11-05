@@ -621,7 +621,7 @@ export function uninstallDaemonAutostart({
 // --- commands ---
 
 export function enabledAgents() {
-  return ['claude', 'codex', 'grok', 'qwen', 'kimi', 'opencode', 'agy', 'cursor'].filter(id => getConfig(`agents.${id}`));
+  return ['claude', 'codex', 'grok', 'qwen', 'kimi', 'opencode', 'agy', 'cursor', 'hermes'].filter(id => getConfig(`agents.${id}`));
 }
 
 // Qwen keeps Claude-shaped hooks in its own settings.json — reuse the same

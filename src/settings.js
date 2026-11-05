@@ -46,25 +46,25 @@ export const DEFAULTS = {
   // command that answers 'disabled' still returns a valid framed envelope.
   remoteQueue: true,
   resumeMessage: 'Continue where you left off. The session was interrupted by a usage limit which has now reset — pick up the task you were working on and finish it.',
-  resumeMessages: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '', cursor: '' },  // per-agent override; '' = use resumeMessage
+  resumeMessages: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '', cursor: '', hermes: '' },  // per-agent override; '' = use resumeMessage
   // Extra argv appended when unsnooze itself launches the agent binary (dead-pane
   // reopen, queued prompts). Space-separated. Lets a revived session match the
   // user's normal launch mode — shell aliases don't apply to direct spawns
   // (e.g. claude users who always launch with --dangerously-skip-permissions).
-  resumeExtraArgs: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '', cursor: '' },
+  resumeExtraArgs: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '', cursor: '', hermes: '' },
   // Extra argv for launches the USER performs through the shell wrapper — the
   // launch-side twin of resumeExtraArgs. A flag that has to hold for the whole
   // session (claude's --autocompact, which decides when the context window is
   // compacted) is useless if it only applies to revives, because the session
   // that runs out of context is the one the user started.
-  launchExtraArgs: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '', cursor: '' },
+  launchExtraArgs: { claude: '', codex: '', grok: '', qwen: '', kimi: '', opencode: '', agy: '', cursor: '', hermes: '' },
   // Window priming (experimental, see prime.js): one tiny prompt at primeAt
   // (local HH:MM, or auto = learned from history) starts the 5-hour window
   // early. '' = off.
   primeAt: { claude: '', codex: '' },
   primeModel: { claude: '', codex: '' },   // '' = claude haiku / codex's cheapest cached model
   primeDays: 'daily',                      // daily | weekdays
-  agents: { claude: true, codex: true, grok: false, qwen: false, kimi: false, opencode: false, agy: false, cursor: false },   // experimental agents default off
+  agents: { claude: true, codex: true, grok: false, qwen: false, kimi: false, opencode: false, agy: false, cursor: false, hermes: false },   // experimental agents default off
 };
 
 // Env override per key. Booleans accept 1/0, true/false, on/off, yes/no.
@@ -99,6 +99,7 @@ const ENV_NAMES = {
   'resumeMessages.opencode': 'UNSNOOZE_RESUME_MESSAGE_OPENCODE',
   'resumeMessages.agy': 'UNSNOOZE_RESUME_MESSAGE_AGY',
   'resumeMessages.cursor': 'UNSNOOZE_RESUME_MESSAGE_CURSOR',
+  'resumeMessages.hermes': 'UNSNOOZE_RESUME_MESSAGE_HERMES',
   'resumeExtraArgs.claude': 'UNSNOOZE_RESUME_EXTRA_ARGS_CLAUDE',
   'resumeExtraArgs.codex': 'UNSNOOZE_RESUME_EXTRA_ARGS_CODEX',
   'resumeExtraArgs.grok': 'UNSNOOZE_RESUME_EXTRA_ARGS_GROK',
@@ -107,6 +108,7 @@ const ENV_NAMES = {
   'resumeExtraArgs.opencode': 'UNSNOOZE_RESUME_EXTRA_ARGS_OPENCODE',
   'resumeExtraArgs.agy': 'UNSNOOZE_RESUME_EXTRA_ARGS_AGY',
   'resumeExtraArgs.cursor': 'UNSNOOZE_RESUME_EXTRA_ARGS_CURSOR',
+  'resumeExtraArgs.hermes': 'UNSNOOZE_RESUME_EXTRA_ARGS_HERMES',
   'launchExtraArgs.claude': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_CLAUDE',
   'launchExtraArgs.codex': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_CODEX',
   'launchExtraArgs.grok': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_GROK',
@@ -115,6 +117,7 @@ const ENV_NAMES = {
   'launchExtraArgs.opencode': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_OPENCODE',
   'launchExtraArgs.agy': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_AGY',
   'launchExtraArgs.cursor': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_CURSOR',
+  'launchExtraArgs.hermes': 'UNSNOOZE_LAUNCH_EXTRA_ARGS_HERMES',
   'primeAt.claude': 'UNSNOOZE_PRIME_AT_CLAUDE',
   'primeAt.codex': 'UNSNOOZE_PRIME_AT_CODEX',
   'primeModel.claude': 'UNSNOOZE_PRIME_MODEL_CLAUDE',
@@ -128,6 +131,7 @@ const ENV_NAMES = {
   'agents.opencode': 'UNSNOOZE_AGENT_OPENCODE',
   'agents.agy': 'UNSNOOZE_AGENT_AGY',
   'agents.cursor': 'UNSNOOZE_AGENT_CURSOR',
+  'agents.hermes': 'UNSNOOZE_AGENT_HERMES',
 };
 
 const KNOWN_KEYS = Object.keys(ENV_NAMES);
