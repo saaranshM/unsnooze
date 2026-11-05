@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.21.2 — 2026-11-01
+
+A Codex wake prompt left unsent under a two-row footer is now submitted, and
+a headless revive is stopped along with the agent it started.
+
+### Codex
+
+- Codex can draw a second footer row under its status bar (`⚠ 9 warnings · f2
+  to view`). unsnooze read that row as output after the prompt, so a wake
+  message typed but not submitted was missed: it never pressed Enter again
+  and marked the session resumed. Footer rows are now recognised; a reply
+  printed after the footer still counts as submitted (#62, #63).
+
+### Headless
+
+- Stopping a headless revival killed only unsnooze's launcher process, and
+  the agent under it (e.g. `codex exec … resume`) kept running with nothing
+  tracking it. On macOS and Linux the launcher and agent are now stopped
+  together (#55, #64).
+
 ## 1.21.1 — 2026-10-26
 
 A herdr session that is still open is now resumed in its own pane instead of a
