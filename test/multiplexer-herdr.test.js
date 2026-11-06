@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -561,6 +561,36 @@ test('newWindow matches a project by a pane foreground cwd when no launch cwd do
   const tab = spawner.calls.find(call => call.args.includes('tab'));
   assert.deepEqual(tab.args.slice(0, 6),
     ['--session', 'revival', 'tab', 'create', '--workspace', 'w3']);
+});
+
+test('newWindow matches a project across symlinked directory paths', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'unsnooze-symlink-test-'));
+  const link = join(tmpdir(), `unsnooze-symlink-link-${Date.now()}`);
+  try {
+    symlinkSync(dir, link);
+  } catch {
+    rmSync(dir, { recursive: true, force: true });
+    return;
+  }
+  try {
+    const spawner = fakeSpawner((_file, args, options) => {
+      if (args.join(' ') === 'session list --json') return runningNamedSession;
+      if (args.join(' ').endsWith('pane list')) return JSON.stringify({
+        result: { panes: [{ pane_id: 'w4:p1', workspace_id: 'w4', cwd: dir, foreground_cwd: dir }] },
+      });
+      if (args.includes('tab') && args.includes('create')) return tabCreated;
+      if (options.detach) return { pid: 1234, unref() {} };
+      return '';
+    });
+    await createHerdr({ spawner, env: {} })
+      .newWindow('revival', link, { file: 'node', args: [], env: {} });
+    const tab = spawner.calls.find(call => call.args.includes('tab'));
+    assert.deepEqual(tab.args.slice(0, 6),
+      ['--session', 'revival', 'tab', 'create', '--workspace', 'w4']);
+  } finally {
+    try { unlinkSync(link); } catch {}
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
 });
 
 test('newWindow creates a workspace when the matched one closed under it', async () => {
