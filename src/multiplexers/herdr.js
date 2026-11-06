@@ -7,6 +7,7 @@
 // roots: desktop/isolated Claude sessions cannot be resumed without them.
 
 import { execFile as execFileCb, spawn, spawnSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
 import { basename } from 'node:path';
 import { promisify } from 'node:util';
@@ -284,7 +285,17 @@ export function createHerdr({ spawner = defaultSpawner, env = process.env } = {}
     const samePath = (a, b) => {
       if (typeof a !== 'string' || typeof b !== 'string' || !a || !b) return false;
       const trim = value => (value.length > 1 ? value.replace(/\/+$/, '') : value);
-      return trim(a) === trim(b);
+      const ta = trim(a);
+      const tb = trim(b);
+      if (ta === tb) return true;
+      try {
+        const canonical = p => {
+          try { return realpathSync.native(p); } catch { return realpathSync(p); }
+        };
+        return canonical(ta) === canonical(tb);
+      } catch {
+        return false;
+      }
     };
 
     // The workspace herdr already has open on this project, if any.
