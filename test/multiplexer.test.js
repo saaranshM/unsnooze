@@ -274,7 +274,8 @@ test('psmux revives into its own session with raw argv and a session-qualified p
   const mux = createAnyTmux({ spawner, env: {}, platform: 'win32' });
   const node = 'C:\\Program Files\\nodejs\\node.exe';
   assert.deepEqual(await mux.newWindow('unsnooze-resumed', 'C:\\work', {
-    file: node, args: ['unsnooze.js', '_run', 'codex', 'resume', 'id', 'Continue where you left off.'], env: { TOKEN: 'v' },
+    file: node, args: ['unsnooze.js', '_run', 'codex', 'resume', 'id', 'Continue where you left off.'],
+    env: { TOKEN: 'v', 'ProgramFiles(x86)': 'C:\\Program Files (x86)' },
   }), { pane: 'unsnooze-resumed-2:%1', paneOwner: null, session: 'unsnooze-resumed-2' });
   assert.deepEqual(spawner.calls.at(-1).args, [
     'new-session', '-d', '-s', 'unsnooze-resumed-2', '-c', 'C:\\work', '-P', '-F', '#{session_name}:#{pane_id}',
@@ -289,14 +290,66 @@ test('psmux revives into its own session with raw argv and a session-qualified p
 // psmux answers a target pane that is gone with some OTHER pane: send-keys
 // exits 0 and types into it. Nothing may reach the pane unless it echoes back.
 test('psmux never types into or reads a pane that is gone', async () => {
-  const spawner = fakeSpawner((_file, args) => (args[0] === 'display-message' ? 'mine:%3\n' : ''));
+  const spawner = fakeSpawner((_file, [cmd]) => cmd === 'list-panes' ? 'mine|@4|%3|2468\r\n' : '');
   const mux = createAnyTmux({ spawner, env: {}, platform: 'win32' });
   await assert.rejects(mux.sendText('mine:%9', 'Continue'), /can't find pane: mine:%9/);
   await assert.rejects(mux.capturePane('mine:%9'), /can't find pane/);
-  assert.equal(spawner.calls.some(c => c.args[0] === 'send-keys' || c.args[0] === 'capture-pane'), false);
+  await assert.rejects(mux.closePane('mine:%9'), /can't find pane/);
+  await assert.rejects(mux.sendKey('%3', 'Enter'), /can't find pane/);
+  assert.ok(spawner.calls.every(c => c.args[0] === 'list-panes'));
+});
 
-  await mux.sendKey('mine:%3', 'Enter');
-  assert.deepEqual(spawner.calls.at(-1).args, ['send-keys', '-t', 'mine:%3', 'Enter']);
+test('psmux resolves persisted pane ids in any window and uses the verified target for every operation', async () => {
+  const identity = 'mine|@4|%3|2468';
+  const target = 'mine:@4.%3';
+  const spawner = fakeSpawner((_file, [cmd, , spec, ...args]) => {
+    if (cmd === 'list-panes') return `other|@1|%3|3333\r\nmine|@1|%1|1234\r\n${identity}\r\n`;
+    assert.equal(spec, target);
+    if (cmd === 'display-message' && args.at(-1) === '#{pane_current_command}') return 'codex\r\n';
+    if (cmd === 'display-message' && args.at(-1) === '#{pane_tty}') return '';
+    if (cmd === 'display-message' && args.at(-1) === '#{@unsnooze_owner}') return 'lease\r\n';
+    if (cmd === 'display-message') return `${identity}\r\n`;
+    if (cmd === 'capture-pane') return 'from pane 3';
+    return '';
+  });
+  const mux = createAnyTmux({ spawner, env: {}, platform: 'win32' });
+  assert.equal(await mux.paneAlive('mine:%3'), true);
+  assert.equal(await mux.sessionForPane('mine:%3'), 'mine');
+  assert.equal(await mux.paneCurrentCommand('mine:%3'), 'codex');
+  assert.equal(await mux.paneTty('mine:%3'), null);
+  assert.equal(await mux.capturePane('mine:%3'), 'from pane 3');
+  assert.equal(await mux.capturePaneVisible('mine:%3'), 'from pane 3');
+  assert.equal(await mux.stampPaneOwner('mine:%3', 'lease'), true);
+  assert.equal(await mux.paneOwnerStamp('mine:%3'), 'lease');
+  await mux.sendText('mine:%3', 'Continue');
+  assert.deepEqual(spawner.calls.filter(c => c.args[0] === 'send-keys').map(c => c.args), [
+    ['send-keys', '-t', target, '-l', 'Continue'], ['send-keys', '-t', target, 'Enter'],
+  ]);
+  await mux.closePane('mine:%3');
+  assert.deepEqual(spawner.calls.at(-1).args, ['kill-pane', '-t', target]);
+});
+
+test('psmux rejects an echoed pane with the wrong PID or the pseudo-pane %0', async () => {
+  for (const response of ['mine|@4|%3|9898', 'mine|@4|%0|', 'other|@4|%3|2468', 'mine|@1|%3|2468']) {
+    const spawner = fakeSpawner((_file, [cmd]) => cmd === 'list-panes' ? 'mine|@4|%3|2468\n' : `${response}\n`);
+    const mux = createAnyTmux({ spawner, env: {}, platform: 'win32' });
+    assert.equal(await mux.paneAlive('mine:%3'), false);
+    await assert.rejects(mux.sendKey('mine:%3', 'Enter'), /can't find pane/);
+    assert.ok(spawner.calls.every(c => ['list-panes', 'display-message'].includes(c.args[0])));
+  }
+});
+
+test('psmux refuses to submit text after the pane is replaced during the delay', async () => {
+  let pid = 2468;
+  const spawner = fakeSpawner((_file, [cmd]) => {
+    if (cmd === 'send-keys') pid = 9898;
+    return `mine|@4|%3|${pid}\n`;
+  });
+  const mux = createAnyTmux({ spawner, env: {}, platform: 'win32' });
+  await assert.rejects(mux.sendText('mine:%3', 'Continue'), /can't find pane/);
+  assert.deepEqual(spawner.calls.filter(c => c.args[0] === 'send-keys').map(c => c.args), [
+    ['send-keys', '-t', 'mine:@4.%3', '-l', 'Continue'],
+  ]);
 });
 
 test('a pane inside psmux names its session, since every session starts at %1', () => {
